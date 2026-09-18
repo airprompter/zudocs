@@ -23,7 +23,7 @@ const CONTEXT = {
   account: "111122223333",
   domain: "zudocs.com",
   regions: { site: "us-east-1", sharedHost: "eu-west-1", fleet: "ap-southeast-1" },
-  github: { owner: "airprompter", repo: "zudocs", branch: "main" },
+  github: { owner: "airprompter", ownerId: 295734781, repo: "zudocs", repoId: 1375253396, branch: "main" },
   budget: { monthlyUsd: 30, alertUsd: 50 },
   mail: { inboundRegion: "us-east-1", dkimTokens: ["a".repeat(32), "b".repeat(32), "c".repeat(32)] },
 };
@@ -45,6 +45,7 @@ test("config refuses what would weaken the deploy: no account, an alert below th
   assert.throws(() => readConfig(new cdk.App({ context: { ...CONTEXT, account: undefined } }).node, { BUDGET_EMAIL: "x@y.z" }), /account id/);
   assert.throws(() => readConfig(new cdk.App({ context: { ...CONTEXT, budget: { monthlyUsd: 30, alertUsd: 20 } } }).node, { BUDGET_EMAIL: "x@y.z" }), /alertUsd/);
   assert.throws(() => readConfig(new cdk.App({ context: { ...CONTEXT, mail: { inboundRegion: "us-east-1", dkimTokens: ["short"] } } }).node, { BUDGET_EMAIL: "x@y.z" }), /dkimTokens/);
+  assert.throws(() => readConfig(new cdk.App({ context: { ...CONTEXT, github: { ...CONTEXT.github, repoId: 0 } } }).node, { BUDGET_EMAIL: "x@y.z" }), /repoId/, "the immutable subject needs the ids");
   assert.throws(() => readConfig(new cdk.App({ context: CONTEXT }).node, {}), /BUDGET_EMAIL/, "a deploy without a recipient is refused");
   assert.throws(() => readConfig(new cdk.App({ context: CONTEXT }).node, { BUDGET_EMAIL: "not-an-address" }), /e-mail/);
   assert.equal(readConfig(new cdk.App({ context: { ...CONTEXT, allowNoBudgetEmail: "true" } }).node, {}).budget.email, "", "the credential-less synth may waive it");
@@ -148,7 +149,7 @@ test("CI: an existing GitHub OIDC provider is imported rather than created when 
   ci.hasResourceProperties("AWS::IAM::Role", { AssumeRolePolicyDocument: Match.objectLike({ Statement: [Match.objectLike({ Principal: { Federated: "arn:aws:iam::111122223333:oidc-provider/token.actions.githubusercontent.com" } })] }) });
 });
 
-test("CI: a native OIDC provider; the deploy role trusts one repository's main branch with the sts audience, holds no managed policy, and may only assume the CDK bootstrap roles in the three regions", () => {
+test("CI: a native OIDC provider; the deploy role trusts one repository's main branch (immutable subject: owner and repo ids) with the sts audience, holds no managed policy, and may only assume the CDK bootstrap roles in the three regions", () => {
   const { ci } = synth();
   ci.resourceCountIs("AWS::IAM::OIDCProvider", 1);
   assert.equal(Object.keys(ci.findResources("Custom::AWSCDKOpenIdConnectProvider")).length, 0, "no custom resource, no unverified thumbprint fetch");
@@ -157,7 +158,7 @@ test("CI: a native OIDC provider; the deploy role trusts one repository's main b
     AssumeRolePolicyDocument: Match.objectLike({
       Statement: [Match.objectLike({
         Action: "sts:AssumeRoleWithWebIdentity",
-        Condition: { StringEquals: { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com", "token.actions.githubusercontent.com:sub": "repo:airprompter/zudocs:ref:refs/heads/main" } },
+        Condition: { StringEquals: { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com", "token.actions.githubusercontent.com:sub": "repo:airprompter@295734781/zudocs@1375253396:ref:refs/heads/main" } },
       })],
     }),
   });

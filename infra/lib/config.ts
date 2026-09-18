@@ -31,7 +31,12 @@ export interface ZudocsConfig {
     /** ap-southeast-1: the puller, the exchange bucket, the air-gapped host. */
     readonly fleet: string;
   };
-  readonly github: { readonly owner: string; readonly repo: string; readonly branch: string };
+  /**
+   * The repository CI deploys from. GitHub's immutable OIDC subject embeds the owner and repository
+   * ids (`repo:owner@id/repo@id:ref:…`), so a rename or a transfer can never inherit the trust;
+   * `gh api repos/<owner>/<repo>/actions/oidc/customization/sub` shows the prefix in force.
+   */
+  readonly github: { readonly owner: string; readonly ownerId: number; readonly repo: string; readonly repoId: number; readonly branch: string };
   readonly budget: {
     /** Where the monthly budget is drawn (the Bedrock deny action fires here in phase 3). */
     readonly monthlyUsd: number;
@@ -56,6 +61,7 @@ export function readConfig(node: Node, env: NodeJS.ProcessEnv = process.env): Zu
   const github = need<ZudocsConfig["github"]>(node, "github");
   const budget = need<{ monthlyUsd: number; alertUsd: number }>(node, "budget");
   const mail = need<{ inboundRegion: string; dkimTokens: string[] }>(node, "mail");
+  if (!(Number.isInteger(github.ownerId) && github.ownerId > 0 && Number.isInteger(github.repoId) && github.repoId > 0)) throw new Error("config: github.ownerId and github.repoId must be the numeric GitHub ids (the immutable OIDC subject carries them)");
   for (const [key, value] of Object.entries(regions)) if (!/^[a-z]{2}-[a-z]+-\d$/.test(value)) throw new Error(`config: regions.${key} is not a region: ${value}`);
   if (!(budget.monthlyUsd > 0 && budget.alertUsd > budget.monthlyUsd)) throw new Error("config: budget.alertUsd must exceed budget.monthlyUsd, both positive");
   if (!Array.isArray(mail.dkimTokens) || mail.dkimTokens.length !== 3 || !mail.dkimTokens.every((t) => /^[a-z0-9]{32}$/.test(t))) throw new Error("config: mail.dkimTokens must be the three 32-character SES DKIM tokens");

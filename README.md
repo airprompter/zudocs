@@ -57,7 +57,9 @@ stop CloudFormation. An account holds one GitHub OIDC provider; if one exists, p
 to `ZudocsCi`. One cost anomaly monitor of the service kind is allowed per account, and Budgets and
 Cost Explorer take up to a day to switch on in a fresh account.
 
-Then set the repository variables `AWS_ACCOUNT_ID` and `BUDGET_EMAIL`, and `main` deploys.
+Then set the repository variables `AWS_ACCOUNT_ID` and `BUDGET_EMAIL`, and `main` deploys. The deploy
+role trusts GitHub's immutable subject (`repo:owner@id/repo@id:ref:refs/heads/main`); the ids in
+`infra/cdk.json` › `github` come from `gh api repos/airprompter/zudocs/actions/oidc/customization/sub`.
 
 ## Licence
 

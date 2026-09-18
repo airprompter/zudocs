@@ -15,6 +15,9 @@
  *   `config.json` written at deploy time from the stack's own outputs.
  * - The Budgets action: at 100 % of `zudocs-monthly`, `ZudocsBudgetBedrockDeny` is attached to the function's role
  *   and the eu-west host's automatically — a bug that loops stops paying for models without a person awake.
+ * - The status tick: every five minutes EventBridge invokes the function with `{ tick: "status" }` — a sync pass and
+ *   the status row, so the us-east card never goes stale between runs (phase 5). The presenter's nudge posts to the
+ *   fleet's queue in ap-southeast-1 by its fixed name.
  *
  * Two things a synth cannot catch: the SSM parameter must exist before the first request (the function fails its
  * cold start with the parameter's name otherwise), and Bedrock model access in a fresh account is a per-model
@@ -26,7 +29,7 @@
  * ```
  */
 import * as cdk from "aws-cdk-lib";
-import { aws_apigatewayv2 as apigwv2, aws_apigatewayv2_authorizers as authorizers, aws_apigatewayv2_integrations as integrations, aws_budgets as budgets, aws_cloudfront as cloudfront, aws_cloudfront_origins as origins, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, aws_lambda as lambda, aws_logs as logs, aws_route53 as route53, aws_route53_targets as targets, aws_s3 as s3, aws_s3_deployment as deploy } from "aws-cdk-lib";
+import { aws_apigatewayv2 as apigwv2, aws_apigatewayv2_authorizers as authorizers, aws_apigatewayv2_integrations as integrations, aws_budgets as budgets, aws_cloudfront as cloudfront, aws_cloudfront_origins as origins, aws_dynamodb as dynamodb, aws_events as events, aws_events_targets as eventTargets, aws_iam as iam, aws_kms as kms, aws_lambda as lambda, aws_logs as logs, aws_route53 as route53, aws_route53_targets as targets, aws_s3 as s3, aws_s3_deployment as deploy } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -34,6 +37,7 @@ import { fileURLToPath } from "node:url";
 import { CATALOGUE } from "../../services/desk-api/src/modelCatalogue.js";
 import { ROUTES } from "../../services/desk-api/src/router.js";
 import type { ZudocsConfig } from "./config.js";
+import { DESK_STATUS_TICK_MINUTES, NUDGE_QUEUE_NAME } from "./fleet-names.js";
 import { EU_HOST_ROLE_NAME, WIRE_FUNCTION_NAME } from "./shared-host-names.js";
 import { BUDGET_NAME, type SiteStack } from "./site-stack.js";
 
@@ -143,6 +147,9 @@ export class DeskStack extends cdk.Stack {
     const agentKeyParameter = `/zudocs/${airprompter.environment}/agent-key`;
     const parameterArn = this.formatArn({ service: "ssm", resource: "parameter", resourceName: agentKeyParameter.slice(1) });
     const wireFunctionArn = `arn:${this.partition}:lambda:${config.regions.sharedHost}:${this.account}:function:${WIRE_FUNCTION_NAME}`;
+    // The fleet's nudge queue in ap-southeast-1, by its fixed name (no cross-region reference): the presenter posts to it.
+    const nudgeQueueArn = `arn:${this.partition}:sqs:${config.regions.fleet}:${this.account}:${NUDGE_QUEUE_NAME}`;
+    const nudgeQueueUrl = `https://sqs.${config.regions.fleet}.amazonaws.com/${this.account}/${NUDGE_QUEUE_NAME}`;
 
     // --- The function ---------------------------------------------------------------------------
     const logGroup = new logs.LogGroup(this, "ApiLogs", { logGroupName: `/aws/lambda/${DESK_FUNCTION_NAME}`, retention: logs.RetentionDays.ONE_WEEK, removalPolicy: cdk.RemovalPolicy.DESTROY });
@@ -171,6 +178,7 @@ export class DeskStack extends cdk.Stack {
         AGENT_KEY_PARAMETER: agentKeyParameter,
         // The eu-west wire function, by its fixed name (no cross-region reference): the presenter's cut / restore.
         WIRE_FUNCTION_ARN: wireFunctionArn,
+        NUDGE_QUEUE_URL: nudgeQueueUrl,
         AIRPROMPTER_BASE_URL: airprompter.baseUrl,
         AIRPROMPTER_ORGANIZATION_ID: airprompter.organizationId,
         AIRPROMPTER_AGENT_ID: airprompter.agentId,
@@ -208,6 +216,9 @@ export class DeskStack extends cdk.Stack {
     // The replay job: the function invokes itself asynchronously (by its fixed name, so the policy has no cycle);
     // the presenter's cut / restore invokes the eu-west wire function (by its fixed name in the other region).
     this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [this.formatArn({ service: "lambda", resource: "function", resourceName: DESK_FUNCTION_NAME, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME }), wireFunctionArn] }));
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["sqs:SendMessage"], resources: [nudgeQueueArn] }));
+    // The status tick (phase 5): the card never goes stale between runs; the invocation is a sync pass and one row.
+    new events.Rule(this, "StatusTick", { description: "Zudocs: the desk host writes its status row every five minutes", schedule: events.Schedule.rate(cdk.Duration.minutes(DESK_STATUS_TICK_MINUTES)), targets: [new eventTargets.LambdaFunction(this.fn, { event: events.RuleTargetInput.fromObject({ tick: "status" }) })] });
 
     // --- The API ----------------------------------------------------------------------------------
     const authorizer = new authorizers.HttpJwtAuthorizer("Jwt", site.userPool.userPoolProviderUrl, { jwtAudience: [site.userPoolClient.userPoolClientId, site.proofClient.userPoolClientId], identitySource: ["$request.header.Authorization"] });

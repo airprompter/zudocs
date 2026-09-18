@@ -1,0 +1,52 @@
+#!/bin/bash
+# The export timer's work, as the airprompter user: `airprompter export-telemetry` packs every closed, unsent segment
+# of the runtime's spool into one `.aptelemetry` document (and moves them to spool/telemetry/exported/, so the next
+# export packs only what is new), and the document goes to the exchange bucket under telemetry/<instance>/<time>.
+# The eu-west host's import timer carries it to AirPrompter from there. An export with no segment writes nothing to
+# the bucket. The result (counts, the object, the store's generation — never a row) is kept in last.json for the
+# status document. The CLI's `--json` output is parsed with the host's Node.
+#
+#   $ zudocs-airgap-export        # → exported 3 segments (2 instances, 1842 bytes) to s3://…/telemetry/i-…/2026-09-18T21-05-00Z.aptelemetry
+set -euo pipefail
+. /etc/airprompter/zudocs.env
+: "${EXCHANGE_BUCKET:?zudocs.env names no EXCHANGE_BUCKET}"
+: "${ZUDOCS_EXPORT_STATE_PATH:?zudocs.env names no ZUDOCS_EXPORT_STATE_PATH}"
+export HOME=/var/lib/airprompter XDG_STATE_HOME="$AIRPROMPTER_STATE_DIR"
+dir="$(dirname "$ZUDOCS_EXPORT_STATE_PATH")"
+stamp="$(date -u +%FT%H-%M-%SZ)"
+file="${dir}/${stamp}.aptelemetry"
+token="$(curl -sS -X PUT --max-time 2 -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token || true)"
+instance="$(curl -sS --max-time 2 -H "X-aws-ec2-metadata-token: ${token}" http://169.254.169.254/latest/meta-data/instance-id || echo unknown)"
+# A document left behind by a failed upload goes first (the CLI moved its segments to exported/ when it packed it):
+# nothing packed is ever lost to one failed cp. The file is removed only once the upload succeeded.
+for leftover in "$dir"/*.aptelemetry; do
+  [ -f "$leftover" ] || continue
+  if aws s3 cp --region "$ZUDOCS_REGION" --content-type application/json "$leftover" "s3://${EXCHANGE_BUCKET}/telemetry/${instance}/$(basename "$leftover")" >/dev/null; then
+    echo "zudocs-airgap-export: uploaded the leftover $(basename "$leftover")"
+    rm -f "$leftover"
+  else
+    echo "zudocs-airgap-export: the leftover $(basename "$leftover") still could not be uploaded; kept for the next run" >&2
+  fi
+done
+report="$(/usr/local/bin/airprompter export-telemetry --org "$AIRPROMPTER_ORG" --agent "$AIRPROMPTER_AGENT" --environment "$AIRPROMPTER_ENVIRONMENT" --state-dir "$AIRPROMPTER_STATE_DIR" --out "$file" --json)"
+# The CLI's --json document is the last line of its stdout.
+read -r segments bytes instances generation <<< "$(printf '%s' "$report" | /usr/local/bin/node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const line=d.trim().split("\n").filter(Boolean).at(-1)??"{}";const r=JSON.parse(line);if(r.ok===false)throw new Error(r.error);console.log([r.segments??0,r.bytes??0,r.instances??0,r.generation??0].join(" "))})')"
+# A document the CLI wrote but whose report could not be read is kept (its segments are already in exported/), never removed.
+[ -n "${segments:-}" ] || { echo "zudocs-airgap-export: the CLI's report could not be read; ${file} is kept for the next run" >&2; exit 1; }
+object=null
+if [ "$segments" -gt 0 ]; then
+  key="telemetry/${instance}/${stamp}.aptelemetry"
+  if aws s3 cp --region "$ZUDOCS_REGION" --content-type application/json "$file" "s3://${EXCHANGE_BUCKET}/${key}" >/dev/null; then
+    rm -f "$file"
+    object="\"${key}\""
+    echo "zudocs-airgap-export: exported ${segments} segment(s) (${instances} instance(s), ${bytes} bytes, generation ${generation}) to s3://${EXCHANGE_BUCKET}/${key}"
+  else
+    echo "zudocs-airgap-export: packed ${segments} segment(s) but the upload failed; ${file} is kept and goes first on the next run" >&2
+  fi
+else
+  rm -f "$file"
+  echo "zudocs-airgap-export: nothing to export (generation ${generation})"
+fi
+tmp="$(mktemp "${dir}/.last.XXXXXX")"
+printf '{"at":"%s","segments":%d,"bytes":%d,"instances":%d,"object":%s,"generation":%d}\n' "$(date -u +%FT%TZ)" "$segments" "$bytes" "$instances" "$object" "$generation" > "$tmp"
+mv -f "$tmp" "$ZUDOCS_EXPORT_STATE_PATH"

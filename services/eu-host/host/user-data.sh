@@ -9,7 +9,8 @@
 #   /etc/airprompter/{root.jwk.json,root.json,zudocs.env}   the pinned key, the root document it verified, the identifiers (0644)
 #   /etc/airprompter/airprompterd.env     the Agent key, root:root 0600, written by zudocs-agent-key
 #   /var/lib/airprompter                  the daemon's state (0700, the airprompter user)
-#   systemd: airprompterd, zudocs-worker, zudocs-pyworker; the CloudWatch agent shipping /var/log/zudocs/*
+#   /var/lib/zudocs/import                the import timer's inbox and ledger (the air-gapped host's exports, imported once each)
+#   systemd: airprompterd, zudocs-worker, zudocs-pyworker, zudocs-import.timer; the CloudWatch agent shipping /var/log/zudocs/*
 #
 #   $ bash -n services/eu-host/host/user-data.sh      # the template parses; the stack renders and the test pins the placeholders
 set -euo pipefail
@@ -34,6 +35,7 @@ id airprompter >/dev/null 2>&1 || useradd --system --home-dir /var/lib/airprompt
 install -d -o airprompter -g airprompter -m 0700 /var/lib/airprompter
 install -d -m 0755 /etc/airprompter /opt/zudocs
 install -d -o airprompter -g airprompter -m 0755 /var/log/zudocs
+install -d -o airprompter -g airprompter -m 0700 /var/lib/zudocs /var/lib/zudocs/import
 
 # --- the released CLI, verified before it is executable --------------------------------------------------------------
 curl -fsSL --retry 20 --retry-all-errors --retry-delay 5 -o /tmp/airprompter.bin "__CLI_URL__"
@@ -48,10 +50,14 @@ rm -rf /opt/zudocs/bundle && mkdir -p /opt/zudocs/bundle
 unzip -q -o /tmp/eu-host.zip -d /opt/zudocs/bundle
 rm -f /tmp/eu-host.zip
 install -m 0644 /opt/zudocs/bundle/root.jwk.json /etc/airprompter/root.jwk.json
-install -m 0644 /opt/zudocs/bundle/zudocs.env /etc/airprompter/zudocs.env
+# The environment file names the exchange bucket, which is account-qualified and not in git: filled here from the stack.
+sed 's#@EXCHANGE_BUCKET@#__EXCHANGE_BUCKET__#' /opt/zudocs/bundle/zudocs.env > /etc/airprompter/zudocs.env
+chmod 0644 /etc/airprompter/zudocs.env
+grep -q '^EXCHANGE_BUCKET=__EXCHANGE_BUCKET__$' /etc/airprompter/zudocs.env
 install -m 0755 /opt/zudocs/bundle/bin/zudocs-agent-key /usr/local/sbin/zudocs-agent-key
 install -m 0755 /opt/zudocs/bundle/bin/zudocs-cli /usr/local/bin/zudocs-cli
 install -m 0644 /opt/zudocs/bundle/worker.mjs /opt/zudocs/worker.mjs
+install -m 0644 /opt/zudocs/bundle/import.mjs /opt/zudocs/import.mjs
 install -m 0644 /opt/zudocs/bundle/pyworker.py /opt/zudocs/pyworker.py
 install -m 0644 /opt/zudocs/bundle/requirements.txt /opt/zudocs/requirements.txt
 
@@ -80,12 +86,14 @@ install -m 0644 /opt/zudocs/bundle/cloudwatch-agent.json /opt/aws/amazon-cloudwa
 install -m 0644 /opt/zudocs/bundle/units/airprompterd.service /etc/systemd/system/airprompterd.service
 install -m 0644 /opt/zudocs/bundle/units/zudocs-worker.service /etc/systemd/system/zudocs-worker.service
 install -m 0644 /opt/zudocs/bundle/units/zudocs-pyworker.service /etc/systemd/system/zudocs-pyworker.service
+install -m 0644 /opt/zudocs/bundle/units/zudocs-import.service /etc/systemd/system/zudocs-import.service
+install -m 0644 /opt/zudocs/bundle/units/zudocs-import.timer /etc/systemd/system/zudocs-import.timer
 systemctl daemon-reload
-systemctl enable airprompterd.service zudocs-worker.service zudocs-pyworker.service
+systemctl enable airprompterd.service zudocs-worker.service zudocs-pyworker.service zudocs-import.timer
 
 # --- the Agent key: from SSM into the daemon's env file, root:root 0600 (repeated at every daemon start) -----------
 /usr/local/sbin/zudocs-agent-key || echo "zudocs-agent-key: the parameter is not readable yet; the daemon retries it at every start"
-systemctl start airprompterd.service zudocs-worker.service zudocs-pyworker.service || true
+systemctl start airprompterd.service zudocs-worker.service zudocs-pyworker.service zudocs-import.timer || true
 
 echo "zudocs eu-host boot done: $(date -u +%FT%TZ)"
 systemctl --no-pager --plain status airprompterd zudocs-worker zudocs-pyworker | grep -E "^(●|○|×)|Active:" || true

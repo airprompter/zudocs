@@ -1,0 +1,16 @@
+# Every five minutes, two minutes after boot: the import pass (zudocs-import.service). The air-gapped host exports
+# every five minutes on its own timer; an export waits in the bucket at most one interval.
+#
+#   $ systemctl list-timers zudocs-import.timer
+
+[Unit]
+Description=Zudocs eu-west host: import the air-gapped host's telemetry every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=15s
+Unit=zudocs-import.service
+
+[Install]
+WantedBy=timers.target

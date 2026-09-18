@@ -22,6 +22,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { DecryptCommand, EncryptCommand, KMSClient } from "@aws-sdk/client-kms";
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { AirPrompterAgent, SDK_NAME, SDK_VERSION, customKeyProvider } from "@airprompter/agent-sdk";
 import { createCallers, type Callers } from "./bedrock.js";
 import { readEnv, type DeskEnv } from "./env.js";
@@ -51,6 +52,8 @@ export interface Host extends RunHost {
   coldStart: boolean;
   /** This host's status document, written to the status table. */
   writeStatus(): Promise<void>;
+  /** One message on the fleet's nudge queue (the change-notification placeholder); the message id, or null when no queue is configured. */
+  nudge(body: Record<string, unknown>): Promise<{ messageId: string | null }>;
 }
 
 let pending: Promise<Host> | null = null;
@@ -133,6 +136,11 @@ async function startHost(): Promise<Host> {
     invocations: 0,
     coldStart: true,
     observed: collectObservations,
+    async nudge(body) {
+      const region = /sqs\.([a-z0-9-]+)\.amazonaws\.com/.exec(env.nudgeQueueUrl)?.[1] ?? env.region;
+      const out = await new SQSClient({ region }).send(new SendMessageCommand({ QueueUrl: env.nudgeQueueUrl, MessageBody: JSON.stringify(body) }));
+      return { messageId: out.MessageId ?? null };
+    },
     async writeStatus() {
       await store.putStatus({
         hostId: env.hostId,

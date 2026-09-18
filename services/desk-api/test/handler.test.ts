@@ -107,7 +107,7 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
   const store = fakeStore();
   const calls: string[] = [];
   const ap = fakeAp(store, calls) as unknown as Host["ap"];
-  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "", airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
+  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "", nudgeQueueUrl: "", airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
   const host: Host & { store: ReturnType<typeof fakeStore>; calls: string[] } = {
     env,
     ap,
@@ -127,6 +127,7 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
     coldStart: true,
     observed: async (fn) => ({ result: await fn(), error: undefined, observations: [{ tag: "support.reply", versionId: "rev-2", arm: "none", model: "openai.gpt-5-6-luna", status: "ok", latencyMs: 1234, tokens: { input: 200, output: 40 }, usageSource: "reported" }] }),
     writeStatus: async () => store.putStatus({ hostId: "us-east-1/lambda", region: "us-east-1", kind: "lambda", sdk: "x", writtenAt: "", status: ap.status(), healthz: ap.healthz(), container: { instanceId: "i-fake", coldStart: false, startedAt: "", invocations: 1 } }),
+    nudge: async (body) => { calls.push(`nudge:${String(body.by)}`); return { messageId: "msg-1" }; },
   };
   return host;
 }
@@ -290,7 +291,16 @@ test("state, events, healthz and unknown routes; a failed start answers 503 with
   assert.equal(state.host.status.storageProtection, "kms");
   assert.deepEqual(state.host.models, ["openai.gpt-5-6-luna", "amazon.nova-2-lite", "amazon.nova-micro", "anthropic.claude-haiku-4-5"]);
   assert.deepEqual(state.cap, { day: new Date().toISOString().slice(0, 10), used: 0, cap: 2 });
-  assert.deepEqual(state.features, { wire: false }, "no wire function configured on this fake host");
+  assert.deepEqual(state.features, { wire: false, nudge: false }, "no wire function and no nudge queue configured on this fake host");
+  const nudge = await handler(event("POST", "/presenter/nudge"));
+  assert.equal((nudge as { statusCode: number }).statusCode, 501, "without the fleet stack there is nothing to nudge, and it says so");
+  assert.equal(parse(nudge).error, "no_nudge_queue");
+  (host.env as { nudgeQueueUrl: string }).nudgeQueueUrl = "https://sqs.ap-southeast-1.amazonaws.com/111122223333/zudocs-nudge";
+  const nudged = parse(await handler(event("POST", "/presenter/nudge")));
+  assert.equal(nudged.messageId, "msg-1");
+  assert.ok(host.calls.includes("nudge:seth@zudocs.com"), "one message on the queue, signed by the presenter");
+  assert.equal(host.store.events.at(-1)!.kind, "presenter");
+  assert.equal(host.store.events.at(-1)!.action, "nudge");
   assert.equal((await handler(event("GET", "/healthz")) as { statusCode: number }).statusCode, 200);
   assert.equal((await handler(event("GET", "/nope")) as { statusCode: number }).statusCode, 404);
   assert.equal((await handler(event("POST", "/presenter/dance")) as { statusCode: number }).statusCode, 404);
@@ -329,4 +339,19 @@ test("a refused model call: the step keeps the SDK's error observation and the p
   assert.deepEqual(reply.checks, []);
   assert.equal(reply.judge, null);
   assert.equal(run.triage.category, "billing", "the step before it still answered");
+});
+
+test("the status tick from EventBridge is a sync pass and one status row: no request is answered, nothing runs, the host that failed to start answers nothing", async () => {
+  const host = fakeHost();
+  const handler = createHandler(async () => host);
+  const before = host.store.status.length;
+  const out = await handler({ tick: "status" } as never);
+  assert.equal(out, undefined, "not an HTTP answer");
+  assert.ok(host.calls.includes("invoke"), "a sync pass inside invoke()");
+  assert.equal(host.store.status.length, before + 1, "one row");
+  assert.equal(host.store.runs.size, 0, "nothing ran");
+  let attempts = 0;
+  const failing = createHandler(async () => { attempts += 1; throw Object.assign(new Error("no parameter"), { code: "kek_unavailable" }); });
+  assert.equal(await failing({ tick: "status" } as never), undefined, "a failed start on a tick answers nothing and does not throw");
+  assert.equal(attempts, 1);
 });

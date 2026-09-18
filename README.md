@@ -11,23 +11,28 @@ Everything here depends only on what any customer has: the public npm and PyPI p
 CLI, the public root key, and keys issued in the AirPrompter console. No prompt text is committed. No key
 is ever in this repository, on a command line, or in a log.
 
-## What is here today (phases 1–4)
+## What is here today (phases 1–5)
 
 ```
 infra/             CDK: ZudocsCi (the deploy role), ZudocsDns (the zone), ZudocsSite (landing page, sign-in, budget,
                    trail), ZudocsDesk (the desk API, its tables and key, the desk app) in us-east-1;
-                   ZudocsSharedHost (the daemon host and the wire function) in eu-west-1
+                   ZudocsSharedHost (the daemon host and the wire function) in eu-west-1; ZudocsFleet (the puller, the
+                   releases table, the exchange bucket, the nudge queue) and ZudocsAirgap (the air-gapped host, on demand) in
+                   ap-southeast-1
 apps/landing/      the public site at zudocs.com
 apps/desk/         the desk at desk.zudocs.com: React + Vite, hosted-UI sign-in, the run panel, the fleet, approvals, the timeline
 services/desk-api/ the us-east-1 host: one Lambda running the Agent SDK in on_invoke mode (docs/DESK.md)
-services/eu-host/  the eu-west-1 host: airprompterd, the Node and Python workers, the units, the boot script, the wire (docs/EU-WEST.md)
+services/eu-host/  the eu-west-1 host: airprompterd, the Node and Python workers, the import timer, the units, the boot script, the wire (docs/EU-WEST.md)
+services/puller/   the ap-southeast-1 puller: pointer-first pullBundle into the releases table and the exchange bucket, the nudge's consumer (docs/FLEET.md)
+services/airgap/   the ap-southeast-1 air-gapped host: the offline runtime, the keygen, the export timer, the units, the boot script (docs/FLEET.md)
 airprompter.config.json   where the prompts live in AirPrompter: identifiers only, never a key
 prompts/           the local registry for `airprompter dev` — ignored; `npm run prompts:seed` fills it
 keys/              public root JWKs the hosts and the verify action pin (dev today, prod at the cutover)
-scripts/           prompts-seed, dev-smoke, dev-proof, desk-proof, eu-host-proof, ssm-put-agent-key.sh, cognito-users.sh,
-                   account-baseline.sh, check-headers, check-keys
+scripts/           prompts-seed, dev-smoke, dev-proof, desk-proof, eu-host-proof, fleet-proof, airgap (up / down / status / run),
+                   ssm-put-agent-key.sh, cognito-users.sh, account-baseline.sh, check-headers, check-keys
 docs/              ARCHITECTURE.md, PROMPTS.md (the slots, variables, checks, golden set, models), DESK.md (the us-east host
-                   and the app), EU-WEST.md (the daemon host, the approval, the wire)
+                   and the app), EU-WEST.md (the daemon host, the approval, the wire), FLEET.md (the puller, the exchange, the
+                   air-gapped host, export/import)
 ```
 
 Phase 2 put the prompts in AirPrompter: one Agent, `zudocs-support`, four slots (`support.triage` on Nova Micro;
@@ -48,8 +53,18 @@ Python worker attached to it over its socket, neither holding a key; the desk's 
 AirPrompter staged waits for the owner and activates through the daemon when approved; the second host card; and
 the wire-cut drill with its automatic restore. It also re-pinned the reply and escalation slots to Nova 2 Lite while
 the account's access to GPT-5.6 Luna is gated — the first change that reached every host. `docs/EU-WEST.md` is the
-tour. Phase 5 adds `services/puller/` + `services/airgap/`; phase 6 the demo script and the reset path. See
-`docs/ARCHITECTURE.md`.
+tour.
+
+Phase 5 built the third region and the third shape: in ap-southeast-1 a **puller** Lambda holds the region's Agent key
+and pulls each promoted release pointer-first (an idle tick is one CDN read, no API call) into a releases table and an
+**exchange bucket**, sealed to the distribution key of the **air-gapped host** — a `t4g.micro` in a VPC with no internet
+gateway and no NAT, deployed on demand, that generated that key itself at first boot (only the public half left it),
+boots the SDK offline on a vendored bundle fetched through a gateway endpoint, applies every newer bundle from the
+exchange, cannot call a model and files every render as a refusal, and exports its telemetry to the bucket — from where
+the eu-west host's import timer carries it to AirPrompter, so the offline instance appears on the fleet page. The desk
+gained the two host cards, the **Nudge the fleet** action (the change-notification placeholder: the puller reads the
+origin now), and the timeline rows; the us-east host's status row is now written every five minutes between runs.
+`docs/FLEET.md` is the tour. Phase 6 adds the demo script and the reset path. See `docs/ARCHITECTURE.md`.
 
 ## Work on the prompts locally
 
@@ -123,6 +138,21 @@ ZUDOCS_PROOF_PASSWORD="$(openssl rand -base64 27 | tr -d '/+=' | cut -c1-30)Aa1"
 
 Until the parameter exists, every request answers `503 host_unavailable` with a message naming the parameter; the
 next request after it exists starts the host.
+
+### The fleet (phase 5), once
+
+`ZudocsFleet` deploys from CI. The puller reads the same parameter name in its own region (the AWS-managed SSM key, like
+eu-west), so the owner writes it there once; until it exists every tick logs `agent_key_unreadable` and the puller's card
+says so. The air-gapped host is the owner's, on demand — it exists only while `airgap:up`:
+
+```sh
+set -a; . ~/.config/zudocs/dev.env; set +a
+AWS_PROFILE=zudocs AWS_REGION=ap-southeast-1 ZUDOCS_SSM_KEY_ID=alias/aws/ssm bash scripts/ssm-put-agent-key.sh
+export AWS_PROFILE=zudocs BUDGET_EMAIL=billing@zudocs.com
+npm run airgap:up             # ~10 minutes: the tools staged in the exchange, the stack, the host's first status document
+npm run fleet:proof -- --airgap --nudge --import      # with ZUDOCS_PROOF_PASSWORD: the claims in docs/FLEET.md
+npm run airgap:down           # the exchange keeps every artefact; the card fades
+```
 
 ### The eu-west host (phase 4), once
 

@@ -26,6 +26,7 @@ export function ReleaseBar({ state }: { state: State | null }) {
       {s.staleRefusal ? <span className="muted" title="The SDK keeps a network refusal until the next activation; the host's last poll succeeded.">last refusal: {s.staleRefusal} (cleared by the next activation)</span> : null}
       {s.failing ? <span className="refusal">{s.failing} host{s.failing === 1 ? "" : "s"} failing</span> : null}
       {s.degraded ? <span className="staged">{s.degraded} host{s.degraded === 1 ? "" : "s"} degraded</span> : null}
+      {s.exchange !== null ? <span className="muted" title={TOOLTIPS.puller}>exchange holds #{s.exchange}</span> : null}
       <span className="muted">{state.airprompter.environment} · {state.airprompter.agentId}</span>
     </div>
   );

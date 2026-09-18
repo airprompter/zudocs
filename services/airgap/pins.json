@@ -1,0 +1,14 @@
+{
+  "$comment": "What the air-gapped host installs at first boot, pinned here so a change is a synth and a review, never a surprise at boot. The host cannot install packages (no route out), so Node comes from the exchange bucket's tools/ prefix where `npm run airgap:up` staged it (the gzip tarball: the base image has gzip and tar, not necessarily xz), verified against this digest before it is extracted; the released CLI's digest is the fleet's one pin in services/eu-host/pins.json. The AMI is pinned per region because a resolved-at-deploy image replaces the instance on every AL2023 refresh (a replacement is a new host, a new keypair, a re-seal).",
+  "node": {
+    "version": "v22.23.2",
+    "asset": "node-v22.23.2-linux-arm64.tar.gz",
+    "sha256": "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30",
+    "url": "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-arm64.tar.gz"
+  },
+  "ami": {
+    "$comment": "aws ssm get-parameter --region ap-southeast-1 --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64 — bump deliberately",
+    "name": "al2023-ami-2023.12.20260917.1-kernel-6.1-arm64",
+    "ap-southeast-1": "ami-033ccd61cb71cb72b"
+  }
+}

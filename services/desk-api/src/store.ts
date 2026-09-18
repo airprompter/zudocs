@@ -42,7 +42,7 @@ export interface Ticket {
 export interface StatusRow {
   hostId: string;
   region: string;
-  kind: "lambda" | "daemon" | "airgapped";
+  kind: "lambda" | "daemon" | "airgapped" | "puller";
   sdk: string;
   writtenAt: string;
   status: unknown;

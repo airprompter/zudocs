@@ -1,7 +1,8 @@
 /**
  * The timeline: every event a host appended — a container or worker starting, a release staged, approved and
  * activated (with the instant on each host, so us-east's auto-activation and eu-west's approval sit side by side),
- * a ticket run, feedback, a cap refusal, a health change, the wire cut or restored, a presenter action — newest
+ * a ticket run, feedback, a cap refusal, a health change, the wire cut or restored, a presenter action, a bundle
+ * pulled into the exchange, a nudge, the air-gapped host starting and applying, its exports and their import — newest
  * first, with the host that wrote it. Polled from the events table; rows are de-duplicated by the API's row id.
  *
  * @example
@@ -29,8 +30,17 @@ function describe(e: TimelineEvent): string {
     case "ticket_escalated": return `${e.ticketId} escalated · ${e.versionId ?? "—"}`;
     case "feedback": return `feedback on ${e.ticketId}: ${(e.signals as string[]).join(", ")}${e.filed ? "" : " (refused)"}${String(e.by ?? "").includes("(checks)") ? " · from the checks" : ""}`;
     case "cap_refused": return `refused: ${e.used}/${e.cap} runs used on ${e.capDay ?? String(e.at).slice(0, 10)}`;
-    case "presenter": return `presenter: ${e.action}${e.n ? ` ×${e.n}` : ""}${e.ticketId ? ` ${e.ticketId}` : ""}${e.forHost ? ` → ${e.forHost}` : ""}${e.outcome ? ` · ${e.outcome}` : ""}`;
+    case "presenter": return `presenter: ${e.action}${e.n ? ` ×${e.n}` : ""}${e.ticketId ? ` ${e.ticketId}` : ""}${e.forHost ? ` → ${e.forHost}` : ""}${e.outcome ? ` · ${e.outcome}` : ""}${e.action === "nudge" ? " → the fleet's queue" : ""}`;
     case "replay_done": return `replay done: ${e.done}/${e.requested}`;
+    case "bundle_pulled": return `release #${e.generation} pulled into the exchange${e.sealed ? ` · sealed to key ${String(e.keyId).slice(0, 8)}…` : " · plaintext (dev)"} · ${e.trigger === "nudge" ? "on a nudge" : e.trigger === "reseal" ? "re-sealed to the host's new key" : "on the schedule"}${e.previous ? ` (was #${e.previous})` : ""}`;
+    case "pull_failed": return `pull ${e.outcome}: ${e.reason}${e.detail ? ` — ${e.detail}` : ""}`;
+    case "pull_conflict": return `generation #${e.generation} answered with another digest; the exchange keeps its row`;
+    case "nudged": return `nudged by ${e.by}: the puller reads the origin now`;
+    case "airgap_started": return `air-gapped runtime started${e.instanceId ? ` on ${e.instanceId}` : ""}${e.keyId ? ` · key ${String(e.keyId).slice(0, 8)}…` : ""} · ${e.phase}`;
+    case "distribution_key_born": return `distribution key ${String(e.keyId).slice(0, 8)}… born on the host; the public half ${e.published ? "is in the exchange" : "is not in the exchange yet"}`;
+    case "airgap_applied": return `air-gapped host: release #${e.generation ?? "—"} ${e.outcome}${e.reason ? ` (${e.reason})` : ""} · from ${e.source === "vendored" ? "the vendored bundle" : "the exchange"}`;
+    case "telemetry_exported": return `telemetry exported: ${e.segments} segment${e.segments === 1 ? "" : "s"} (${e.instances} instance${e.instances === 1 ? "" : "s"}) → the exchange`;
+    case "telemetry_imported": return `telemetry ${e.outcome}: ${e.uploaded ?? 0}/${e.segments ?? 0} segment${e.segments === 1 ? "" : "s"} for ${Array.isArray(e.instances) ? (e.instances as string[]).length : 0} offline instance${Array.isArray(e.instances) && (e.instances as string[]).length === 1 ? "" : "s"} → AirPrompter${e.retryAfterSeconds ? ` · retry in ${e.retryAfterSeconds}s` : ""}`;
     default: return e.kind;
   }
 }

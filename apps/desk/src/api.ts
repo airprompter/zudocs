@@ -53,8 +53,24 @@ export interface HostStatus {
   worker?: { instanceId: string; sdk: string; startedAt: string; tickets: number; source: string; attached: boolean; healthz: string; reasons: string[] } | null;
   python?: { instanceId: string; sdk: string; startedAt: string; writtenAt: string; generation: number; stagedGeneration: number | null; applyState: string; source: string; attached: boolean; healthz: string; reasons: string[]; runs: number; lastRunAt: string | null } | null;
   ec2?: { instanceId: string; availabilityZone: string } | null;
+  /** The puller mirrors the air-gapped host's document: when it looked, and the host's own part (`services/airgap/src/status.ts`). */
+  mirroredAt?: string;
+  airgap?: {
+    keyId: string | null;
+    keyPublished: boolean;
+    phase: "awaiting_bundle" | "serving";
+    waitingFor: { newest: { generation: number; keyId: string | null } | null } | null;
+    applies: Array<{ at: string; generation: number | null; outcome: string; reason: string | null; detail: string | null; source: "vendored" | "exchange"; object: string | null }>;
+    renders: { count: number; lastAt: string | null; last: { tag: string; versionId: string; arm: string; model: string; subject: string } | null; observation: "refused" };
+    export: { at: string; segments: number; bytes: number; instances: number; object: string | null; generation: number } | null;
+    probe: { at: string; curl: { url: string; exit: number; seconds: number; meaning: string }; dns: { name: string; resolved: boolean; detail: string } } | null;
+    startFailure: { at: string; generation: number; releaseDigest: string; code: string | null; message: string } | null;
+    seq: number;
+  } | null;
+  /** The eu-west host's import timer: the air-gapped host's exports carried to AirPrompter. */
+  imports?: { lastPassAt: string; objects: number; pending: number; imported: number; last: Record<string, unknown> | null } | null;
 }
-export interface State { host: { hostId: string; region: string; sdk: string; instanceId: string; startedAt: string; invocations: number; coldStart: boolean; status: Record<string, any>; healthz: Record<string, any>; models: string[]; stateDir: string }; hosts: HostStatus[]; cap: { day: string; used: number; cap: number }; airprompter: { baseUrl: string; environment: string; agentId: string }; features?: { wire: boolean } }
+export interface State { host: { hostId: string; region: string; sdk: string; instanceId: string; startedAt: string; invocations: number; coldStart: boolean; status: Record<string, any>; healthz: Record<string, any>; models: string[]; stateDir: string }; hosts: HostStatus[]; cap: { day: string; used: number; cap: number }; airprompter: { baseUrl: string; environment: string; agentId: string }; features?: { wire: boolean; nudge: boolean } }
 export interface TimelineEvent { at: string; kind: string; host: string; id?: string; [key: string]: unknown }
 export type ApprovalDecision = "pending" | "approved" | "activated" | "superseded" | "failed";
 export interface Approval { approvalId: string; hostId: string; generation: number; releaseDigest: string | null; stagedAt: string; unlockRequest: { requestedBy: string; requestedAt: string; expiresAt: string; note?: string } | null; decision: ApprovalDecision; decidedBy: string | null; decidedAt: string | null; activatedAt: string | null; outcome: string | null; updatedAt: string }

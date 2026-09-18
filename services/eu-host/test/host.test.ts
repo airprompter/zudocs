@@ -66,7 +66,8 @@ test("requirements.txt: the five distributions by the pinned commit with the lit
 test("the boot script and the helpers parse; the script carries exactly the placeholders the stack renders and no key; the pins file is what it says", () => {
   for (const path of ["user-data.sh", "bin/zudocs-agent-key", "bin/zudocs-cli"]) execFileSync("bash", ["-n", join(host, path)]);
   const script = read("user-data.sh");
-  assert.deepEqual([...new Set(script.match(/__[A-Z0-9_]+__/g))].sort(), ["__BUNDLE_S3_URL__", "__CLI_SHA256__", "__CLI_URL__"]);
+  assert.deepEqual([...new Set(script.match(/__[A-Z0-9_]+__/g))].sort(), ["__BUNDLE_S3_URL__", "__CLI_SHA256__", "__CLI_URL__", "__EXCHANGE_BUCKET__"]);
+  assert.ok(script.includes("sed 's#@EXCHANGE_BUCKET@#__EXCHANGE_BUCKET__#'"), "the bucket's name reaches zudocs.env from the stack");
   assert.ok(script.indexOf("systemctl enable airprompterd") < script.indexOf("/usr/local/sbin/zudocs-agent-key ||"), "the units are installed and enabled before the key is fetched: a missing parameter never leaves a host with no units");
   assert.ok(script.indexOf("amazon-cloudwatch-agent-ctl") < script.indexOf("systemctl enable airprompterd"), "log shipping is up before the units start");
   assert.ok(/zudocs-agent-key \|\| echo/.test(script), "a missing parameter does not abort the boot; the daemon's ExecStartPre retries it");
@@ -87,7 +88,12 @@ test("the units: the daemon alone reads the key file; every unit names the share
   const daemon = read("units/airprompterd.service");
   const worker = read("units/zudocs-worker.service");
   const py = read("units/zudocs-pyworker.service");
+  const importer = read("units/zudocs-import.service");
   assert.ok(daemon.includes("EnvironmentFile=-/etc/airprompter/airprompterd.env"), "the key file, optional to systemd so ExecStartPre can create it before the first start");
+  // The import pass is the one other unit that sees the key: as a systemd credential mounted for it alone, never as an EnvironmentFile.
+  assert.ok(importer.includes("LoadCredential=airprompterd.env:/etc/airprompter/airprompterd.env") && !importer.includes("EnvironmentFile=-/etc/airprompter/airprompterd.env") && importer.includes("User=airprompter"), "the import pass gets the key as a credential, as the airprompter user");
+  assert.ok(importer.includes("ExecStart=/usr/local/bin/node /opt/zudocs/import.mjs") && importer.includes("Type=oneshot"));
+  assert.ok(read("units/zudocs-import.timer").includes("OnUnitActiveSec=5min"));
   assert.ok(daemon.includes("ExecStartPre=+/usr/local/sbin/zudocs-agent-key"), "the key file is refreshed as root before every start");
   assert.ok(worker.includes('Environment="ZUDOCS_WORKER_NAME=eu-west worker"'), "systemd's quoting: the whole assignment in quotes");
   assert.ok(daemon.includes("--apply-policy unlock_required"), "the host's policy pin");
@@ -101,8 +107,10 @@ test("the units: the daemon alone reads the key file; every unit names the share
   assert.ok(worker.includes("ExecStart=/usr/local/bin/node /opt/zudocs/worker.mjs"));
   assert.ok(py.includes("ExecStart=/opt/zudocs/venv/bin/python /opt/zudocs/pyworker.py"));
   for (const unit of [daemon, worker, py]) assert.ok(unit.includes("ReadWritePaths=/var/lib/airprompter /var/log/zudocs") && unit.includes("ProtectSystem=strict"));
+  assert.ok(importer.includes("ReadWritePaths=/var/lib/zudocs /var/log/zudocs") && importer.includes("ProtectSystem=strict"), "the import pass writes its ledger and its log, never the store");
   const agent = JSON.parse(read("cloudwatch-agent.json"));
-  assert.deepEqual(agent.logs.logs_collected.files.collect_list.map((f: { log_group_name: string }) => f.log_group_name), ["/zudocs/eu-host", "/zudocs/eu-host", "/zudocs/eu-host", "/zudocs/eu-host"]);
+  assert.deepEqual(agent.logs.logs_collected.files.collect_list.map((f: { log_group_name: string }) => f.log_group_name), ["/zudocs/eu-host", "/zudocs/eu-host", "/zudocs/eu-host", "/zudocs/eu-host", "/zudocs/eu-host"]);
+  assert.ok(agent.logs.logs_collected.files.collect_list.some((f: { file_path: string }) => f.file_path === "/var/log/zudocs/import.log"), "the import log ships too");
 });
 
 test("the status row is the daemon's word under the card's names, with what the socket lacks left null and the worker's part beside it", () => {

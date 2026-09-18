@@ -4,7 +4,8 @@
  * happen inside `ap.invoke()` — a sync pass before, the invocation's telemetry flushed after — and every one of
  * them writes this host's status row. The daily cap is taken atomically before a run and refused as HTTP 429 with
  * the count; nothing is simulated at the line. `replay` is the one asynchronous action: the function invokes itself
- * with a job event and walks it sequentially under the same cap. Approvals are the eu-west host's staged releases:
+ * with a job event and walks it sequentially under the same cap. The status tick (`{ tick: "status" }` from EventBridge
+ * every five minutes) is a sync pass and one status row, so the card never goes stale between runs. Approvals are the eu-west host's staged releases:
  * the host writes the row, `POST /approvals/{id}/approve` records the owner's decision exactly once (a repeat
  * answers with the row as it stands), and the host activates through its daemon and settles the row.
  *
@@ -37,6 +38,8 @@ export interface ReplayJob {
 export const REPLAY_MAX = 30;
 
 const isReplay = (event: unknown): event is ReplayJob => typeof event === "object" && event !== null && "replay" in event;
+/** The scheduled status tick: not a request, not a replay. */
+export const isStatusTick = (event: unknown): boolean => typeof event === "object" && event !== null && (event as { tick?: unknown }).tick === "status";
 
 const whoIs = (event: APIGatewayProxyEventV2WithJWTAuthorizer): string => {
   const claims = event.requestContext.authorizer?.jwt?.claims ?? {};
@@ -65,13 +68,19 @@ export const createHandler = (hostOf: () => Promise<Host>): DeskHandler => async
   } catch (error) {
     const e = error as Error & { code?: string };
     console.log(JSON.stringify({ source: "desk", event: "host_start_failed", name: e.name, code: e.code ?? null, message: e.message }));
-    if (isReplay(event)) return;
+    if (isReplay(event) || isStatusTick(event)) return;
     return json(503, { error: "host_unavailable", name: e.name, code: e.code ?? null, message: e.message });
   }
   host.invocations += 1;
   try {
     if (isReplay(event)) {
       await replay(host, event, context);
+      return;
+    }
+    if (isStatusTick(event)) {
+      // A sync pass (on_invoke: the release is refreshed before the invocation) and the row; the heartbeat is the SDK's own cadence.
+      await host.ap.invoke(async () => undefined);
+      await host.writeStatus();
       return;
     }
     const routed = match(event.requestContext.http.method, event.rawPath);
@@ -152,7 +161,7 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
           cap: { day, used, cap: env.dailyRunCap },
           airprompter: { baseUrl: env.airprompter.baseUrl, environment: env.airprompter.environment, agentId: env.airprompter.agentId },
           // What the presenter panel may offer: the wire buttons exist only when the eu-west stack is deployed.
-          features: { wire: env.wireFunctionArn !== "" },
+          features: { wire: env.wireFunctionArn !== "", nudge: env.nudgeQueueUrl !== "" },
         },
       };
     }
@@ -279,8 +288,17 @@ async function presenter(host: Host, action: string, body: Record<string, unknow
       await store.appendEvent({ at: at(), kind: "wire", host: env.hostId, action: wire, by, forHost: answer.hostId ?? null, state: answer.state ?? null, restoreBy: answer.restoreBy ?? null });
       return { statusCode: 200, body: { action, ...answer, message: wire === "cut" ? `egress cut on ${String(answer.hostId ?? "the host")}: only the desk's tables stay reachable; the rule restores it by ${String(answer.restoreBy ?? "15 minutes from now")}` : `egress restored on ${String(answer.hostId ?? "the host")}` } };
     }
+    case "nudge": {
+      // The change-notification placeholder: one message on the fleet's queue; the puller consumes it and reads the
+      // origin now (`skipPointer`). Pull-and-verify stays the only source of truth — a nudge can only say "look".
+      if (!env.nudgeQueueUrl) return { statusCode: 501, body: { error: "no_nudge_queue", message: "the fleet stack (ZudocsFleet) is not deployed: nothing to nudge" } };
+      const sentAt = at();
+      const { messageId } = await host.nudge({ kind: "nudge", by, at: sentAt, from: env.hostId });
+      await store.appendEvent({ at: sentAt, kind: "presenter", host: env.hostId, action, by, messageId });
+      return { statusCode: 202, body: { action, messageId, sentAt, message: "the fleet was nudged: the puller reads the origin on its next invocation (within seconds) and the timeline shows the pull" } };
+    }
     default:
-      return { statusCode: 404, body: { error: "no_such_action", actions: ["heartbeat", "upload", "sync", "seed", "replay", "enqueue", "cut_wire", "restore_wire"] } };
+      return { statusCode: 404, body: { error: "no_such_action", actions: ["heartbeat", "upload", "sync", "seed", "replay", "enqueue", "cut_wire", "restore_wire", "nudge"] } };
   }
 }
 

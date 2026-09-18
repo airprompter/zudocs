@@ -10,7 +10,7 @@
  *   the instance role (no key pair, no port 22). Its role reads exactly one SSM parameter (the Agent key, in this
  *   region, by name — the AWS-managed SSM key decrypts it, so no KMS key is paid for here), the boot bundle from the
  *   deployment's asset bucket, the catalogue's models on Bedrock in the desk's region, the desk's eight tables by ARN
- *   across regions, and its own log group. Its name is fixed so the desk stack's Budgets action can attach the
+ *   across regions, the telemetry exports in the fleet's exchange bucket (the import timer, phase 5), and its own log group. Its name is fixed so the desk stack's Budgets action can attach the
  *   Bedrock deny policy to it too.
  * - User data rendered from `services/eu-host/host/user-data.sh`: the released CLI verified against the pinned
  *   digest, the bundle, the Python venv by commit pin, the units, the CloudWatch agent. A change to the bundle, the
@@ -36,6 +36,7 @@ import { fileURLToPath } from "node:url";
 import { CATALOGUE } from "../../services/desk-api/src/modelCatalogue.js";
 import type { ZudocsConfig } from "./config.js";
 import { TABLE_NAMES, tableNameOf, type AirPrompterIds } from "./desk-stack.js";
+import { EXCHANGE, exchangeBucketName } from "./fleet-names.js";
 import { EU_HOST_LOG_GROUP, EU_HOST_ROLE_NAME, WIRE_CUT_MAX_MINUTES, WIRE_FUNCTION_NAME, readPins, type Pins } from "./shared-host-names.js";
 
 export interface SharedHostStackProps extends cdk.StackProps {
@@ -118,12 +119,18 @@ export class SharedHostStack extends cdk.Stack {
       this.role.addToPolicy(new iam.PolicyStatement({ actions: ["bedrock-mantle:CreateInference"], resources: [`arn:${this.partition}:bedrock-mantle:${tablesRegion}:${this.account}:project/default`] }));
     }
     this.role.addToPolicy(new iam.PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"], resources: [logGroup.logGroupArn, `${logGroup.logGroupArn}:*`] }));
+    // The air-gapped host's telemetry exports in the exchange bucket (ap-southeast-1), read by the import timer: the
+    // telemetry/ prefix, its ledger of markers under imports/ (written once per export), and a listing of those two prefixes only.
+    const exchangeArn = `arn:${this.partition}:s3:::${exchangeBucketName(this.account)}`;
+    this.role.addToPolicy(new iam.PolicyStatement({ sid: "ExchangeTelemetryRead", actions: ["s3:GetObject"], resources: [`${exchangeArn}/${EXCHANGE.telemetryPrefix}*`] }));
+    this.role.addToPolicy(new iam.PolicyStatement({ sid: "ExchangeImportsWrite", actions: ["s3:PutObject"], resources: [`${exchangeArn}/${EXCHANGE.importsPrefix}*`] }));
+    this.role.addToPolicy(new iam.PolicyStatement({ sid: "ExchangeTelemetryList", actions: ["s3:ListBucket"], resources: [exchangeArn], conditions: { StringLike: { "s3:prefix": [`${EXCHANGE.telemetryPrefix}*`, `${EXCHANGE.importsPrefix}*`] } } }));
     this.role.addToPolicy(new iam.PolicyStatement({ actions: ["logs:DescribeLogGroups"], resources: ["*"] }));
 
     // --- The boot bundle and the script ----------------------------------------------------------------------------
     const bundle = new assets.Asset(this, "HostBundle", { path: props.assets.euHostBundle });
     bundle.grantRead(this.role);
-    const userData = renderUserData(readFileSync(USER_DATA_TEMPLATE, "utf8"), { CLI_URL: pins.cli.url, CLI_SHA256: pins.cli.sha256, BUNDLE_S3_URL: bundle.s3ObjectUrl });
+    const userData = renderUserData(readFileSync(USER_DATA_TEMPLATE, "utf8"), { CLI_URL: pins.cli.url, CLI_SHA256: pins.cli.sha256, BUNDLE_S3_URL: bundle.s3ObjectUrl, EXCHANGE_BUCKET: exchangeBucketName(this.account) });
 
     // --- The instance --------------------------------------------------------------------------------------------
     const ami = pins.ami[this.region];

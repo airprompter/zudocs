@@ -36,7 +36,7 @@ install -d -m 0755 /etc/airprompter /opt/zudocs
 install -d -o airprompter -g airprompter -m 0755 /var/log/zudocs
 
 # --- the released CLI, verified before it is executable --------------------------------------------------------------
-curl -fsSL --retry 5 --retry-delay 3 -o /tmp/airprompter.bin "__CLI_URL__"
+curl -fsSL --retry 20 --retry-all-errors --retry-delay 5 -o /tmp/airprompter.bin "__CLI_URL__"
 echo "__CLI_SHA256__  /tmp/airprompter.bin" | sha256sum -c -
 install -m 0755 /tmp/airprompter.bin /usr/local/bin/airprompter
 rm -f /tmp/airprompter.bin
@@ -62,19 +62,21 @@ python3.12 -m venv /opt/zudocs/venv
 /opt/zudocs/venv/bin/python -c 'import airprompter_agent, litellm; print("python sdk", airprompter_agent.__name__, "litellm", litellm.__version__)'
 chown -R airprompter:airprompter /opt/zudocs
 
-# --- the Agent key: from SSM into the daemon's env file, root:root 0600 (repeated at every daemon start) -----------
-/usr/local/sbin/zudocs-agent-key
+# --- the CloudWatch agent first, so whatever happens next is in the log group -----------------------------------
+install -m 0644 /opt/zudocs/bundle/cloudwatch-agent.json /opt/aws/amazon-cloudwatch-agent/etc/zudocs.json
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/zudocs.json
 
-# --- the units ---------------------------------------------------------------------------------------------------
+# --- the units, installed and enabled before the key is fetched: a missing parameter is a daemon that keeps trying
+#     (its ExecStartPre reads the parameter at every start), never a host with no units ----------------------------
 install -m 0644 /opt/zudocs/bundle/units/airprompterd.service /etc/systemd/system/airprompterd.service
 install -m 0644 /opt/zudocs/bundle/units/zudocs-worker.service /etc/systemd/system/zudocs-worker.service
 install -m 0644 /opt/zudocs/bundle/units/zudocs-pyworker.service /etc/systemd/system/zudocs-pyworker.service
 systemctl daemon-reload
-systemctl enable --now airprompterd.service zudocs-worker.service zudocs-pyworker.service
+systemctl enable airprompterd.service zudocs-worker.service zudocs-pyworker.service
 
-# --- the CloudWatch agent: the units' logs to the group cloudwatch-agent.json names (created by the stack) ---------
-install -m 0644 /opt/zudocs/bundle/cloudwatch-agent.json /opt/aws/amazon-cloudwatch-agent/etc/zudocs.json
-/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/zudocs.json
+# --- the Agent key: from SSM into the daemon's env file, root:root 0600 (repeated at every daemon start) -----------
+/usr/local/sbin/zudocs-agent-key || echo "zudocs-agent-key: the parameter is not readable yet; the daemon retries it at every start"
+systemctl start airprompterd.service zudocs-worker.service zudocs-pyworker.service || true
 
 echo "zudocs eu-host boot done: $(date -u +%FT%TZ)"
 systemctl --no-pager --plain status airprompterd zudocs-worker zudocs-pyworker | grep -E "^(●|○|×)|Active:" || true

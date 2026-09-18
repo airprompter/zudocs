@@ -1,8 +1,9 @@
 /**
  * The host's row in the status table, built from two documents: the daemon's own `status` and `healthz` (it is the
  * process that syncs, holds the store and the lease, and talks to AirPrompter — its word is the host's) and the
- * attached worker's `status()` (the variables it fills, its instance id, its own health). Nothing is invented: a
- * field the daemon does not put on its socket (the heartbeat's last instant, for one) is absent, and the card says so.
+ * attached worker's `status()` (the variables it fills, its instance id, its own health) — null until the SDK attaches,
+ * which on a fresh host is after the desk's first approval. Nothing is invented: a field the daemon does not put on
+ * its socket (the heartbeat's last instant, for one) is absent, and the card says so.
  * The Python worker merges its own part under `python` with the same shape.
  *
  * @example
@@ -46,8 +47,9 @@ export interface StatusInput {
   region: string;
   daemon: DaemonStatusDoc;
   healthz: Healthz & Record<string, unknown>;
-  worker: AgentStatus;
-  workerHealthz: Healthz;
+  /** The attached worker's own status — null before the SDK attaches (a fresh host waiting for its first approval). */
+  worker: AgentStatus | null;
+  workerHealthz: Healthz | null;
   /** `agent-sdk-ts/0.2.14` — the worker's SDK; the daemon names itself in `daemon.daemon`. */
   sdk: string;
   tickets: number;
@@ -87,14 +89,14 @@ export function statusFields(input: StatusInput): Record<string, unknown> {
       source: "store",
       // Not on the daemon's socket: the heartbeat block. The fleet page on AirPrompter shows it; the card says "by the daemon".
       heartbeat: null,
-      variables: worker.variables,
-      unlockRequests: worker.unlockRequests,
+      variables: worker?.variables ?? { sources: [], unsourced: [] },
+      unlockRequests: worker?.unlockRequests ?? [],
       forcedDowngrade: input.healthz.forcedDowngrade,
       daemon: { attached: true, socketPath: daemon.socketPath ?? null, version: daemon.daemon, clients: daemon.clients ?? null, uptimeSeconds: daemon.uptimeSeconds ?? null },
     },
     healthz: input.healthz,
     container: { instanceId: daemon.instanceId, coldStart: false, startedAt: daemon.startedAt, invocations: input.tickets },
-    worker: { instanceId: worker.instanceId, sdk: input.sdk, startedAt: input.startedAt, tickets: input.tickets, source: worker.source, attached: worker.daemon?.attached ?? false, healthz: input.workerHealthz.status, reasons: input.workerHealthz.reasons },
+    worker: worker ? { instanceId: worker.instanceId, sdk: input.sdk, startedAt: input.startedAt, tickets: input.tickets, source: worker.source, attached: worker.daemon?.attached ?? false, healthz: input.workerHealthz?.status ?? "unknown", reasons: input.workerHealthz?.reasons ?? [] } : { instanceId: null, sdk: input.sdk, startedAt: input.startedAt, tickets: input.tickets, source: null, attached: false, healthz: "unknown", reasons: [daemon.generation > 0 ? "sdk_attaching" : "awaiting_first_approval"] },
     ec2: input.ec2 ?? null,
   };
 }

@@ -3,8 +3,8 @@
 # and table names only; readHostEnv refuses a key), runs tickets through Bedrock with the instance role, minds the
 # desk's approvals, writes the host's status row. Exits 3 when the daemon is not on the socket; systemd retries.
 #
-#   systemctl status zudocs-worker
-#   tail -f /var/log/zudocs/worker.log
+#   $ systemctl status zudocs-worker
+#   $ tail -f /var/log/zudocs/worker.log
 
 [Unit]
 Description=Zudocs eu-west ticket worker (AirPrompter Agent SDK, daemon mode)
@@ -17,7 +17,7 @@ User=airprompter
 Group=airprompter
 EnvironmentFile=/etc/airprompter/zudocs.env
 Environment=NODE_OPTIONS=--enable-source-maps
-Environment=ZUDOCS_WORKER_NAME="eu-west worker"
+Environment="ZUDOCS_WORKER_NAME=eu-west worker"
 ExecStart=/usr/local/bin/node /opt/zudocs/worker.mjs
 StandardOutput=append:/var/log/zudocs/worker.log
 StandardError=append:/var/log/zudocs/worker.log

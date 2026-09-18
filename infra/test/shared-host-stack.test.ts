@@ -41,10 +41,13 @@ test("the instance: t4g.micro, AL2023 arm64 from the public parameter, IMDSv2 re
   const { sharedHost } = synthAll();
   sharedHost.hasResourceProperties("AWS::EC2::Instance", { InstanceType: "t4g.micro", Monitoring: false, BlockDeviceMappings: [{ DeviceName: "/dev/xvda", Ebs: { VolumeSize: 8, VolumeType: "gp3", Encrypted: true, DeleteOnTermination: true } }] });
   const [instance] = Object.values(sharedHost.findResources("AWS::EC2::Instance") as Resources);
-  assert.ok(JSON.stringify(instance!.Properties.ImageId).includes("al2023amikernel61arm64"), "AL2023 arm64 resolved from the public SSM parameter at deploy time");
   assert.equal(instance!.Properties.NetworkInterfaces?.[0]?.AssociatePublicIpAddress, true);
   sharedHost.hasResourceProperties("AWS::EC2::LaunchTemplate", { LaunchTemplateData: Match.objectLike({ MetadataOptions: { HttpTokens: "required" } }) });
   sharedHost.hasResourceProperties("AWS::IAM::Role", { RoleName: EU_HOST_ROLE_NAME });
+  const [instanceId] = Object.keys(sharedHost.findResources("AWS::EC2::Instance"));
+  const dependsOn = (sharedHost.toJSON().Resources as Record<string, { DependsOn?: string[] }>)[instanceId!]!.DependsOn ?? [];
+  assert.ok(dependsOn.includes("PublicRoute") && dependsOn.includes("PublicRouteAssociation") && dependsOn.includes("IgwAttachment"), `the instance waits for its route to the internet (${dependsOn.join(", ")})`);
+  assert.equal(instance!.Properties.ImageId, "ami-0535b4996339a5410", "the pinned image, not a deploy-time lookup");
   const userData = Buffer.from(JSON.stringify(instance!.Properties.UserData)).toString("utf8");
   assert.ok(userData.includes("f".repeat(64)), "the pinned CLI digest is in the script");
   assert.ok(userData.includes("releases/download/cli/v0.1.0/airprompter-linux-arm64"));

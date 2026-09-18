@@ -5,8 +5,8 @@
 # unlock_required on this host (the console can request an unlock; the desk's Approvals page grants it), and the
 # JSON log goes to /var/log/zudocs for the CloudWatch agent.
 #
-#   systemctl status airprompterd
-#   journalctl -u airprompterd -n 50            # the unit's own messages; the daemon's JSON lines are in /var/log/zudocs/airprompterd.log
+#   $ systemctl status airprompterd
+#   $ journalctl -u airprompterd -n 50            # the unit's own messages; the daemon's JSON lines are in /var/log/zudocs/airprompterd.log
 
 [Unit]
 Description=AirPrompter agent daemon (airprompterd) for the Zudocs desk, eu-west-1
@@ -18,10 +18,12 @@ Wants=network-online.target
 Type=simple
 User=airprompter
 Group=airprompter
-# The key file first, as root (the + prefix): a rotated parameter is picked up at the next restart.
+# The key file first, as root (the + prefix): a rotated parameter is picked up at the next restart. The file is
+# optional to systemd (the leading -) so a start can run ExecStartPre before it exists; the daemon then refuses to
+# serve without the key (it logs `offline`), and the next restart tries the parameter again.
 ExecStartPre=+/usr/local/sbin/zudocs-agent-key
 EnvironmentFile=/etc/airprompter/zudocs.env
-EnvironmentFile=/etc/airprompter/airprompterd.env
+EnvironmentFile=-/etc/airprompter/airprompterd.env
 Environment=XDG_STATE_HOME=/var/lib/airprompter
 ExecStart=/usr/local/bin/airprompter daemon \
   --org ${AIRPROMPTER_ORG} \

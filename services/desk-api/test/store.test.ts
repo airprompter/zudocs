@@ -137,9 +137,11 @@ test("events come back with the row's sort key as their id (the desk de-duplicat
 test("approvals: created once per host and generation, approved exactly once (a repeat reads the row as it is), settled from pending or approved only; a settled superseded row may be re-opened", async () => {
   const client = fakeClient();
   const store = createStore(client, TABLES);
-  const id = approvalIdOf("eu-west-1/ec2", 2);
-  assert.equal(id, "eu-west-1-ec2-g2", "one path segment");
-  const row: ApprovalRow = { approvalId: id, hostId: "eu-west-1/ec2", generation: 2, releaseDigest: null, stagedAt: "2026-09-18T15:00:00.000Z", unlockRequest: null, decision: "pending", decidedBy: null, decidedAt: null, activatedAt: null, outcome: null, updatedAt: "2026-09-18T15:00:00.000Z" };
+  const id = approvalIdOf("eu-west-1/ec2", 2, "i-abcDEF123_-");
+  assert.equal(id, "eu-west-1-ec2-g2-i-abcDEF123_-", "one path segment: host, generation, store");
+  assert.notEqual(approvalIdOf("eu-west-1/ec2", 2, "i-other"), id, "the same generation on another store is another row");
+  assert.equal(approvalIdOf("h", 1, "!!"), "h-g1-store");
+  const row: ApprovalRow = { approvalId: id, hostId: "eu-west-1/ec2", storeId: "i-abcDEF123_-", generation: 2, releaseDigest: null, stagedAt: "2026-09-18T15:00:00.000Z", unlockRequest: null, decision: "pending", decidedBy: null, decidedAt: null, activatedAt: null, outcome: null, updatedAt: "2026-09-18T15:00:00.000Z" };
   assert.deepEqual(await store.openApproval(row), { created: true });
   assert.deepEqual(await store.openApproval(row), { created: false }, "a restarted worker finds its row, it does not make a second");
   const first = await store.approve(id, "seth@zudocs.com", "2026-09-18T15:01:00.000Z");

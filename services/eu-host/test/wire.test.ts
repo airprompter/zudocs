@@ -68,8 +68,9 @@ test("pure helpers: the region's DynamoDB CIDRs, the group's state, the restore 
   assert.deepEqual(stateOf({ IpPermissionsEgress: [{ IpProtocol: "-1", IpRanges: [{ CidrIp: "0.0.0.0/0" }] }], Tags: [] }), { state: "connected", cutAt: null, egress: ["all → 0.0.0.0/0"] });
   assert.equal(stateOf({ IpPermissionsEgress: [{ IpProtocol: "tcp", FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: "52.94.0.0/22" }] }], Tags: [{ Key: CUT_TAG, Value: "2026-09-18T14:50:00.000Z" }] }).cutAt, "2026-09-18T14:50:00.000Z");
   assert.equal(stateOf({ IpPermissionsEgress: [], Tags: [] }).state, "cut", "no rule at all is a cut too");
+  assert.equal(stateOf({ IpPermissionsEgress: [{ IpProtocol: "-1", IpRanges: [{ CidrIp: "0.0.0.0/0" }] }, { IpProtocol: "tcp", FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: "52.94.0.0/22" }] }], Tags: [] }).state, "connected", "the open rule decides; an extra rule beside it is not a cut");
   const now = Date.parse("2026-09-18T15:00:00.000Z");
-  assert.equal(shouldRestore(null, now, 15), false);
+  assert.equal(shouldRestore(null, now, 15), true, "a cut with no instant (the tag lost to a stack update) is restored, never kept");
   assert.equal(shouldRestore("2026-09-18T14:50:00.000Z", now, 15), false);
   assert.equal(shouldRestore("2026-09-18T14:45:00.000Z", now, 15), true);
   assert.equal(shouldRestore("not a date", now, 15), true, "an unreadable tag never keeps a wire cut");
@@ -125,6 +126,14 @@ test("tick: a fresh cut stays cut; a cut older than the limit is restored by the
   assert.equal(restored.changed, true);
   assert.match(String(p.events.at(-1)!.by), /the rule/);
   assert.equal((await wire({ action: "tick" }, p)).changed, false);
+});
+
+test("tick: a cut whose tag is gone is restored on the next tick regardless of age", async () => {
+  const ec2 = fakeEc2({ egress: [{ IpProtocol: "tcp", FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: "52.94.0.0/22", Description: "zudocs wire cut: DynamoDB only" }] }], tags: {} });
+  const p = ports(ec2);
+  const restored = await wire({ action: "tick" }, p);
+  assert.equal(restored.state, "connected");
+  assert.equal(restored.changed, true);
 });
 
 test("status reads only; a group with an inbound rule is refused; ip-ranges.json that cannot be read refuses the cut and leaves the group as it was", async () => {

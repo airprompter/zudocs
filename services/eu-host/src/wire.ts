@@ -6,8 +6,9 @@
  *   Bedrock and everything else are unreachable — the desk shows `sync_failing` live; the group is tagged with the
  *   instant of the cut.
  * - `restore`: the open rule back, the DynamoDB rules and the tag gone.
- * - `tick` (an EventBridge rule every five minutes): restores when a cut is older than `WIRE_CUT_MAX_MINUTES`, so a
- *   drill nobody finished cannot strand the host — and writes the restore to the desk's timeline.
+ * - `tick` (an EventBridge rule every five minutes): restores when a cut is older than `WIRE_CUT_MAX_MINUTES` — or
+ *   carries no instant, because nothing but a drill narrows this group — so a drill nobody finished cannot strand
+ *   the host; the restore is written to the desk's timeline.
  *
  * Every step is idempotent (the group is described first; a rule that exists is not added twice, one that is gone
  * is not revoked) and the answer says what state the wire is in. No inbound rule exists on this group, ever.
@@ -76,9 +77,13 @@ export function stateOf(group: Pick<SecurityGroup, "IpPermissionsEgress" | "Tags
   return { state: open ? "connected" : "cut", cutAt: open ? null : cutAt, egress };
 }
 
-/** Whether a tick should restore: a cut older than the limit. Pure. */
+/**
+ * Whether a tick should restore: a cut older than the limit — and a cut with no readable instant at all (a stack
+ * update rewrote the group's tags mid-drill, or someone removed the tag): this group is never legitimately narrowed
+ * by anything else, so an unknown age is an old age. Pure.
+ */
 export function shouldRestore(cutAt: string | null, nowMs: number, maxCutMinutes: number): boolean {
-  if (!cutAt) return false;
+  if (!cutAt) return true;
   const at = Date.parse(cutAt);
   if (!Number.isFinite(at)) return true;
   return nowMs - at >= maxCutMinutes * 60_000;
@@ -141,7 +146,7 @@ export async function wire(event: WireEvent, ports: WirePorts): Promise<WireAnsw
       const response = await ports.fetchImpl(env.ipRangesUrl, { signal: AbortSignal.timeout(10_000) });
       if (!response.ok) throw new Error(`wire: ip-ranges.json answered ${response.status}; not cutting a wire that could not be re-opened for the tables`);
       const cidrs = dynamoCidrsOf((await response.json()) as { prefixes: Array<{ ip_prefix: string; region: string; service: string }> }, env.dynamoRegion);
-      if (cidrs.length === 0 || cidrs.length > 20) throw new Error(`wire: ${cidrs.length} DynamoDB CIDRs for ${env.dynamoRegion}; expected a handful`);
+      if (cidrs.length === 0 || cidrs.length > 20) throw new Error(`wire: ${cidrs.length} DynamoDB CIDRs for ${env.dynamoRegion}; expected a handful (a group holds 60 rules)`);
       const cutAt = new Date(now()).toISOString();
       // Order: the narrow rules first, then the open one goes — the status writer never loses the tables.
       await ec2.send(new AuthorizeSecurityGroupEgressCommand({ GroupId: env.securityGroupId, IpPermissions: [{ IpProtocol: "tcp", FromPort: 443, ToPort: 443, IpRanges: cidrs.map((CidrIp) => ({ CidrIp, Description: "zudocs wire cut: DynamoDB only" })) }] }));

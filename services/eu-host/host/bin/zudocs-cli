@@ -3,7 +3,8 @@
 # its, 0600), scoped to this host's Agent and environment from zudocs.env, against the same state directory the
 # daemon serves — so `unlock`, `rollback` and `policy` go through the daemon and every attached worker follows.
 # `doctor` gets the Agent key in its environment (from the root-only env file; run as root), never on argv and
-# never echoed, so its source check runs; every other command takes no key. Prints what the CLI prints.
+# never echoed, so its source check runs; every other command takes no key. Prints what the CLI prints. The drop
+# to the daemon's user is `runuser -u` (util-linux-core, on every AL2023 image), which keeps the environment.
 #
 #   $ sudo zudocs-cli status --json
 #   $ sudo zudocs-cli doctor --json           # key_protection warns: file_key (this host's honest answer)
@@ -25,10 +26,10 @@ case "$cmd" in
 esac
 export HOME=/var/lib/airprompter XDG_STATE_HOME=/var/lib/airprompter
 if [ "$cmd" = doctor ] && [ "$(id -u)" = 0 ] && [ -r /etc/airprompter/airprompterd.env ]; then
-  # The key into the environment of the child only; setpriv drops to the daemon's user and keeps the environment.
+  # The key into the environment of the child only; runuser drops to the daemon's user and keeps the environment.
   set -a; . /etc/airprompter/airprompterd.env; set +a
 fi
 if [ "$(id -u)" = 0 ]; then
-  exec setpriv --reuid=airprompter --regid=airprompter --init-groups -- /usr/local/bin/airprompter "$cmd" "${scope[@]}" "$@"
+  exec runuser -u airprompter -- /usr/local/bin/airprompter "$cmd" "${scope[@]}" "$@"
 fi
 exec /usr/local/bin/airprompter "$cmd" "${scope[@]}" "$@"

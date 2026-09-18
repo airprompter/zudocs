@@ -30,7 +30,7 @@ test("routes: matched on the raw path alone; parameters bounded; unknown paths a
   assert.equal(match("POST", "/tickets/" + "x".repeat(65) + "/run"), null, "a parameter past 64 characters is refused");
   assert.equal(match("POST", "/tickets/a%2Fb/run"), null, "an encoded slash is not a segment");
   assert.deepEqual(match("GET", "/approvals"), { name: "list_approvals", params: {} });
-  assert.deepEqual(match("POST", "/approvals/eu-west-1-ec2-g2/approve"), { name: "approve", params: { approvalId: "eu-west-1-ec2-g2" } }, "an approval id is one segment (host and generation, slugged)");
+  assert.deepEqual(match("POST", "/approvals/eu-west-1-ec2-g2-i-abc_DEF/approve"), { name: "approve", params: { approvalId: "eu-west-1-ec2-g2-i-abc_DEF" } }, "an approval id is one segment (host, generation and store, slugged)");
   assert.equal(new Set(ROUTES.map((r) => `${r.method} ${r.pattern}`)).size, ROUTES.length, "every route key is distinct");
 });
 

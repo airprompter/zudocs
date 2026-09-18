@@ -30,7 +30,7 @@ export const CONTEXT = {
 const here = fileURLToPath(new URL(".", import.meta.url));
 export const FLAGS = Object.fromEntries(Object.entries((JSON.parse(readFileSync(join(here, "..", "cdk.json"), "utf8")) as { context: Record<string, unknown> }).context).filter(([k]) => k.startsWith("@aws-cdk/")));
 export const IDS: AirPrompterIds = { baseUrl: "https://api-dev.airprompter.com", hostedEnvironment: "dev", rootUrl: "https://edge.example/roots/dev/root.json", edgePointerUrl: "https://edge.example/g/tok/generation.json", organizationId: "org-1", agentId: "agent_x", environment: "dev", rootJwk: JSON.stringify({ kty: "EC", crv: "P-256", x: "x", y: "y", kid: "k" }) };
-export const PINS: Pins = { cli: { tag: "cli/v0.1.0", asset: "airprompter-linux-arm64", sha256: "f".repeat(64), url: "https://github.com/airprompter/airprompter-agent-sdk/releases/download/cli/v0.1.0/airprompter-linux-arm64" }, pythonSdk: { tag: "sdk-python/v0.2.14", commit: "0".repeat(40), repo: "https://github.com/airprompter/airprompter-agent-sdk", packages: ["core", "sync", "telemetry", "runtime", "agent"] } };
+export const PINS: Pins = { cli: { tag: "cli/v0.1.0", asset: "airprompter-linux-arm64", sha256: "f".repeat(64), url: "https://github.com/airprompter/airprompter-agent-sdk/releases/download/cli/v0.1.0/airprompter-linux-arm64" }, pythonSdk: { tag: "sdk-python/v0.2.14", commit: "0".repeat(40), repo: "https://github.com/airprompter/airprompter-agent-sdk", packages: ["core", "sync", "telemetry", "runtime", "agent"] }, ami: { name: "al2023-fixture", "eu-west-1": "ami-0535b4996339a5410" } };
 
 /** Stand-ins for the built artefacts: the stacks only need the directories to exist. */
 export function fixtures(): { deskApi: string; deskSite: string; euHostBundle: string; wire: string } {

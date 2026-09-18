@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { CATALOGUE, MODELS } from "../../desk-api/src/modelCatalogue.js";
 import { renderHostEnv, renderRequirements } from "../render.mjs";
 import { readHostEnv } from "../src/hostEnv.js";
 import { statusFields } from "../src/statusRow.js";
@@ -63,6 +64,10 @@ test("the boot script and the helpers parse; the script carries exactly the plac
   for (const path of ["user-data.sh", "bin/zudocs-agent-key", "bin/zudocs-cli"]) execFileSync("bash", ["-n", join(host, path)]);
   const script = read("user-data.sh");
   assert.deepEqual([...new Set(script.match(/__[A-Z0-9_]+__/g))].sort(), ["__BUNDLE_S3_URL__", "__CLI_SHA256__", "__CLI_URL__"]);
+  assert.ok(script.indexOf("systemctl enable airprompterd") < script.indexOf("/usr/local/sbin/zudocs-agent-key ||"), "the units are installed and enabled before the key is fetched: a missing parameter never leaves a host with no units");
+  assert.ok(script.indexOf("amazon-cloudwatch-agent-ctl") < script.indexOf("systemctl enable airprompterd"), "log shipping is up before the units start");
+  assert.ok(/zudocs-agent-key \|\| echo/.test(script), "a missing parameter does not abort the boot; the daemon's ExecStartPre retries it");
+  assert.ok(!read("bin/zudocs-cli").includes("setpriv") && read("bin/zudocs-cli").includes("runuser -u airprompter --"), "the drop to the daemon's user is runuser (util-linux-core), not setpriv");
   assert.ok(!/AIRPROMPTER_AGENT_KEY=|apa_/.test(script), "no key in user data, ever");
   assert.ok(script.includes("sha256sum -c"), "the CLI is verified before install");
   assert.ok(script.includes("zudocs-agent-key"), "the key file is written from SSM by the helper, not here");
@@ -79,8 +84,9 @@ test("the units: the daemon alone reads the key file; every unit names the share
   const daemon = read("units/airprompterd.service");
   const worker = read("units/zudocs-worker.service");
   const py = read("units/zudocs-pyworker.service");
-  assert.ok(daemon.includes("EnvironmentFile=/etc/airprompter/airprompterd.env"));
+  assert.ok(daemon.includes("EnvironmentFile=-/etc/airprompter/airprompterd.env"), "the key file, optional to systemd so ExecStartPre can create it before the first start");
   assert.ok(daemon.includes("ExecStartPre=+/usr/local/sbin/zudocs-agent-key"), "the key file is refreshed as root before every start");
+  assert.ok(worker.includes('Environment="ZUDOCS_WORKER_NAME=eu-west worker"'), "systemd's quoting: the whole assignment in quotes");
   assert.ok(daemon.includes("--apply-policy unlock_required"), "the host's policy pin");
   assert.ok(daemon.includes("--hosted-environment ${AIRPROMPTER_HOSTED_ENVIRONMENT}"), "the pinned root is the hosted deployment's");
   for (const unit of [worker, py]) {
@@ -113,6 +119,25 @@ test("the status row is the daemon's word under the card's names, with what the 
   assert.equal((fields.worker as { instanceId: string }).instanceId, "i-worker");
   assert.deepEqual(fields.ec2, { instanceId: "i-0abc", availabilityZone: "eu-west-1a" });
   assert.ok(!("hostId" in fields), "the key is not a field to set");
+  const detached = statusFields({ hostId: "eu-west-1/ec2", region: "eu-west-1", daemon: { ...daemon, generation: 0, stagedGeneration: 1, applyState: "awaiting_unlock" }, healthz, worker: null, workerHealthz: null, sdk: "agent-sdk-ts/0.2.14", tickets: 0, startedAt: "x", now: "y" });
+  assert.deepEqual((detached.worker as { attached: boolean; reasons: string[] }).attached, false);
+  assert.deepEqual((detached.worker as { reasons: string[] }).reasons, ["awaiting_first_approval"], "a fresh host: the SDK attaches after the desk's first approval");
+  assert.deepEqual((detached.status as { variables: unknown }).variables, { sources: [], unsourced: [] }, "no names invented while nothing is attached");
+  assert.equal((detached.status as { stagedGeneration: number }).stagedGeneration, 1, "the daemon's staged generation is the row's, attached or not");
+});
+
+test("the Python worker's model map is the catalogue's (Converse ids and list prices), so a re-pin cannot drift between the two workers", () => {
+  const py = read("pyworker.py");
+  const converse = Object.fromEntries([...py.match(/BEDROCK_CONVERSE = \{([^}]*)\}/)![1]!.matchAll(/"([^"]+)": "([^"]+)"/g)].map((m) => [m[1], m[2]]));
+  for (const [name, entry] of Object.entries(CATALOGUE)) {
+    if (entry.path === "converse") assert.equal(converse[name], entry.bedrockId, `${name} on the Converse path`);
+    else assert.equal(converse[name], undefined, `${name} is not a Converse model; the Python worker refuses it visibly`);
+  }
+  assert.deepEqual(Object.keys(converse).sort(), Object.entries(CATALOGUE).filter(([, e]) => e.path === "converse").map(([n]) => n).sort());
+  const models = py.match(/^MODELS = \[([^\]]*)\]/m)![1]!.match(/"([^"]+)"/g)!.map((m) => m.slice(1, -1));
+  assert.deepEqual(models.sort(), [...MODELS].sort(), "the same list the Node hosts report on the heartbeat");
+  const prices = Object.fromEntries([...py.match(/USD_PER_MILLION = \{([^}]*)\}/)![1]!.matchAll(/"([^"]+)": \(([0-9.]+), ([0-9.]+)\)/g)].map((m) => [m[1], [Number(m[2]), Number(m[3])]]));
+  for (const [name, entry] of Object.entries(CATALOGUE)) if (entry.path === "converse") assert.deepEqual(prices[name], [entry.usdPerMillion.input, entry.usdPerMillion.output], `${name} price`);
 });
 
 test("the worker's helpers: the inbox round-robin by id survives a re-seed, the queue takes existing tickets only, feedback comes from the checks alone", async () => {

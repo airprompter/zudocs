@@ -4,7 +4,9 @@ twenty minutes through LiteLLM to Bedrock (Converse, the instance role's credent
 with ``customer_tier`` from the desk's own table, the model called with the release's inference settings, the
 observation filed by the SDK's LiteLLM callback, the declared checks run, feedback from their verdicts, the record
 written to the desk's runs table with ``host: eu-west-1/ec2`` and the Python SDK's name, and this process's part of
-the host's status row (``python``) every thirty seconds. Refuses to run without the daemon (exit 3; systemd retries).
+the host's status row (``python``) every thirty seconds. Waits for the daemon's socket, and for the daemon to serve a
+generation (on a fresh host the first release lands staged for the desk to approve; an SDK cannot attach before
+that — the Node worker minds the approval), before it starts the SDK; exits 3 without a daemon (systemd retries).
 Logs JSON lines with ids and counts — never a render, a ticket or an answer.
 
     $ /opt/zudocs/venv/bin/python /opt/zudocs/pyworker.py      # as the airprompter user, zudocs.env in the environment
@@ -17,6 +19,7 @@ import os
 import random
 import signal
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -28,7 +31,7 @@ import litellm
 from airprompter_agent import AirPrompterAgent, SDK_NAME
 from airprompter_agent.integrations.litellm import AirPrompterLiteLLMCallback, litellm_inference, litellm_metadata
 from airprompter_agent_core import SDK_VERSION
-from airprompter_agent_sync.sync.daemon import daemon_socket_path
+from airprompter_agent_sync.sync.daemon import DaemonClient, daemon_socket_path
 from airprompter_agent_telemetry.spool.writer import Observation
 
 # The models this worker can call and how LiteLLM names them on Bedrock's Converse API. The release's name is the
@@ -87,6 +90,7 @@ class Tables:
     """The desk's tables in us-east-1 through boto3's resource layer; the same rows the Node side writes."""
 
     def __init__(self, region: str) -> None:
+        self.lock = threading.Lock()
         ddb = boto3.resource("dynamodb", region_name=region)
         self.tickets = ddb.Table(need("TICKETS_TABLE"))
         self.customers = ddb.Table(need("CUSTOMERS_TABLE"))
@@ -107,7 +111,9 @@ class Tables:
             kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
 
     def get_customer(self, customer_id: str) -> Optional[dict[str, Any]]:
-        return plain(self.customers.get_item(Key={"customerId": customer_id}).get("Item"))
+        # The SDK calls a variable source on a worker thread; boto3's resource objects are not thread-safe, so one lookup at a time.
+        with self.lock:
+            return plain(self.customers.get_item(Key={"customerId": customer_id}).get("Item"))
 
     def take_run_slot(self, day: str, cap: int) -> tuple[bool, int]:
         try:
@@ -205,6 +211,39 @@ def main() -> None:
         raise SystemExit("the pinned root carries a private member")
     socket_path = daemon_socket_path(state_dir=state_dir, agent_id=agent_id, target=target)
 
+    # The daemon first: its socket (up to two minutes), then a generation to attach to — a fresh store stages the
+    # first release, and the SDK's attach needs an active slot. Starting the SDK before that would fall back to an
+    # in-process, keyless sync and create a store of its own; this process never does.
+    waited = 0.0
+    client: Optional[DaemonClient] = None
+    while client is None and waited < 120:
+        client = DaemonClient.connect(socket_path=socket_path, agent_id=agent_id, target=target, sdk=f"zudocs-pyworker/{WORKER_VERSION}")
+        if client is None:
+            time.sleep(3)
+            waited += 3
+    if client is None:
+        log(event="daemon_absent", socketPath=socket_path)
+        sys.exit(3)
+    announced = False
+    while True:
+        try:
+            doc = client.request("status")
+        except Exception as error:  # noqa: BLE001 — the daemon restarted; reconnect and ask again
+            log(event="daemon_status_unavailable", reason=str(error)[:200])
+            client.close()
+            client = None
+            while client is None:
+                time.sleep(3)
+                client = DaemonClient.connect(socket_path=socket_path, agent_id=agent_id, target=target, sdk=f"zudocs-pyworker/{WORKER_VERSION}")
+            continue
+        if int(doc.get("generation") or 0) > 0:
+            break
+        if not announced:
+            log(event="awaiting_first_approval", stagedGeneration=doc.get("stagedGeneration"), applyPolicy=(doc.get("applyPolicy") or {}).get("effective"))
+            announced = True
+        time.sleep(5)
+    client.close()
+
     ap = AirPrompterAgent.start(
         organization_id=need("AIRPROMPTER_ORG"),
         agent_id=agent_id,
@@ -273,7 +312,9 @@ def main() -> None:
             if not wire_model:
                 raise RuntimeError(f"this worker cannot call {rendered.model} through LiteLLM's Converse path; it calls {', '.join(BEDROCK_CONVERSE)} (the Node worker carries the OpenAI-shaped path)")
             callback.last = None
-            response = litellm.completion(model=f"bedrock/converse/{wire_model}", messages=[{"role": "user", "content": rendered.text}], metadata=litellm_metadata(rendered), aws_region_name=bedrock_region, num_retries=0, timeout=45, **litellm_inference(rendered))
+            # drop_params: a setting the wire model does not take (a Luna-era reasoning effort on a Converse model) is
+            # dropped by LiteLLM rather than refused — the record still shows the version's block as sealed.
+            response = litellm.completion(model=f"bedrock/converse/{wire_model}", messages=[{"role": "user", "content": rendered.text}], metadata=litellm_metadata(rendered), aws_region_name=bedrock_region, num_retries=0, timeout=45, drop_params=True, **litellm_inference(rendered))
             text = response.choices[0].message.content or ""
             for _ in range(50):
                 if callback.last is not None:

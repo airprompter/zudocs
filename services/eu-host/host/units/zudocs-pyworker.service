@@ -2,8 +2,8 @@
 # PyPI carries it) attached to the same airprompterd, LiteLLM to Bedrock with the instance role, one ticket every
 # twenty minutes — the second SDK on one daemon, one store, one key. No key in its environment.
 #
-#   systemctl status zudocs-pyworker
-#   tail -f /var/log/zudocs/pyworker.log
+#   $ systemctl status zudocs-pyworker
+#   $ tail -f /var/log/zudocs/pyworker.log
 
 [Unit]
 Description=Zudocs eu-west Python worker (airprompter-agent + LiteLLM, daemon mode)
@@ -16,7 +16,7 @@ User=airprompter
 Group=airprompter
 EnvironmentFile=/etc/airprompter/zudocs.env
 Environment=PYTHONUNBUFFERED=1
-Environment=ZUDOCS_WORKER_NAME="eu-west python worker"
+Environment="ZUDOCS_WORKER_NAME=eu-west python worker"
 ExecStart=/opt/zudocs/venv/bin/python /opt/zudocs/pyworker.py
 StandardOutput=append:/var/log/zudocs/pyworker.log
 StandardError=append:/var/log/zudocs/pyworker.log

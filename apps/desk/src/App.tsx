@@ -85,16 +85,17 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
     return () => { clearInterval(s); clearInterval(e); };
   }, [loadState, loadEvents, loadApprovals]);
   useEffect(() => { if (selectedId) void loadRuns(selectedId); else setRuns([]); }, [selectedId, loadRuns]);
-  // A run on another host lands in the ticket's list without a click: re-read the selected ticket's runs on each eu-west run event.
-  const seenRuns = useRef(0);
+  // A run on another host lands in the ticket's list without a click: re-read the runs when a newer foreign run event arrives.
+  const seenForeignRun = useRef<string | null>(null);
   useEffect(() => {
-    const foreign = events.filter((e) => e.kind === "ticket_run" && e.host !== state?.host.hostId).length;
-    if (foreign !== seenRuns.current) {
-      seenRuns.current = foreign;
+    const newest = [...events].reverse().find((e) => e.kind === "ticket_run" && state && e.host !== state.host.hostId);
+    const key = newest ? (newest.id ?? `${newest.at}|${newest.host}`) : null;
+    if (key && key !== seenForeignRun.current) {
+      seenForeignRun.current = key;
       if (selectedId) void loadRuns(selectedId);
       void loadTickets();
     }
-  }, [events, selectedId, loadRuns, loadTickets, state?.host.hostId]);
+  }, [events, selectedId, loadRuns, loadTickets, state]);
 
   const act = useCallback(async (label: string, fn: () => Promise<void>) => {
     setBusy(label);

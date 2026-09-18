@@ -42,9 +42,9 @@ the demo's AWS account ("not available for this account — contact AWS Sales"; 
 (`amazon.nova-2-lite`, $0.30 / $2.50 per million tokens, answering through Converse in us-east-1) — a new version of
 each (rev-3: the same text, settings the model takes: a temperature and an output cap instead of a reasoning
 effort), sealed and promoted as **generation 2** on dev. Luna stays in every host's `models` list and IAM, so the
-day the gate lifts the swap back is one more version and one more promotion, and the hosts pick it up as they
-picked up generation 2: us-east activated it on its next invocation; eu-west staged it under `unlock_required` and
-the owner approved it on the desk. Nova Micro keeps triage and the judge.
+day the gate lifts the swap back is one more version and one more promotion, and the hosts pick it up the way
+every promotion reaches them: us-east activates it on its next invocation; eu-west stages it under
+`unlock_required` for the owner to approve on the desk (`docs/EU-WEST.md`). Nova Micro keeps triage and the judge.
 
 The variable markers are the CLI's grammar: `name!` required, `name?` end-user text — fenced `<name>…</name>` at
 render time, so a ticket is data the model reads and never instructions it follows — `name~` filled by the

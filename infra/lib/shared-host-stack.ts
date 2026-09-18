@@ -13,8 +13,9 @@
  *   across regions, and its own log group. Its name is fixed so the desk stack's Budgets action can attach the
  *   Bedrock deny policy to it too.
  * - User data rendered from `services/eu-host/host/user-data.sh`: the released CLI verified against the pinned
- *   digest, the bundle, the Python venv by commit pin, the units, the CloudWatch agent. A change to the bundle or the
- *   script replaces the instance (`userDataCausesReplacement`): the host is cattle, its store is rebuilt from a sync.
+ *   digest, the bundle, the Python venv by commit pin, the units, the CloudWatch agent. A change to the bundle, the
+ *   script or the pinned AMI replaces the instance (`userDataCausesReplacement`): the host is cattle, its store is
+ *   rebuilt from a sync — and, under `unlock_required`, the first release lands staged for the desk to approve.
  * - The wire function (Node 22 arm64, `services/eu-host/src/wire.ts`) with the EventBridge tick every five minutes.
  *
  * Two things a synth cannot catch: the eu-west SSM parameter must exist before the daemon can start (the boot writes
@@ -87,7 +88,7 @@ export class SharedHostStack extends cdk.Stack {
     const routeTable = new ec2.CfnRouteTable(this, "PublicRouteTable", { vpcId: cfnVpc.ref });
     const route = new ec2.CfnRoute(this, "PublicRoute", { routeTableId: routeTable.ref, destinationCidrBlock: "0.0.0.0/0", gatewayId: igw.ref });
     route.addDependency(attached);
-    new ec2.CfnSubnetRouteTableAssociation(this, "PublicRouteAssociation", { subnetId: cfnSubnet.ref, routeTableId: routeTable.ref });
+    const association = new ec2.CfnSubnetRouteTableAssociation(this, "PublicRouteAssociation", { subnetId: cfnSubnet.ref, routeTableId: routeTable.ref });
     const vpc = ec2.Vpc.fromVpcAttributes(this, "VpcRef", { vpcId: cfnVpc.ref, availabilityZones: [zone], publicSubnetIds: [cfnSubnet.ref], publicSubnetRouteTableIds: [routeTable.ref] });
     this.securityGroup = new ec2.SecurityGroup(this, "HostGroup", { vpc, description: "Zudocs eu-west host: no inbound; egress replaced by the wire function for the drill", allowAllOutbound: true });
     cdk.Tags.of(this.securityGroup).add("zudocs:wire", "managed");
@@ -108,6 +109,7 @@ export class SharedHostStack extends cdk.Stack {
       const arn = `arn:${this.partition}:dynamodb:${tablesRegion}:${this.account}:table/${tableNameOf(name)}`;
       return name === "runs" ? [arn, `${arn}/index/*`] : [arn];
     });
+    // Scan is used, not a leftover: the worker reads the whole (small) inbox, status and approvals tables (`listTickets`, `listStatus`, `listApprovals`).
     this.role.addToPolicy(new iam.PolicyStatement({ actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan"], resources: tableArns }));
     const foundationModels = [...new Set(Object.values(CATALOGUE).map((m) => m.foundationModelId))].map((id) => `arn:${this.partition}:bedrock:*::foundation-model/${id}`);
     const profiles = Object.values(CATALOGUE).filter((m) => m.bedrockId !== m.foundationModelId).map((m) => `arn:${this.partition}:bedrock:${tablesRegion}:${this.account}:inference-profile/${m.bedrockId}`);
@@ -124,11 +126,15 @@ export class SharedHostStack extends cdk.Stack {
     const userData = renderUserData(readFileSync(USER_DATA_TEMPLATE, "utf8"), { CLI_URL: pins.cli.url, CLI_SHA256: pins.cli.sha256, BUNDLE_S3_URL: bundle.s3ObjectUrl });
 
     // --- The instance --------------------------------------------------------------------------------------------
+    const ami = pins.ami[this.region];
+    if (!ami) throw new Error(`pins.json: no AMI pinned for ${this.region} (services/eu-host/pins.json › ami)`);
     this.instance = new ec2.Instance(this, "Host", {
       vpc,
       vpcSubnets: { subnets: vpc.publicSubnets },
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T4G, ec2.InstanceSize.MICRO),
-      machineImage: ec2.MachineImage.latestAmazonLinux2023({ cpuType: ec2.AmazonLinuxCpuType.ARM_64 }),
+      // Pinned (`pins.json`), not resolved at deploy: an image refresh would replace the instance — and its store —
+      // on the next CI deploy, which is a deliberate act here, not a side effect.
+      machineImage: ec2.MachineImage.genericLinux({ [this.region]: ami }, { userData: ec2.UserData.custom(userData) }),
       securityGroup: this.securityGroup,
       role: this.role,
       requireImdsv2: true,
@@ -136,10 +142,10 @@ export class SharedHostStack extends cdk.Stack {
       detailedMonitoring: false,
       instanceName: "zudocs-eu-host",
       blockDevices: [{ deviceName: "/dev/xvda", volume: ec2.BlockDeviceVolume.ebs(8, { volumeType: ec2.EbsDeviceVolumeType.GP3, encrypted: true, deleteOnTermination: true }) }],
-      userData: ec2.UserData.custom(userData),
       userDataCausesReplacement: true,
     });
-    this.instance.node.addDependency(logGroup);
+    // The boot's first acts are network calls (dnf, GitHub, S3): the instance waits for its route to the internet.
+    this.instance.node.addDependency(logGroup, route, association, attached);
 
     // --- The wire function and its tick ------------------------------------------------------------------------------
     const eventsTableArn = `arn:${this.partition}:dynamodb:${tablesRegion}:${this.account}:table/${tableNameOf("events")}`;

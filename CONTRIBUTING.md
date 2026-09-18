@@ -18,15 +18,16 @@ request that goes through an adversarial review before merge, and `main` deploys
 - The desk API and the eu-west workers never log `rendered.text`, a ticket body or a model's answer; log lines
   carry ids, counts and the SDK's own events. The app's CSP allows no inline style or script, so components use
   classes only.
-- On the eu-west host one process holds the Agent key (`airprompterd`, from a root-only file written from SSM);
-  the workers' environment carries identifiers only and they refuse to start with a key in it. User data never
-  carries a key; the stack's tests pin it.
+- On the eu-west host one process is configured with the Agent key (`airprompterd`, from a root-only file written
+  from SSM); the workers' environment carries identifiers only and they refuse to start with a key in it. User data
+  never carries a key; the stack's tests pin it. The workers share the daemon's uid (the socket is 0600), so this is
+  configuration, not a boundary — `docs/EU-WEST.md` › "Keys, exactly" says so.
 
 ## File headers
 
-Every source file (`.ts`, `.mjs`, `.js`, `.py`, `.sh`) opens with a header that says what the file is
-for and carries one small usage example: an `@example` fenced block, a `$ command` line, or an
-indented call. Tests are exempt. `npm run check-headers` enforces it; CI runs it.
+Every source file (`.ts`, `.mjs`, `.js`, `.py`, `.sh`, a shebang script with no extension, a systemd unit) opens
+with a header that says what the file is for and carries one small usage example: an `@example` fenced block, a
+`$ command` line, or an indented call. Tests are exempt. `npm run check-headers` enforces it; CI runs it.
 
 ## Before you push
 

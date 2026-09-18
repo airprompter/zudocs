@@ -12,7 +12,7 @@
  * const store = createStore(DynamoDBDocumentClient.from(new DynamoDBClient({})), env.tables);
  * const taken = await store.takeRunSlot("2026-09-18", 2000);   // { ok: true, used: 12 } | { ok: false, used: 2000 }
  * await store.appendEvent({ at, kind: "release_changed", host, generation: 2 });
- * const decided = await store.approve("eu-west-1-ec2-g2", "seth@zudocs.com", at);   // { ok: true, row } once; { ok: false, row } after
+ * const decided = await store.approve("eu-west-1-ec2-g2-i-abc", "seth@zudocs.com", at);   // { ok: true, row } once; { ok: false, row } after
  * ```
  */
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
@@ -64,12 +64,15 @@ export type ApprovalDecision = "pending" | "approved" | "activated" | "supersede
  * A release staged on a host under `unlock_required`, waiting for the owner. The host writes it (`pending`), the desk
  * decides (`approved`), the host activates through the daemon and settles it (`activated`, or `failed` with the
  * SDK's reason); a release that went live another way (an operator's `airprompter unlock` on the host's shell, an
- * update window) or was overtaken settles as `superseded`. The id is the host and the generation, so a restarted
- * worker finds its own row and the desk's approve is idempotent.
+ * update window) or was overtaken settles as `superseded`. The id is the host, the generation and the daemon's
+ * store, so a restarted worker finds its own row, a replaced instance gets a fresh one, and the desk's approve is
+ * idempotent. A `failed` row is re-opened only by a restarted worker — an operator's deliberate retry, never a loop.
  */
 export interface ApprovalRow {
   approvalId: string;
   hostId: string;
+  /** The daemon's store id the release was staged on: a replaced instance is a fresh store and a fresh row. */
+  storeId: string;
   generation: number;
   releaseDigest: string | null;
   stagedAt: string;
@@ -84,8 +87,11 @@ export interface ApprovalRow {
   updatedAt: string;
 }
 
-/** `eu-west-1/ec2` at generation 2 → `eu-west-1-ec2-g2`: one path segment, so the approve route can name it. */
-export const approvalIdOf = (hostId: string, generation: number): string => `${hostId.replace(/[^A-Za-z0-9-]+/g, "-")}-g${generation}`;
+/**
+ * `eu-west-1/ec2` at generation 2 on store `i-abc…` → `eu-west-1-ec2-g2-i-abc…`: one path segment (the approve route
+ * names it), unique per staging — the same generation staged again on a fresh store is a new row.
+ */
+export const approvalIdOf = (hostId: string, generation: number, storeId: string): string => `${hostId.replace(/[^A-Za-z0-9-]+/g, "-")}-g${generation}-${storeId.replace(/[^A-Za-z0-9_.:-]+/g, "").slice(0, 24) || "store"}`;
 
 export interface Store {
   listCustomers(): Promise<Customer[]>;

@@ -128,7 +128,8 @@ next request after it exists starts the host.
 
 `ZudocsSharedHost` deploys from CI. The host reads the same parameter name in its own region, under the AWS-managed
 SSM key (no key of ours exists in eu-west-1), so the owner writes it there once; the daemon's unit reads it into a
-root-only file before every start, and until it exists the daemon fails its start loudly and systemd retries:
+root-only file before every start (its `ExecStartPre`), and until it exists that step fails and systemd retries
+the daemon every five seconds — the units and the log shipping are installed before the boot ever asks for it:
 
 ```sh
 set -a; . ~/.config/zudocs/dev.env; set +a
@@ -136,7 +137,9 @@ AWS_PROFILE=zudocs AWS_REGION=eu-west-1 ZUDOCS_SSM_KEY_ID=alias/aws/ssm bash scr
 npm run eu:proof              # with ZUDOCS_PROOF_PASSWORD: the row, then status and doctor on the host through Run Command
 ```
 
-The first boot takes about ten minutes (the Python worker's dependencies). `docs/EU-WEST.md` has the proof flags
+The first boot takes about ten minutes (the Python worker's dependencies), and a fresh host — this one, and every
+replacement — starts with the current release **staged**: the daemon pins `unlock_required`, so the desk's Approvals
+section shows it and the owner approves it before the host serves anything. `docs/EU-WEST.md` has the proof flags
 (`--approve`, `--enqueue`, `--cli`, `--wire`). Bedrock in a fresh account needs, per model, an agreement (`CreateFoundationModelAgreement`,
 which the console's "model access" page does) and an account verification AWS runs in the background; until both are
 done the desk shows the refusal on the run panel — it never simulates a model. `npm run desk:proof` (with

@@ -182,7 +182,7 @@ test("the cap: the third run of a two-run day is refused with 429 and its reason
 test("approvals: listed with the pending count; approved exactly once by the signed-in owner with an event; a repeat answers 200 with the row as it stands and no second event; unknown ids 404", async () => {
   const host = fakeHost();
   const handler = createHandler(async () => host);
-  const row: ApprovalRow = { approvalId: "eu-west-1-ec2-g2", hostId: "eu-west-1/ec2", generation: 2, releaseDigest: null, stagedAt: "2026-09-18T15:00:00.000Z", unlockRequest: null, decision: "pending", decidedBy: null, decidedAt: null, activatedAt: null, outcome: null, updatedAt: "2026-09-18T15:00:00.000Z" };
+  const row: ApprovalRow = { approvalId: "eu-west-1-ec2-g2", hostId: "eu-west-1/ec2", storeId: "i-store", generation: 2, releaseDigest: null, stagedAt: "2026-09-18T15:00:00.000Z", unlockRequest: null, decision: "pending", decidedBy: null, decidedAt: null, activatedAt: null, outcome: null, updatedAt: "2026-09-18T15:00:00.000Z" };
   await host.store.openApproval(row);
   const listed = parse(await handler(event("GET", "/approvals")));
   assert.equal(listed.pending, 1);

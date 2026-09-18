@@ -1,0 +1,28 @@
+# Dependencies and build output
+node_modules/
+dist/
+cdk.out/
+*.tsbuildinfo
+
+# CDK context carries the account id and lookups; pass it with --context instead
+cdk.context.json
+
+# Local configuration and anything that could hold a key
+.env
+.env.*
+*.key.json
+*.pem
+
+# The local prompt registry for `airprompter dev` (prompt text lives in AirPrompter) and its dev root
+prompts/*
+!prompts/README.md
+.airprompter-dev/
+
+# Runtime state directories
+state/
+.airprompter/
+
+# Editors and OS
+.DS_Store
+.vscode/
+.idea/

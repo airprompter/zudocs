@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuthorizeSecurityGroupEgressCommand, CreateTagsCommand, DeleteTagsCommand, DescribeSecurityGroupsCommand, RevokeSecurityGroupEgressCommand, type IpPermission } from "@aws-sdk/client-ec2";
-import { CUT_TAG, dynamoCidrsOf, shouldRestore, stateOf, wire, type WirePorts } from "../src/wire.js";
+import { CUT_DESCRIPTION, CUT_TAG, OPEN_DESCRIPTION, RULE_DESCRIPTION, dynamoCidrsOf, shouldRestore, stateOf, wire, type WirePorts } from "../src/wire.js";
 
 const IP_RANGES = { prefixes: [{ ip_prefix: "52.94.0.0/22", region: "us-east-1", service: "DYNAMODB" }, { ip_prefix: "3.218.180.0/22", region: "us-east-1", service: "DYNAMODB" }, { ip_prefix: "52.94.0.0/22", region: "us-east-1", service: "AMAZON" }, { ip_prefix: "52.94.24.0/22", region: "eu-west-1", service: "DYNAMODB" }] };
 
@@ -61,6 +61,12 @@ function ports(ec2: ReturnType<typeof fakeEc2>, overrides: Partial<WirePorts> = 
     ...overrides,
   };
 }
+
+test("the rule descriptions are ones EC2 accepts (the first real restore failed on an apostrophe)", () => {
+  assert.match(OPEN_DESCRIPTION, RULE_DESCRIPTION);
+  assert.match(CUT_DESCRIPTION, RULE_DESCRIPTION);
+  assert.doesNotMatch("the desk's tables", RULE_DESCRIPTION, "an apostrophe is refused by EC2");
+});
 
 test("pure helpers: the region's DynamoDB CIDRs, the group's state, the restore rule", () => {
   assert.deepEqual(dynamoCidrsOf(IP_RANGES, "us-east-1"), ["3.218.180.0/22", "52.94.0.0/22"]);
@@ -129,7 +135,7 @@ test("tick: a fresh cut stays cut; a cut older than the limit is restored by the
 });
 
 test("tick: a cut whose tag is gone is restored on the next tick regardless of age", async () => {
-  const ec2 = fakeEc2({ egress: [{ IpProtocol: "tcp", FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: "52.94.0.0/22", Description: "zudocs wire cut: DynamoDB only" }] }], tags: {} });
+  const ec2 = fakeEc2({ egress: [{ IpProtocol: "tcp", FromPort: 443, ToPort: 443, IpRanges: [{ CidrIp: "52.94.0.0/22", Description: CUT_DESCRIPTION }] }], tags: {} });
   const p = ports(ec2);
   const restored = await wire({ action: "tick" }, p);
   assert.equal(restored.state, "connected");

@@ -12,7 +12,7 @@
  * ```
  */
 import type { HostStatus, State } from "../api";
-import { TOOLTIPS, ago, countdown } from "../format";
+import { TOOLTIPS, ago, countdown, effectiveApplyState, staleRefusal } from "../format";
 
 export function HostCards({ state }: { state: State | null }) {
   const hosts = [...(state?.hosts ?? [])].sort((a, b) => (a.hostId < b.hostId ? 1 : -1));
@@ -39,14 +39,14 @@ function HostCard({ host }: { host: HostStatus }) {
         <span className={`chip health-${z.status ?? "unknown"}`}>{z.status ?? "—"}</span>
       </header>
       <dl className="kv">
-        <div><dt>release</dt><dd>#{s.generation ?? "—"} · {s.applyState ?? "—"}{s.stagedGeneration ? <span className="staged"> · staged #{s.stagedGeneration} awaiting approval</span> : ""}{s.forcedDowngrade ? <span className="refusal"> · forced downgrade</span> : ""}</dd></div>
+        <div><dt>release</dt><dd>#{s.generation ?? "—"} · {effectiveApplyState(s) ?? "—"}{s.stagedGeneration ? <span className="staged"> · staged #{s.stagedGeneration} awaiting approval</span> : ""}{s.forcedDowngrade ? <span className="refusal"> · forced downgrade</span> : ""}{s.lastRefusal && !staleRefusal(s) ? <span className="refusal"> · refused: {s.lastRefusal}</span> : ""}</dd></div>
         <div><dt title={TOOLTIPS.storage}>store key</dt><dd><span className={`chip protection-${protection}`}>{protection}</span>{protection === "file_key" ? <span className="muted"> · a 0600 file beside the store — doctor warns</span> : null}</dd></div>
         <div><dt title={daemon ? TOOLTIPS.approval : undefined}>policy</dt><dd>{s.applyPolicy?.effective ?? "—"} <span className="muted">({s.applyPolicy?.source ?? "—"}{s.applyPolicy?.manifestSaid && s.applyPolicy.manifestSaid !== s.applyPolicy.effective ? `; the console says ${s.applyPolicy.manifestSaid}` : ""})</span></dd></div>
         <div><dt title={TOOLTIPS.lease}>lease</dt><dd>{s.leaseExpiresAt ? `${countdown(s.leaseExpiresAt)} · until ${String(s.leaseExpiresAt).slice(11, 19)}Z` : "—"}{s.leaseExpired ? <span className="refusal"> · expired</span> : ""}</dd></div>
         {daemon
           ? <div><dt>contact</dt><dd>{ago(s.lastContactAt ?? null)} <span className="muted">· heartbeat by the daemon (not on its socket)</span></dd></div>
           : <div><dt>heartbeat</dt><dd>{ago(s.heartbeat?.lastAt ?? null)}{s.heartbeat?.lastRefusal ? ` · ${s.heartbeat.lastRefusal}` : ""}</dd></div>}
-        <div><dt>sync</dt><dd>{s.lastSyncOutcome ?? "—"} · {ago(s.lastSyncAt ?? null)}{failures > 0 ? <span className={failures >= 3 ? "refusal" : "staged"}> · {failures} failure{failures === 1 ? "" : "s"} in a row</span> : ""}</dd></div>
+        <div><dt>sync</dt><dd>{s.lastSyncOutcome ?? "—"} · {ago(s.lastSyncAt ?? null)}{failures > 0 ? <span className={failures >= 3 ? "refusal" : "staged"}> · {failures} failure{failures === 1 ? "" : "s"} in a row</span> : ""}{staleRefusal(s) ? <span className="muted"> · last refusal {s.lastRefusal} (cleared by the next activation)</span> : ""}</dd></div>
         <div><dt>spool</dt><dd>{s.spool?.depthSegments ?? 0} seg · {s.spool?.depthBytes ?? 0} B{s.upload?.lastUploadAt ? ` · uploaded ${ago(s.upload.lastUploadAt)}` : ""}</dd></div>
         <div><dt>variables</dt><dd>{(s.variables?.sources ?? []).join(", ") || "none"}{(s.variables?.unsourced ?? []).length ? ` · unsourced: ${s.variables.unsourced.map((u: { tag: string; names: string[] }) => `${u.tag} ${u.names.join("/")}`).join("; ")}` : ""}</dd></div>
         <div><dt>sdk</dt><dd>{host.sdk}</dd></div>

@@ -155,17 +155,36 @@ export function segmentRender(text: string, variables: readonly VariableOrigin[]
 export const ORIGIN_LABELS: Record<VariableOrigin["origin"], string> = { call_site: "call site", your_source: "your source", default: "default", unfilled: "unfilled" };
 
 /** The release bar's sentence from the status rows: the newest generation, how many hosts serve it, what is staged and where. */
-export function releaseSummary(hosts: Array<{ hostId?: string; region?: string; status?: { generation?: number; stagedGeneration?: number | null; applyState?: string; lastRefusal?: string | null }; healthz?: { status?: string } }>): { generation: number | null; activeOn: number; total: number; staged: { generation: number; hosts: string[] } | null; refusal: string | null; failing: number; degraded: number } {
-  if (hosts.length === 0) return { generation: null, activeOn: 0, total: 0, staged: null, refusal: null, failing: 0, degraded: 0 };
+type HostStatusLike = { generation?: number; stagedGeneration?: number | null; applyState?: string; lastRefusal?: string | null; lastSyncOutcome?: string | null; consecutiveSyncFailures?: number };
+
+/**
+ * A `network:` refusal the SDK still reports after the wire came back: it sets `lastRefusal` (and `applyState:
+ * refused`) on a failed poll and clears it only on the next activation, not on the next successful poll (filed
+ * upstream). When the last poll succeeded and nothing is failing, the refusal is history, not the host's state.
+ */
+export function staleRefusal(status: HostStatusLike): boolean {
+  const refusal = status.lastRefusal ?? null;
+  if (!refusal || !refusal.startsWith("network:")) return false;
+  return (status.consecutiveSyncFailures ?? 0) === 0 && status.lastSyncOutcome !== "unavailable" && status.lastSyncOutcome !== null && status.lastSyncOutcome !== undefined;
+}
+
+/** The apply state as the desk reads it: `refused` by a stale network refusal is `active` (the release it serves is unchanged). */
+export function effectiveApplyState(status: HostStatusLike): string | undefined {
+  return status.applyState === "refused" && staleRefusal(status) && (status.generation ?? 0) > 0 ? "active" : status.applyState;
+}
+
+export function releaseSummary(hosts: Array<{ hostId?: string; region?: string; status?: HostStatusLike; healthz?: { status?: string } }>): { generation: number | null; activeOn: number; total: number; staged: { generation: number; hosts: string[] } | null; refusal: string | null; staleRefusal: string | null; failing: number; degraded: number } {
+  if (hosts.length === 0) return { generation: null, activeOn: 0, total: 0, staged: null, refusal: null, staleRefusal: null, failing: 0, degraded: 0 };
   const statusOf = (h: (typeof hosts)[number]) => h.status ?? {};
   const generation = Math.max(...hosts.map((h) => Math.max(statusOf(h).generation ?? 0, statusOf(h).stagedGeneration ?? 0)));
-  const activeOn = hosts.filter((h) => (statusOf(h).generation ?? 0) === generation && statusOf(h).applyState === "active").length;
+  const activeOn = hosts.filter((h) => (statusOf(h).generation ?? 0) === generation && effectiveApplyState(statusOf(h)) === "active").length;
   const stagedHosts = hosts.filter((h) => (statusOf(h).stagedGeneration ?? null) !== null);
   const staged = stagedHosts.length > 0 ? { generation: Math.max(...stagedHosts.map((h) => statusOf(h).stagedGeneration!)), hosts: stagedHosts.map((h) => h.region ?? h.hostId ?? "a host") } : null;
-  const refusal = hosts.map((h) => statusOf(h).lastRefusal ?? null).find((r) => r !== null) ?? null;
+  const refusal = hosts.map((h) => (staleRefusal(statusOf(h)) ? null : (statusOf(h).lastRefusal ?? null))).find((r) => r !== null) ?? null;
+  const stale = hosts.map((h) => (staleRefusal(statusOf(h)) ? (statusOf(h).lastRefusal ?? null) : null)).find((r) => r !== null) ?? null;
   const failing = hosts.filter((h) => h.healthz?.status === "failing").length;
   const degraded = hosts.filter((h) => h.healthz?.status === "degraded").length;
-  return { generation, activeOn, total: hosts.length, staged, refusal, failing, degraded };
+  return { generation, activeOn, total: hosts.length, staged, refusal, staleRefusal: stale, failing, degraded };
 }
 
 /** Timeline rows merged without repeats: the API's row id first, the (at, kind, host) triple for rows without one. Newest last. */

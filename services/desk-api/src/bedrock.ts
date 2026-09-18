@@ -10,7 +10,8 @@
  *   `ap.aiSdkMiddleware()`. The provider model is aliased to the release's name for the same reason: the
  *   middleware applies settings and files observations under the name the release pins.
  *
- * Nothing here retries: a throttle or a refusal is observed as such and surfaces on the desk.
+ * Nothing here retries (both clients at zero retries): a throttle or a refusal is observed once, as such, and
+ * surfaces on the desk.
  *
  * @example
  * ```ts
@@ -68,7 +69,7 @@ export function mantleFetch(region: string, credentials = defaultProvider(), inn
       if (name === "authorization" || name === "content-type" || name === "host" || name === "content-length") continue;
       headers[name] = value;
     }
-    return inner(url.href, { method, headers, body });
+    return inner(url.href, { method, headers, body, ...(init?.signal ? { signal: init.signal } : {}) });
   };
 }
 
@@ -108,12 +109,12 @@ export function createCallers(ap: AirPrompterAgent, region: string, options: { j
         const response = await openai.chat.completions.create({ model: rendered.model, messages: [{ role: "user", content: rendered.text }] });
         return { text: textOfChat(response), response };
       }
-      const result = await generateText({ model: converse(rendered.model, true), prompt: rendered.text });
+      const result = await generateText({ model: converse(rendered.model, true), prompt: rendered.text, maxRetries: 0 });
       return { text: result.text, response: result.response };
     },
     async judge(prompt) {
       // The judge prompt is not a render, so the middleware passes it through unobserved; the score lands through ap.judge.
-      const result = await generateText({ model: converse(judgeModel, false), prompt, maxOutputTokens: 400, temperature: 0 });
+      const result = await generateText({ model: converse(judgeModel, false), prompt, maxOutputTokens: 400, temperature: 0, maxRetries: 0 });
       return result.text;
     },
   };

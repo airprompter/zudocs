@@ -10,15 +10,16 @@
  *
  * @example
  * ```ts
- * export const handler: Handler = async (event) => ...;   // what the stack's `handler: "handler"` resolves
+ * export const handler: Handler = async (event) => ...;   // what the stack's `handler: "index.handler"` resolves
  * // curl -H "authorization: Bearer $ID_TOKEN" https://<api>/tickets
  * ```
  */
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyResultV2, Context } from "aws-lambda";
+import { normalizeFeedback } from "@airprompter/agent-sdk";
 import { MODELS } from "./modelCatalogue.js";
 import { match } from "./router.js";
-import { runTicket } from "./run.js";
+import { runTicket, type StepRecord } from "./run.js";
 import { getHost, type Host } from "./runtime.js";
 import { SEED_CUSTOMERS, SEED_TICKETS } from "./seedData.js";
 import { dayOf } from "./store.js";
@@ -125,12 +126,15 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       const steps = Array.isArray(run.steps) ? (run.steps as Array<{ step: string; runRef: string | null }>) : [];
       const target = steps.find((s) => s.step === step) ?? steps.find((s) => s.runRef);
       if (!target?.runRef) return { statusCode: 409, body: { error: "no_run_reference", message: "that run has no run reference to file feedback against (its render never happened)" } };
-      const filed = await ap.invoke(async () => ap.feedback(target.runRef!, signals));
+      const normalized = normalizeFeedback(signals);
+      if (!normalized.accepted) return { statusCode: 422, body: { filed: false, signals, rejected: normalized.rejected, message: "the SDK refuses these signals: thumbs up/down, accepted, edited, or a number" } };
+      const outcome = await ap.invoke(async () => fileFeedback(host, run, target, signals));
       const at = new Date().toISOString();
-      await store.putFeedback({ runId: run.runId, at, signals, by, filed });
-      await store.appendEvent({ at, kind: "feedback", host: env.hostId, runId: run.runId, ticketId: run.ticketId, step: target.step, signals: Object.keys(signals), filed, by });
+      await store.putFeedback({ runId: run.runId, at, signals, by, filed: outcome.filed });
+      await store.appendEvent({ at, kind: "feedback", host: env.hostId, runId: run.runId, ticketId: run.ticketId, step: target.step, signals: Object.keys(signals), filed: outcome.filed, container: outcome.container, by });
       await host.writeStatus();
-      return { statusCode: filed ? 200 : 422, body: { filed, signals, message: filed ? "filed on the run's window; it leaves with the next upload" : "the SDK refused the signals (numbers, booleans and declared enums only)" } };
+      if (!outcome.filed) return { statusCode: 409, body: { filed: false, signals, error: "run_reference_foreign", message: outcome.reason } };
+      return { statusCode: 200, body: { filed: true, signals, container: outcome.container, message: outcome.container === "same" ? "filed on the run's window; it leaves with the next upload" : "filed on this container against the same prompt version and arm (the run was served by another container of this host); it leaves with the next upload" } };
     }
     case "state": {
       const day = dayOf(new Date().toISOString());
@@ -158,6 +162,32 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       return presenter(host, params.action!, readBody(event), by);
     default:
       return { statusCode: 404, body: { error: "no_such_route" } };
+  }
+}
+
+/**
+ * A run reference is minted with a key derived from the STORE's id, and every Lambda container creates its own store
+ * under /tmp — so a reference minted by the container that served the run does not parse on another (an SDK gap:
+ * references are not portable across a fleet's serverless containers). When the local SDK refuses the reference,
+ * the desk renders the same slot for the same customer on this container (no model call; the arm is sticky on the
+ * customer id) and files against that reference, only when the version, arm and release agree with the run's
+ * record — feedback rides on the (tag, version, arm) window either way. Otherwise it refuses and says why.
+ */
+async function fileFeedback(host: Host, run: Record<string, unknown> & { runId: string; ticketId: string }, target: { step: string; runRef: string | null }, signals: Record<string, unknown>): Promise<{ filed: boolean; container: "same" | "re-rendered" | "none"; reason: string }> {
+  const { ap } = host;
+  if (ap.feedback(target.runRef!, signals)) return { filed: true, container: "same", reason: "" };
+  const step = (Array.isArray(run.steps) ? (run.steps as StepRecord[]) : []).find((s) => s.step === target.step);
+  const values = Object.fromEntries((step?.rendered?.variables ?? []).filter((v) => v.origin === "call_site" && v.value !== null).map((v) => [v.name, v.value!]));
+  if (!step?.tag || !step.rendered) return { filed: false, container: "none", reason: "the run reference was minted by another container of this host and the record carries no render to re-derive it from" };
+  try {
+    const rendered = await ap.prompt(step.tag, { subject: String(run.customerId) }).renderAsync(values);
+    if (rendered.versionId !== step.versionId || rendered.arm !== step.arm || rendered.generation !== run.generation) {
+      return { filed: false, container: "none", reason: `the run reference was minted by another container and this one now serves ${rendered.versionId} on release #${rendered.generation} (the run was ${step.versionId} on #${String(run.generation)}); feedback would land on the wrong version, so it is refused` };
+    }
+    if (!ap.feedback(rendered.runRef, signals)) return { filed: false, container: "none", reason: "the SDK refused the re-derived run reference" };
+    return { filed: true, container: "re-rendered", reason: "" };
+  } catch (error) {
+    return { filed: false, container: "none", reason: `the run reference was minted by another container and could not be re-derived here: ${(error as Error).message.slice(0, 200)}` };
   }
 }
 

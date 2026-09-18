@@ -6,7 +6,7 @@
 # client. Prints usernames and statuses, never a password.
 #
 #   $ AWS_PROFILE=zudocs bash scripts/cognito-users.sh owner seth@zudocs.com
-#   $ ZUDOCS_PROOF_PASSWORD="$(openssl rand -base64 24)" AWS_PROFILE=zudocs bash scripts/cognito-users.sh proof proof@zudocs.com
+#   $ ZUDOCS_PROOF_PASSWORD="$(openssl rand -base64 27 | tr -d '/+=' | cut -c1-30)Aa1" AWS_PROFILE=zudocs bash scripts/cognito-users.sh proof proof@zudocs.com
 set -euo pipefail
 kind="${1:?owner | proof}"
 email="${2:?the e-mail address of the user}"

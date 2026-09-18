@@ -11,8 +11,12 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+// A laptop that cannot present as http://localhost:5173 (another server holds it) sets ZUDOCS_API_PROXY to the API
+// URL and `apiUrl: "/api"` in public/config.json: the dev server forwards same-origin, so the API's CORS is not in play.
+const proxy = process.env.ZUDOCS_API_PROXY;
+
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5173, strictPort: true },
+  server: { port: 5173, strictPort: true, ...(proxy ? { proxy: { "/api": { target: proxy, changeOrigin: true, rewrite: (path) => path.replace(/^\/api/, "") } } } : {}) },
   build: { target: "es2022", sourcemap: false, assetsInlineLimit: 0, modulePreload: { polyfill: false } },
 });

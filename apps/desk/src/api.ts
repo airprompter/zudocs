@@ -69,11 +69,20 @@ export function createApi(baseUrl: string, tokenOf: () => Promise<string | null>
     if (!response.ok) throw new ApiError(response.status, typeof parsed.error === "string" ? parsed.error : `http_${response.status}`, typeof parsed.message === "string" ? parsed.message : `the API answered ${response.status}`, parsed);
     return parsed as T;
   };
+  // A run whose model refused answers 502 WITH the record (ok: false): the record is what the desk shows.
+  const runOrRecord = async (path: string): Promise<{ run: Run; cap: State["cap"] }> => {
+    try {
+      return await call("POST", path, {});
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 502 && typeof error.body.run === "object" && error.body.run !== null) return error.body as unknown as { run: Run; cap: State["cap"] };
+      throw error;
+    }
+  };
   return {
     tickets: () => call("GET", "/tickets"),
     ticket: (ticketId) => call("GET", `/tickets/${encodeURIComponent(ticketId)}`),
-    runTicket: (ticketId) => call("POST", `/tickets/${encodeURIComponent(ticketId)}/run`, {}),
-    escalateTicket: (ticketId) => call("POST", `/tickets/${encodeURIComponent(ticketId)}/escalate`, {}),
+    runTicket: (ticketId) => runOrRecord(`/tickets/${encodeURIComponent(ticketId)}/run`),
+    escalateTicket: (ticketId) => runOrRecord(`/tickets/${encodeURIComponent(ticketId)}/escalate`),
     feedback: (runId, step, signals) => call("POST", `/runs/${encodeURIComponent(runId)}/feedback`, { step, signals }),
     state: () => call("GET", "/state"),
     events: (since) => call("GET", `/events${since ? `?since=${encodeURIComponent(since)}` : ""}`),

@@ -25,6 +25,12 @@ export const TOOLTIPS = {
   cap: "Runs per UTC day this host allows. At the line the API refuses with HTTP 429; nothing is simulated.",
 } as const;
 
+/** A model's answer as a class-name suffix: lower-case letters and dashes only (an answer is data, a class is not). */
+export function slug(value: string | null | undefined): string {
+  const cleaned = (value ?? "").toLowerCase().replace(/[^a-z]+/g, "-").replace(/^-|-$/g, "");
+  return cleaned || "none";
+}
+
 export function slotShort(tag: string): string {
   return tag.replace(/^support\./, "").replace(/^escalate\./, "escalate ");
 }

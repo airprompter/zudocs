@@ -170,7 +170,7 @@ export class SiteStack extends cdk.Stack {
     this.bedrockDenyPolicy = new iam.ManagedPolicy(this, "BedrockDeny", {
       managedPolicyName: "ZudocsBudgetBedrockDeny",
       description: "Attached by the budget action when the month's spend crosses the line: no more model calls",
-      statements: [new iam.PolicyStatement({ effect: iam.Effect.DENY, actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:ConverseStream"], resources: ["*"] })],
+      statements: [new iam.PolicyStatement({ effect: iam.Effect.DENY, actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:ConverseStream", "bedrock-mantle:*"], resources: ["*"] })],
     });
     const subscribers = config.budget.email ? [{ subscriptionType: "EMAIL", address: config.budget.email }] : [];
     new budgets.CfnBudget(this, "Budget", {

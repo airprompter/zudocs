@@ -48,7 +48,8 @@ function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[];
 
 /** Enough of the SDK: renders with the desk's source consulted, observes what the callers do, judges, files feedback. */
 function fakeAp(store: Store, calls: string[]) {
-  const status = () => ({ generation: 1, applyState: "active", variables: { sources: ["customer_tier"], unsourced: [] }, heartbeat: { lastAt: null, nextAt: null, intervalSeconds: 60, lastRefusal: null }, storageProtection: "kms", source: "store", applyPolicy: { effective: "auto", source: "local", manifestSaid: "auto" }, lastSyncOutcome: "unchanged", stagedGeneration: null });
+  const state = { generation: 1, foreign: new Set<string>(), minted: 0 };
+  const status = () => ({ generation: state.generation, applyState: "active", variables: { sources: ["customer_tier"], unsourced: [] }, heartbeat: { lastAt: null, nextAt: null, intervalSeconds: 60, lastRefusal: null }, storageProtection: "kms", source: "store", applyPolicy: { effective: "auto", source: "local", manifestSaid: "auto" }, lastSyncOutcome: "unchanged", stagedGeneration: null });
   const declared: Record<string, any[]> = {
     "support.triage": [{ name: "ticket", required: true, trust: "end_user" }],
     "support.reply": [{ name: "tone", required: false, trust: "operator", default: "friendly" }, { name: "customer_tier", required: true, trust: "operator", source: "runtime" }, { name: "ticket", required: true, trust: "end_user" }],
@@ -63,7 +64,8 @@ function fakeAp(store: Store, calls: string[]) {
       renderAsync: async (values: Record<string, string>) => {
         const tier = subject ? (await store.getCustomer(subject))?.tier : undefined;
         const text = `${tag}: tone=${values.tone ?? "friendly"} tier=${tier} <ticket>${values.ticket}</ticket>`;
-        return { text, model: tag === "support.triage" ? "amazon.nova-micro" : "openai.gpt-5-6-luna", versionId: "rev-2", arm: "none", generation: 1, runRef: `ref-${tag}`, tag, inference: { maxOutputTokens: 600 } };
+        state.minted += 1;
+        return { text, model: tag === "support.triage" ? "amazon.nova-micro" : "openai.gpt-5-6-luna", versionId: "rev-2", arm: "none", generation: state.generation, runRef: `ref-${tag}-${state.minted}`, tag, inference: { maxOutputTokens: 600 } };
       },
     }),
     checks: (_r: unknown, output: string) => ({ passed: 1, failed: 0, results: [{ name: "signed", kind: "must_match", verdict: output.includes("team") ? "pass" : "fail" }] }),
@@ -71,10 +73,12 @@ function fakeAp(store: Store, calls: string[]) {
       await invoke("judge prompt");
       return { score: 0.75, taskPass: 3, taskFail: 1, taskUnclear: 0, protectionFail: 0, flagged: false };
     },
+    // A reference minted by this "container" parses; one another container minted (marked foreign) does not.
     feedback: (runRef: string, signals: Record<string, unknown>) => {
       calls.push(`feedback:${runRef}:${Object.keys(signals).join(",")}`);
-      return "thumbs" in signals;
+      return !state.foreign.has(runRef);
     },
+    state,
     invoke: async <T>(fn: () => Promise<T>) => {
       calls.push("invoke");
       return fn();
@@ -110,7 +114,7 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
     sdk: "agent-sdk-ts/test",
     invocations: 0,
     coldStart: true,
-    observed: async (fn) => ({ result: await fn(), observations: [{ tag: "support.reply", versionId: "rev-2", arm: "none", model: "openai.gpt-5-6-luna", status: "ok", latencyMs: 1234, tokens: { input: 200, output: 40 }, usageSource: "reported" }] }),
+    observed: async (fn) => ({ result: await fn(), error: undefined, observations: [{ tag: "support.reply", versionId: "rev-2", arm: "none", model: "openai.gpt-5-6-luna", status: "ok", latencyMs: 1234, tokens: { input: 200, output: 40 }, usageSource: "reported" }] }),
     writeStatus: async () => store.putStatus({ hostId: "us-east-1/lambda", region: "us-east-1", kind: "lambda", sdk: "x", writtenAt: "", status: ap.status(), healthz: ap.healthz(), container: { instanceId: "i-fake", coldStart: false, startedAt: "", invocations: 1 } }),
   };
   return host;
@@ -161,18 +165,39 @@ test("the cap: the third run of a two-run day is refused with 429 and its reason
   assert.equal(host.store.events.at(-1)!.kind, "cap_refused");
 });
 
-test("feedback goes through ap.feedback against the reply's run reference and is stored with the SDK's verdict", async () => {
+test("feedback goes through ap.feedback against the reply's run reference; undeclared signals are refused before anything is filed", async () => {
   const host = fakeHost();
   const handler = createHandler(async () => host);
   const { run } = parse(await handler(event("POST", "/tickets/T-1/run")));
   const ok = await handler(event("POST", `/runs/${run.runId}/feedback`, { signals: { thumbs: "up" } }));
   assert.equal((ok as { statusCode: number }).statusCode, 200);
-  assert.ok(host.calls.includes("feedback:ref-support.reply:thumbs"));
+  assert.equal(parse(ok).container, "same");
+  assert.ok(host.calls.includes("feedback:ref-support.reply-2:thumbs"), "the reply's own reference (the second render of the run)");
   const refused = await handler(event("POST", `/runs/${run.runId}/feedback`, { signals: { mood: "great" } }));
-  assert.equal((refused as { statusCode: number }).statusCode, 422, "the SDK's refusal is the answer");
-  assert.equal(host.store.feedback.length, 2);
-  assert.deepEqual(host.store.feedback.map((f) => f.filed), [true, false]);
+  assert.equal((refused as { statusCode: number }).statusCode, 422, "the SDK's vocabulary is the answer");
+  assert.deepEqual(parse(refused).rejected, { mood: "unknown_signal" });
+  assert.equal(host.store.feedback.length, 1, "a refused signal is not stored as feedback");
   assert.equal((await handler(event("POST", "/runs/run_nope/feedback", { signals: { thumbs: "up" } })) as { statusCode: number }).statusCode, 404);
+});
+
+test("feedback across containers: a reference this container cannot parse is re-derived by rendering the same slot for the same customer, and refused when the release moved", async () => {
+  const host = fakeHost();
+  const handler = createHandler(async () => host);
+  const { run } = parse(await handler(event("POST", "/tickets/T-1/run")));
+  const reply = run.steps.find((s: any) => s.step === "reply");
+  const ap = host.ap as unknown as { state: { generation: number; foreign: Set<string> } };
+  ap.state.foreign.add(reply.runRef);
+  const filed = await handler(event("POST", `/runs/${run.runId}/feedback`, { signals: { accepted: true } }));
+  assert.equal((filed as { statusCode: number }).statusCode, 200);
+  assert.equal(parse(filed).container, "re-rendered");
+  assert.ok(host.calls.includes("feedback:ref-support.reply-3:accepted"), "filed against a reference minted here for the same version and arm");
+  assert.equal(host.store.feedback.at(-1)!.filed, true);
+  ap.state.generation = 2;
+  const moved = await handler(event("POST", `/runs/${run.runId}/feedback`, { signals: { thumbs: "down" } }));
+  assert.equal((moved as { statusCode: number }).statusCode, 409, "a newer release here: feedback would land on the wrong version");
+  assert.equal(parse(moved).error, "run_reference_foreign");
+  assert.match(parse(moved).message, /release #2/);
+  assert.equal(host.store.feedback.at(-1)!.filed, false, "stored as not filed, so the desk shows it honestly");
 });
 
 test("state, events, healthz and unknown routes; a failed start answers 503 with the code", async () => {
@@ -198,4 +223,26 @@ test("state, events, healthz and unknown routes; a failed start answers 503 with
   assert.equal(parse(down).code, "no_verified_release");
   await failing(event("GET", "/state"));
   assert.equal(attempts, 2, "the provider is asked again on the next request");
+});
+
+test("a refused model call: the step keeps the SDK's error observation and the provider's message, the run answers 502 with ok=false, nothing is simulated", async () => {
+  const host = fakeHost();
+  (host as { callers: Host["callers"] }).callers = { ...host.callers, complete: async (rendered: { model: string }) => { if (rendered.model === "openai.gpt-5-6-luna") throw Object.assign(new Error("401 openai.gpt-5.6-luna is not available for this account"), { name: "AuthenticationError" }); return { text: '{"category":"billing","priority":"low","summary":"x"}', response: {} }; } };
+  host.observed = async (fn) => {
+    try { return { result: await fn(), error: undefined, observations: [{ tag: "support.triage", versionId: "rev-2", arm: "none", model: "amazon.nova-micro", status: "ok", latencyMs: 300, tokens: { input: 10, output: 5 }, usageSource: "reported" }] }; }
+    catch (error) { return { result: undefined, error, observations: [{ tag: "support.reply", versionId: "rev-2", arm: "none", model: "openai.gpt-5-6-luna", status: "error", errorClass: "provider_error", latencyMs: 120, usageSource: "unavailable" }] }; }
+  };
+  const handler = createHandler(async () => host);
+  const result = await handler(event("POST", "/tickets/T-1/run"));
+  assert.equal((result as { statusCode: number }).statusCode, 502);
+  const { run } = parse(result);
+  assert.equal(run.ok, false);
+  const reply = run.steps.find((s: any) => s.step === "reply");
+  assert.equal(reply.output, null, "no answer was invented");
+  assert.equal(reply.error.name, "AuthenticationError");
+  assert.equal(reply.observation.status, "error");
+  assert.equal(reply.observation.errorClass, "provider_error", "the SDK's classification rides along");
+  assert.deepEqual(reply.checks, []);
+  assert.equal(reply.judge, null);
+  assert.equal(run.triage.category, "billing", "the step before it still answered");
 });

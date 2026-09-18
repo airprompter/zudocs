@@ -105,11 +105,11 @@ npm run build && cd infra && npx cdk deploy ZudocsDesk && cd ..     # or let mai
 set -a; . ~/.config/zudocs/dev.env; set +a                          # AIRPROMPTER_AGENT_KEY into the environment
 bash scripts/ssm-put-agent-key.sh                                   # → /zudocs/dev/agent-key, SecureString under alias/zudocs-desk
 bash scripts/cognito-users.sh owner seth@zudocs.com                 # Cognito e-mails the temporary password
-ZUDOCS_PROOF_PASSWORD="$(openssl rand -base64 24)" bash scripts/cognito-users.sh proof proof@zudocs.com   # keep the password in your store
+ZUDOCS_PROOF_PASSWORD="$(openssl rand -base64 27 | tr -d '/+=' | cut -c1-30)Aa1" bash scripts/cognito-users.sh proof proof@zudocs.com   # meets the pool's policy; keep it in your store
 ```
 
-Until the parameter exists, every request answers `503 host_unavailable` naming the parameter; the next request
-after it exists starts the host. Bedrock in a fresh account needs, per model, an agreement (`CreateFoundationModelAgreement`,
+Until the parameter exists, every request answers `503 host_unavailable` with a message naming the parameter; the
+next request after it exists starts the host. Bedrock in a fresh account needs, per model, an agreement (`CreateFoundationModelAgreement`,
 which the console's "model access" page does) and an account verification AWS runs in the background; until both are
 done the desk shows the refusal on the run panel — it never simulates a model. `npm run desk:proof` (with
 `ZUDOCS_PROOF_PASSWORD` in the environment) runs one ticket end to end and checks the status row, the timeline and

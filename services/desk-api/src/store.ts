@@ -79,6 +79,7 @@ export interface Store {
 }
 
 export const dayOf = (iso: string): string => iso.slice(0, 10);
+export const EVENT_RETENTION_DAYS = 14;
 
 export function createStore(client: Pick<DynamoDBDocumentClient, "send">, tables: DeskEnv["tables"]): Store {
   const send = client.send.bind(client) as (command: unknown) => Promise<any>;
@@ -144,7 +145,9 @@ export function createStore(client: Pick<DynamoDBDocumentClient, "send">, tables
     async appendEvent(event) {
       const day = dayOf(event.at);
       const sk = `${event.at}#${Math.random().toString(36).slice(2, 8)}`;
-      await send(new PutCommand({ TableName: tables.events, Item: { day, sk, ...event } }));
+      // The table's TTL attribute: a timeline row lives two weeks, then DynamoDB forgets it.
+      const expiresAt = Math.floor(Date.parse(event.at) / 1000) + EVENT_RETENTION_DAYS * 86_400;
+      await send(new PutCommand({ TableName: tables.events, Item: { day, sk, expiresAt, ...event } }));
     },
     async listEvents(since, limit = 100) {
       const now = new Date().toISOString();
@@ -160,7 +163,7 @@ export function createStore(client: Pick<DynamoDBDocumentClient, "send">, tables
           Limit: limit,
         }));
         for (const item of (out.Items ?? []) as any[]) {
-          const { day: _day, sk: _sk, ...event } = item;
+          const { day: _day, sk: _sk, expiresAt: _expiresAt, ...event } = item;
           items.push(event as TimelineEvent);
         }
       }

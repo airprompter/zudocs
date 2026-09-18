@@ -8,7 +8,7 @@
  * ```
  */
 import type { Ticket } from "../api";
-import { ago } from "../format";
+import { ago, slug } from "../format";
 
 export function Inbox({ tickets, selectedId, onSelect }: { tickets: Ticket[]; selectedId: string | null; onSelect: (id: string) => void }) {
   return (
@@ -29,8 +29,8 @@ export function Inbox({ tickets, selectedId, onSelect }: { tickets: Ticket[]; se
               <div className="ticket-row-meta">
                 <span>{t.customer?.name ?? t.customerId}</span>
                 <span className={`chip tier-${t.customer?.tier ?? "unknown"}`}>{t.customer?.tier ?? "—"}</span>
-                {t.lastRun?.category ? <span className={`chip cat-${t.lastRun.category}`}>{t.lastRun.category}</span> : null}
-                {t.lastRun?.priority ? <span className={`chip prio-${t.lastRun.priority}`}>{t.lastRun.priority}</span> : null}
+                {t.lastRun?.category ? <span className={`chip cat-${slug(t.lastRun.category)}`}>{t.lastRun.category}</span> : null}
+                {t.lastRun?.priority ? <span className={`chip prio-${slug(t.lastRun.priority)}`}>{t.lastRun.priority}</span> : null}
               </div>
             </button>
           </li>

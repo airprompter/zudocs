@@ -142,7 +142,7 @@ test("money: a $30 budget with [actual 100 %, actual 166.67 %, forecast 100 %] t
     [["ACTUAL", 100], ["ACTUAL", 166.67], ["FORECASTED", 100]],
   );
   for (const n of props.NotificationsWithSubscribers) assert.deepEqual(n.Subscribers, [{ SubscriptionType: "EMAIL", Address: "owner@example.test" }]);
-  site.hasResourceProperties("AWS::IAM::ManagedPolicy", { ManagedPolicyName: "ZudocsBudgetBedrockDeny", PolicyDocument: Match.objectLike({ Statement: [Match.objectLike({ Effect: "Deny", Action: ["bedrock:Converse", "bedrock:ConverseStream", "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"] })] }) });
+  site.hasResourceProperties("AWS::IAM::ManagedPolicy", { ManagedPolicyName: "ZudocsBudgetBedrockDeny", PolicyDocument: Match.objectLike({ Statement: [Match.objectLike({ Effect: "Deny", Action: ["bedrock-mantle:*", "bedrock:Converse", "bedrock:ConverseStream", "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"] })] }) });
   site.hasResourceProperties("AWS::CE::AnomalySubscription", { Frequency: "DAILY", Subscribers: [{ Type: "EMAIL", Address: "owner@example.test" }] });
   site.hasResourceProperties("AWS::CloudTrail::Trail", { IsMultiRegionTrail: true, EnableLogFileValidation: true, IncludeGlobalServiceEvents: true });
 });

@@ -12,7 +12,7 @@
  */
 import { useState } from "react";
 import type { Run, Step, Ticket } from "../api";
-import { TOOLTIPS, armLabel, clock, latency, modelLabel, money, score, tokens, versionBadge } from "../format";
+import { TOOLTIPS, armLabel, clock, latency, modelLabel, money, score, slug, tokens, versionBadge } from "../format";
 import { WhyThisText } from "./WhyThisText";
 
 export function TicketView({ ticket, runs, busy, onRun, onEscalate, onFeedback }: { ticket: Ticket; runs: Run[]; busy: string | null; onRun: () => void; onEscalate: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
@@ -61,8 +61,8 @@ function TriageBody({ triage, raw }: { triage: NonNullable<Run["triage"]>; raw: 
   if (!triage.category && !triage.priority) return <pre className="output">{raw ?? ""}</pre>;
   return (
     <div className="triage">
-      <span className={`chip cat-${triage.category ?? "none"}`}>{triage.category ?? "—"}</span>
-      <span className={`chip prio-${triage.priority ?? "none"}`}>{triage.priority ?? "—"}</span>
+      <span className={`chip cat-${slug(triage.category)}`}>{triage.category ?? "—"}</span>
+      <span className={`chip prio-${slug(triage.priority)}`}>{triage.priority ?? "—"}</span>
       <span className="triage-summary">{triage.summary}</span>
     </div>
   );
@@ -99,17 +99,18 @@ function StepCard({ step, title, body, feedback }: { step: Step; title: string; 
 }
 
 function FeedbackRow({ run, step, busy, onFeedback }: { run: Run; step: string; busy: string | null; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
-  const filed = (run.feedback ?? []).flatMap((f) => (f.filed ? Object.keys(f.signals) : []));
-  const has = (key: string) => filed.includes(key);
+  const filed = (run.feedback ?? []).filter((f) => f.filed).map((f) => f.signals);
+  const has = (key: string, value?: unknown) => filed.some((signals) => key in signals && (value === undefined || signals[key] === value));
+  const filedNames = [...new Set(filed.flatMap((signals) => Object.entries(signals).map(([k, v]) => (k === "thumbs" ? `thumbs ${String(v)}` : k))))];
   const disabled = busy !== null || !run.steps.find((s) => s.step === step)?.runRef;
   return (
     <div className="feedback">
       <span className="muted">Feedback</span>
-      <button type="button" className={`chip-button${has("thumbs") ? " done" : ""}`} disabled={disabled} onClick={() => onFeedback(run.runId, step, { thumbs: "up" })}>👍 Good</button>
-      <button type="button" className="chip-button" disabled={disabled} onClick={() => onFeedback(run.runId, step, { thumbs: "down" })}>👎 Poor</button>
+      <button type="button" className={`chip-button${has("thumbs", "up") ? " done" : ""}`} disabled={disabled} onClick={() => onFeedback(run.runId, step, { thumbs: "up" })}>👍 Good</button>
+      <button type="button" className={`chip-button${has("thumbs", "down") ? " done" : ""}`} disabled={disabled} onClick={() => onFeedback(run.runId, step, { thumbs: "down" })}>👎 Poor</button>
       <button type="button" className={`chip-button${has("accepted") ? " done" : ""}`} disabled={disabled} onClick={() => onFeedback(run.runId, step, { accepted: true })}>Sent as is</button>
       <button type="button" className={`chip-button${has("edited") ? " done" : ""}`} disabled={disabled} onClick={() => onFeedback(run.runId, step, { edited: true })}>Edited first</button>
-      {filed.length ? <span className="muted">filed: {filed.join(", ")}</span> : null}
+      {filedNames.length ? <span className="muted">filed: {filedNames.join(", ")}</span> : null}
     </div>
   );
 }

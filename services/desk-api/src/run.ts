@@ -130,9 +130,11 @@ export async function runTicket(host: Host, ticket: Ticket, options: { by: strin
       record.generation = rendered.generation;
       record.runRef = rendered.runRef;
       record.rendered = { text: rendered.text, variables: variableOrigins(declared, values, ap.status().variables.sources, { customer_tier: customer?.tier }), inference: rendered.inference ?? null };
-      const { result, observations } = await host.observed(() => callers.complete(rendered));
+      const outcome = await host.observed(() => callers.complete(rendered));
+      record.observation = outcome.observations.find((o) => o.tag === tag) ?? outcome.observations[0] ?? null;
+      if (outcome.result === undefined) throw outcome.error;
+      const result = outcome.result;
       record.output = result.text;
-      record.observation = observations.find((o) => o.tag === tag) ?? observations[0] ?? null;
       const outputTokens = record.observation?.tokens?.output ?? null;
       // The wrapper already counted the checks on the window; this is the per-check view, not recorded again.
       record.checks = ap.checks(rendered, result.text, { outputTokens, record: false }).results;
@@ -147,8 +149,6 @@ export async function runTicket(host: Host, ticket: Ticket, options: { by: strin
       }
     } catch (error) {
       record.error = errorOf(error);
-      // A refused or failed model call was observed by the wrapper; keep what it filed.
-      record.observation ??= null;
     }
     steps.push(record);
     return record;

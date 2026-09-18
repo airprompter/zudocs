@@ -40,8 +40,8 @@ export interface Host {
   invocations: number;
   /** True on the invocation that started this container; false on every later one. */
   coldStart: boolean;
-  /** Run `fn` and collect the observations the SDK files while it runs. */
-  observed<T>(fn: () => Promise<T>): Promise<{ result: T; observations: Observation[] }>;
+  /** Run `fn` and collect the observations the SDK files while it runs — on a failure too; never throws. */
+  observed<T>(fn: () => Promise<T>): Promise<{ result: T; error?: undefined; observations: Observation[] } | { result?: undefined; error: unknown; observations: Observation[] }>;
   /** This host's status document, written to the status table. */
   writeStatus(): Promise<void>;
 }
@@ -49,10 +49,43 @@ export interface Host {
 const capture = new AsyncLocalStorage<Observation[]>();
 let pending: Promise<Host> | null = null;
 
+/**
+ * The tap: the SDK's own observation for each model call, also handed to the request that made it. The spool writer
+ * is a public property and every wrapper files through `spool.observe`, so an own property shadowing the method sees
+ * each observation before the original writes it. (An `onObservation` listener on the SDK would make this a contract;
+ * filed as a gap.) Idempotent: tapping twice keeps one tap.
+ */
+export function tapObservations(ap: { spool: { observe: (observation: Observation, nowMs: number) => void } }): void {
+  const spool = ap.spool as { observe: (observation: Observation, nowMs: number) => void; [TAPPED]?: boolean };
+  if (spool[TAPPED]) return;
+  const original = spool.observe.bind(spool);
+  spool.observe = (observation, nowMs) => {
+    capture.getStore()?.push(observation);
+    return original(observation, nowMs);
+  };
+  spool[TAPPED] = true;
+}
+const TAPPED = Symbol("zudocs.tapped");
+
+/** Run `fn` with the observations the SDK files during it collected — the tap's other half; see `Host.observed`. */
+export async function collectObservations<T>(fn: () => Promise<T>): Promise<{ result: T; error?: undefined; observations: Observation[] } | { result?: undefined; error: unknown; observations: Observation[] }> {
+  const observations: Observation[] = [];
+  // The wrappers file the observation when the call settles, one turn after the caller sees the result (or the
+  // error): give the spool that turn — a bounded wait, so a call the wrapper never attributed still returns.
+  const settled = await capture.run(observations, () => fn().then((value) => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error })));
+  for (let waited = 0; observations.length === 0 && waited < 500; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
+  return settled.ok ? { result: settled.value, observations } : { error: settled.error, observations };
+}
+
 /** The Agent key: read by name from SSM, decrypted by SSM, never logged, never put back in the environment. */
 async function readAgentKey(env: DeskEnv): Promise<string> {
   const ssm = new SSMClient({ region: env.region });
-  const out = await ssm.send(new GetParameterCommand({ Name: env.agentKeyParameter, WithDecryption: true }));
+  let out;
+  try {
+    out = await ssm.send(new GetParameterCommand({ Name: env.agentKeyParameter, WithDecryption: true }));
+  } catch (error) {
+    throw new Error(`the SSM parameter ${env.agentKeyParameter} could not be read (${(error as Error).name}): the owner writes it with scripts/ssm-put-agent-key.sh after the stack deploys`);
+  }
   const value = out.Parameter?.Value;
   if (!value) throw new Error(`the SSM parameter ${env.agentKeyParameter} has no value (the owner writes it with --cli-input-json; see README)`);
   return value;
@@ -75,7 +108,9 @@ async function startHost(): Promise<Host> {
   const encryptionContext = { application: "zudocs-desk", environment: env.airprompter.environment };
   const store = createStore(DynamoDBDocumentClient.from(new DynamoDBClient({ region: env.region }), { marshallOptions: { removeUndefinedValues: true } }), env.tables);
   const apiKey = await readAgentKey(env);
-  const log = (event: Record<string, unknown>) => console.log(JSON.stringify({ source: "airprompter-sdk", ...event }));
+  // The SDK's events are content-free by design; the one that echoes caller input (the rejected feedback values) is
+  // reduced to the signal names, so a log line never carries text a person typed.
+  const log = (event: Record<string, unknown>) => console.log(JSON.stringify({ source: "airprompter-sdk", ...event, ...(event.event === "feedback_rejected" && typeof event.rejected === "object" && event.rejected !== null ? { rejected: Object.keys(event.rejected as object) } : {}) }));
   const ap = await AirPrompterAgent.start({
     organizationId: env.airprompter.organizationId,
     agentId: env.airprompter.agentId,
@@ -108,12 +143,7 @@ async function startHost(): Promise<Host> {
     fetch: teeFetch(globalThis.fetch as any, { namespace: env.emfNamespace, emit: (line) => process.stdout.write(line + "\n"), properties: { host: env.hostId } }),
     logger: log,
   });
-  // The tap: the SDK's own observation for each model call, also handed to the request that made it.
-  const original = ap.spool.observe.bind(ap.spool);
-  ap.spool.observe = (observation, nowMs) => {
-    capture.getStore()?.push(observation);
-    return original(observation, nowMs);
-  };
+  tapObservations(ap);
   const host: Host = {
     env,
     ap,
@@ -123,11 +153,7 @@ async function startHost(): Promise<Host> {
     sdk: `${SDK_NAME}/${SDK_VERSION}`,
     invocations: 0,
     coldStart: true,
-    async observed(fn) {
-      const observations: Observation[] = [];
-      const result = await capture.run(observations, fn);
-      return { result, observations };
-    },
+    observed: collectObservations,
     async writeStatus() {
       await store.putStatus({
         hostId: env.hostId,

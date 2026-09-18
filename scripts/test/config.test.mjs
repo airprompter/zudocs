@@ -9,7 +9,7 @@ test("the committed config names the dev deployment and the models the desk can 
   assert.equal(config.hostedEnvironment, "dev");
   assert.equal(config.environment, "dev");
   assert.match(config.agentId, /^agent_/);
-  assert.deepEqual(config.models, ["amazon.nova-micro", "openai.gpt-5-6-luna"]);
+  assert.deepEqual(config.models, ["amazon.nova-micro", "openai.gpt-5-6-luna", "anthropic.claude-haiku-4-5"], "the same three the desk host reports (services/desk-api/src/modelCatalogue.ts)");
   assert.ok(Object.isFrozen(config));
 });
 

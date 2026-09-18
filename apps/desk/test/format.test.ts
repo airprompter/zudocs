@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { authorizeUrl, challengeOf, claimsOf, logoutUrl, randomVerifier, tokensFrom } from "../src/auth";
 import { parseConfig } from "../src/config";
-import { ORIGIN_LABELS, TOOLTIPS, armLabel, latency, modelLabel, money, releaseSummary, score, segmentRender, tokens, versionBadge } from "../src/format";
+import { ORIGIN_LABELS, TOOLTIPS, armLabel, latency, modelLabel, money, releaseSummary, score, segmentRender, slug, tokens, versionBadge } from "../src/format";
 
 test("vocabulary: the badge says prompt version and release #N; generation/manifest/slot/arm live in tooltips only", () => {
   assert.equal(versionBadge("support.reply", "rev-2", 1), "reply rev-2 · release #1");
@@ -25,6 +25,8 @@ test("vocabulary: the badge says prompt version and release #N; generation/manif
   assert.equal(modelLabel("something.else"), "something.else");
   for (const word of ["generation", "manifest", "slot"]) assert.ok(Object.values(TOOLTIPS).some((t) => t.includes(word)), `${word} is explained in a tooltip`);
   assert.deepEqual(Object.values(ORIGIN_LABELS), ["call site", "your source", "default", "unfilled"]);
+  assert.equal(slug("Billing / refunds"), "billing-refunds", "a multi-word answer is one class");
+  assert.equal(slug(null), "none");
 });
 
 test("numbers: latency, tokens with the usage source honoured, money, judge score", () => {

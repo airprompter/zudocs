@@ -2,9 +2,10 @@
  * The CI stack: GitHub's OIDC provider and the one role a deploy may assume.
  *
  * The role trusts exactly one subject — pushes to `main` of the configured
- * repository (the `ref:` form: the workflow's deploy job must therefore name
- * no GitHub environment, or the token's subject changes) — and may do exactly
- * one thing: assume the CDK bootstrap roles in the three regions. Every
+ * repository, in GitHub's immutable form `repo:owner@id/repo@id:ref:refs/heads/main`
+ * (the ids outlive a rename or a transfer; the `ref:` form means the workflow's
+ * deploy job must name no GitHub environment, or the subject changes) — and may
+ * do exactly one thing: assume the CDK bootstrap roles in the three regions. Every
  * resource permission lives on those bootstrap roles, so this role never needs
  * widening, and the region in each bootstrap role's name is the region fence.
  *
@@ -51,7 +52,7 @@ export class CiStack extends cdk.Stack {
       assumedBy: new iam.WebIdentityPrincipal(provider.oidcProviderArn, {
         StringEquals: {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": `repo:${github.owner}/${github.repo}:ref:refs/heads/${github.branch}`,
+          "token.actions.githubusercontent.com:sub": `repo:${github.owner}@${github.ownerId}/${github.repo}@${github.repoId}:ref:refs/heads/${github.branch}`,
         },
       }),
     });

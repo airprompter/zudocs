@@ -1,0 +1,21 @@
+{
+  "name": "zudocs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zudocs: a fictional documentation company whose support desk runs on AirPrompter prompts. Reference deployment of the public Agent SDK across three AWS regions.",
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "infra"
+  ],
+  "scripts": {
+    "test": "npm test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "synth": "npm run synth --workspace infra",
+    "deploy": "npm run deploy --workspace infra --",
+    "check-headers": "node scripts/check-headers.mjs"
+  }
+}

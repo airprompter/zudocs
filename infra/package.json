@@ -1,0 +1,25 @@
+{
+  "name": "@zudocs/infra",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CDK for the Zudocs demo company: the site, sign-in, budget and trail in us-east-1, the CI deploy role, and (later phases) the eu-west and ap-southeast hosts.",
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "synth": "cdk synth --quiet",
+    "deploy": "cdk deploy --require-approval never",
+    "diff": "cdk diff"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "2.270.0",
+    "constructs": "^10.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.17.0",
+    "aws-cdk": "^2.1142.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

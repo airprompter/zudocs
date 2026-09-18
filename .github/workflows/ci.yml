@@ -1,0 +1,30 @@
+# CI for every push and pull request: typecheck, the infra assertions, a synth
+# with a placeholder account (no credentials), and the file-header rule.
+# Nothing here can deploy; deploy.yml is the only workflow with cloud access.
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check-headers
+      - run: npm run typecheck
+      - run: npm test
+      - name: Synth with a placeholder account
+        run: npx cdk synth --quiet --context account=111122223333
+        working-directory: infra

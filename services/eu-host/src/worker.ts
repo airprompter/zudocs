@@ -153,7 +153,8 @@ async function main(): Promise<void> {
     process.exit(3);
   }
   /** The store the daemon serves from, as of the current connection: a wiped store under a restarted daemon is a new id. */
-  const storeIdNow = (): string => daemon.hello?.storeId ?? daemon.hello?.instanceId ?? client!.hello.storeId ?? client!.hello.instanceId;
+  const bootHello = client.hello;
+  const storeIdNow = (): string => daemon.hello?.storeId ?? daemon.hello?.instanceId ?? bootHello.storeId ?? bootHello.instanceId;
   const storeId = storeIdNow();
   const sdk = `${SDK_NAME}/${SDK_VERSION}`;
   const ec2 = await readEc2Identity();
@@ -174,7 +175,22 @@ async function main(): Promise<void> {
   // --- The SDK: attached once the daemon serves a generation; re-attached when it is lost ----------------------------
   let ap: AirPrompterAgent | null = null;
   let host: RunHost | null = null;
+  /** The store the SDK attached on: a wiped store under the daemon means the SDK is serving a release the host no longer has. */
+  let attachedStoreId: string | null = null;
   let attaching = false;
+  /** The SDK is let go when the daemon serves nothing (a wiped store, generation 0) or a different store than it attached on. */
+  const detachIfStale = async (): Promise<void> => {
+    const d = latest as DaemonStatusDoc | null;
+    if (!ap || !d) return;
+    const current = storeIdNow();
+    if (d.generation > 0 && current === attachedStoreId) return;
+    log({ event: "sdk_detached", reason: d.generation > 0 ? "store_replaced" : "no_verified_release", storeId: current, attachedOn: attachedStoreId });
+    const stale = ap;
+    ap = null;
+    host = null;
+    attachedStoreId = null;
+    await stale.stop().catch((error) => log({ event: "sdk_stop_failed", reason: (error as Error).message.slice(0, 200) }));
+  };
   const attach = async (): Promise<void> => {
     if (ap || attaching || !latest || latest.generation <= 0) return;
     attaching = true;
@@ -204,9 +220,10 @@ async function main(): Promise<void> {
       });
       ap = agent;
       host = { env: { hostId: env.hostId }, ap: agent, store, callers: createCallers(agent, env.bedrockRegion), observed: collectObservations };
-      log({ event: "sdk_attached", instanceId: agent.instanceId, generation: agent.generation });
+      attachedStoreId = storeIdNow();
+      log({ event: "sdk_attached", instanceId: agent.instanceId, generation: agent.generation, storeId: attachedStoreId });
       const d = latest as DaemonStatusDoc | null;
-      await store.appendEvent({ at: new Date().toISOString(), kind: "host_started", host: env.hostId, generation: agent.generation, stagedGeneration: agent.status().stagedGeneration, storageProtection: d?.storageProtection ?? "daemon", source: "daemon", applyPolicy: d?.applyPolicy?.effective ?? agent.status().applyPolicy.effective, sdk: `${sdk} via ${client!.hello.daemon}`, instanceId: agent.instanceId, daemonInstanceId: d?.instanceId ?? null, ec2: ec2?.instanceId ?? null }).catch((error) => log({ event: "event_write_failed", reason: (error as Error).message }));
+      await store.appendEvent({ at: new Date().toISOString(), kind: "host_started", host: env.hostId, generation: agent.generation, stagedGeneration: agent.status().stagedGeneration, storageProtection: d?.storageProtection ?? "daemon", source: "daemon", applyPolicy: d?.applyPolicy?.effective ?? agent.status().applyPolicy.effective, sdk: `${sdk} via ${daemon.hello?.daemon ?? client!.hello.daemon}`, instanceId: agent.instanceId, daemonInstanceId: d?.instanceId ?? null, ec2: ec2?.instanceId ?? null }).catch((error) => log({ event: "event_write_failed", reason: (error as Error).message }));
     } catch (error) {
       log({ event: "attach_failed", reason: (error as Error).message.slice(0, 300) });
     } finally {
@@ -221,10 +238,12 @@ async function main(): Promise<void> {
     const d = await refresh();
     const h = d ? await daemonHealthz() : null;
     // The host's health, as the daemon judges it — or its silence: a transition is a timeline row (the wire-cut beat reads here).
-    const verdict = h ?? { status: "failing" as const, reasons: ["daemon_unreachable"], generation: null, consecutiveSyncFailures: null, leaseExpiresAt: null };
+    const verdict: { status: string; reasons: string[]; generation: number | null; consecutiveSyncFailures: number | null; leaseExpiresAt: string | null } = h ?? { status: "failing", reasons: ["daemon_unreachable"], generation: null, consecutiveSyncFailures: null, leaseExpiresAt: null };
     if (!d || !h) {
-      // The daemon is restarting: the last status block stands, the health says why, and the worker's part says whether it is attached.
-      await store.updateStatus(env.hostId, { region: env.region, kind: "daemon", sdk, writtenAt: new Date().toISOString(), healthz: { ok: false, status: "failing", reasons: ["daemon_unreachable"] }, worker: { instanceId: ap?.instanceId ?? null, sdk, startedAt, tickets, source: ap ? "daemon" : null, attached: ap?.status().daemon?.attached ?? false, healthz: ap?.healthz().status ?? "unknown", reasons: ap?.healthz().reasons ?? [] }, ec2 });
+      // The daemon is restarting (or answered status but not healthz): the last status block stands, the health says
+      // why, and the worker's part says whether it is attached.
+      verdict.reasons = [d ? "daemon_healthz_unavailable" : "daemon_unreachable"];
+      await store.updateStatus(env.hostId, { region: env.region, kind: "daemon", sdk, writtenAt: new Date().toISOString(), healthz: { ok: false, status: "failing", reasons: verdict.reasons }, worker: { instanceId: ap?.instanceId ?? null, sdk, startedAt, tickets, source: ap ? "daemon" : null, attached: ap?.status().daemon?.attached ?? false, healthz: ap?.healthz().status ?? "unknown", reasons: ap?.healthz().reasons ?? [] }, ec2 });
     } else {
       await store.updateStatus(env.hostId, statusFields({ hostId: env.hostId, region: env.region, daemon: d, healthz: h, worker: ap?.status() ?? null, workerHealthz: ap?.healthz() ?? null, sdk, tickets, startedAt, now: new Date().toISOString(), ec2 }));
     }
@@ -267,9 +286,11 @@ async function main(): Promise<void> {
     if (running) return;
     running = true;
     try {
-      if (!ap || !host || ap.generation === 0) {
-        // Nothing verified to serve (a fresh host under unlock_required waiting for the desk's approval): say so, run
-        // nothing — and take nothing off the presenter's queue, so a queued ticket runs once the host serves.
+      const d = latest as DaemonStatusDoc | null;
+      if (!ap || !host || ap.generation === 0 || !d || d.generation <= 0) {
+        // Nothing verified to serve (a fresh host under unlock_required waiting for the desk's approval, or a daemon
+        // that stopped serving): say so, run nothing — and take nothing off the presenter's queue, so a queued ticket
+        // runs once the host serves.
         if (from === "timer") log({ event: "ticket_skipped", reason: ap ? "no_verified_release" : "sdk_not_attached", from });
         return;
       }
@@ -305,8 +326,14 @@ async function main(): Promise<void> {
     // to — and right after an activation, the row, so the card flips with the decision rather than at the next timer.
     setInterval(() => void (async () => {
       await refresh();
+      if (settled === -1 && latest) {
+        // The first reconcile ran with no daemon: settle the previous store's rows on the first reachable tick.
+        settled = await watcher.reconcile().catch(() => -1);
+        if (settled >= 0) log({ event: "reconciled", settledApprovals: settled });
+      }
       const action = await watcher.tick();
       if (action === "activated") await refresh();
+      await detachIfStale();
       await attach();
       if (action === "activated") await writeStatus().catch((error) => log({ event: "status_write_failed", reason: (error as Error).message }));
     })(), 5_000),

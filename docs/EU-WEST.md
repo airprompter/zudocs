@@ -116,8 +116,8 @@ signs in through the proof client, checks the host's row (daemon host, `file_key
 attached once the host serves, the stack's instance id, fresh), runs `airprompter status --json` and `doctor
 --json` on the host through Run Command (the CLI's own output is printed; `doctor` must warn `key_protection:
 file_key` and fail nothing — on a host with nothing active yet it also reports `active_release` and `daemon` as
-failing, which the proof expects), and with flags — on a fresh or replaced host, `--approve` first: `--approve` (approve what is staged, prove the second approve is not a decision, wait
-for the activation and the card), `--enqueue T-1041` (run one ticket on eu-west now, read the record), `--cli
+failing, which the proof expects), and with flags: `--approve` (approve what is staged, prove the second approve is not a decision, wait
+for the activation and the card — on a fresh or replaced host this is the first run), `--enqueue T-1041` (run one ticket on eu-west now, read the record), `--cli
 unlock` / `--cli rollback` / `--cli "policy show"` (the operator's commands on the host's shell), `--wire` (cut,
 watch `sync_failing`, restore, watch it recover).
 
@@ -144,5 +144,9 @@ watch `sync_failing`, restore, watch it recover).
 - The first deploy: the eu-west stack lands before the desk stack creates the approvals table, so the worker's
   first `reconcile` fails and is logged (`reconcile_failed`); the watcher's ticks keep trying and the row appears
   once the table exists. Nothing to do.
+- A store wiped under a running daemon (an operator's reset on the host): the daemon comes back serving nothing
+  and stages the current release again; the worker lets its attached SDK go (`sdk_detached`), opens a fresh row
+  (the row's id carries the store id) and re-attaches after the approval. The SDK's own reconnect cannot do this
+  by itself — `attachDaemon` keeps the old release when the daemon's `slot` refuses (filed upstream).
 - Costs: the instance (~$6/month), its public IPv4 ($3.65), 8 GiB gp3 ($0.64), the log group, the wire function's
   tick (8,640 invocations a month, inside the free tier). No NAT, no endpoints, no key, no load balancer.

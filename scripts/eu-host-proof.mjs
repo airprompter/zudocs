@@ -130,7 +130,9 @@ const keyCheck = checks.find((c) => c.name === "key_protection");
 (keyCheck?.level === "warn" && /file_key/.test(keyCheck.detail) ? ok : fail)(`doctor warns about the key protection: ${keyCheck ? `${keyCheck.level} — ${keyCheck.detail}` : "no key_protection check in the output"}`);
 const expectedFails = serving ? [] : ["active_release", "daemon"];
 const unexpected = checks.filter((c) => c.level === "fail" && !expectedFails.includes(c.name));
-(checks.length >= 10 && unexpected.length === 0 ? ok : fail)(`doctor ran ${checks.length} checks with no failure${serving ? "" : " beyond the two a host with nothing active reports"} (${checks.map((c) => `${c.name}:${c.level}`).join(" ")})`);
+// The checks a host always has (lease and last_upload appear only once a release is active and a segment was acked).
+const named = ["source", "root", "store", "key_protection", "policy_pin", "spool", "daemon"].filter((n) => !checks.some((c) => c.name === n));
+(named.length === 0 && unexpected.length === 0 ? ok : fail)(`doctor ran ${checks.length} checks with no failure${serving ? "" : " beyond the two a host with nothing active reports"}${named.length ? ` — missing ${named.join(", ")}` : ""} (${checks.map((c) => `${c.name}:${c.level}`).join(" ")})`);
 
 // --- Optional drills --------------------------------------------------------------------------------------------------
 if (flag("--approve")) {

@@ -9,9 +9,12 @@
 #   $ ZUDOCS_PROOF_PASSWORD="$(openssl rand -base64 24)" AWS_PROFILE=zudocs bash scripts/cognito-users.sh proof proof@zudocs.com
 set -euo pipefail
 kind="${1:?owner | proof}"
-email="${2:?the user's e-mail address}"
+email="${2:?the e-mail address of the user}"
 region="${AWS_REGION:-us-east-1}"
-pool="${ZUDOCS_USER_POOL_ID:-$(aws cloudformation describe-stacks --region "$region" --stack-name ZudocsSite --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text)}"
+pool="${ZUDOCS_USER_POOL_ID:-}"
+if [ -z "$pool" ]; then
+  pool="$(aws cloudformation describe-stacks --region "$region" --stack-name ZudocsSite --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue" --output text)"
+fi
 case "$email" in *@*.*) ;; *) echo "not an e-mail address" >&2; exit 2 ;; esac
 case "$kind" in
   owner)

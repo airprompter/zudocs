@@ -185,6 +185,12 @@ export class DeskStack extends cdk.Stack {
     const foundationModels = [...new Set(Object.values(CATALOGUE).map((m) => m.foundationModelId))].map((id) => `arn:${this.partition}:bedrock:*::foundation-model/${id}`);
     const profiles = Object.values(CATALOGUE).filter((m) => m.bedrockId !== m.foundationModelId).map((m) => this.formatArn({ service: "bedrock", resource: "inference-profile", resourceName: m.bedrockId }));
     this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:ConverseStream"], resources: [...foundationModels, ...profiles] }));
+    // The OpenAI-compatible bedrock-mantle endpoint authorises its own action on the account's default project
+    // (found by the first real call: "not authorized to perform: bedrock-mantle:CreateInference"); the model is
+    // still the catalogue's — the endpoint checks the model agreement, not a per-model ARN.
+    if (Object.values(CATALOGUE).some((m) => m.path === "mantle")) {
+      this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["bedrock-mantle:CreateInference"], resources: [this.formatArn({ service: "bedrock-mantle", resource: "project", resourceName: "default" })] }));
+    }
     // The replay job: the function invokes itself asynchronously (by its fixed name, so the policy has no cycle).
     this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [this.formatArn({ service: "lambda", resource: "function", resourceName: DESK_FUNCTION_NAME, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME })] }));
 

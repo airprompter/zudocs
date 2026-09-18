@@ -118,6 +118,10 @@ test("IAM: exactly the catalogue's models, one SSM parameter by ARN, KMS under e
   for (const entry of Object.values(CATALOGUE)) assert.ok(resources.includes(`foundation-model/${entry.foundationModelId}`), entry.foundationModelId);
   assert.ok(resources.includes("inference-profile/us.amazon.nova-micro-v1:0") && resources.includes("inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0"));
   assert.ok(!resources.includes("foundation-model/*") && !resources.includes('"*"'), "no wildcard model");
+  const mantle = statements.filter((st) => actionsOf(st).some((a) => a.startsWith("bedrock-mantle:")));
+  assert.equal(mantle.length, 1, "the OpenAI-compatible endpoint's own action");
+  assert.deepEqual(actionsOf(mantle[0]!), ["bedrock-mantle:CreateInference"]);
+  assert.ok(JSON.stringify(mantle[0]!.Resource).includes(":bedrock-mantle:us-east-1:111122223333:project/default"), "the account's default Mantle project, nothing wider");
   const ssm = statements.filter((st) => actionsOf(st).includes("ssm:GetParameter"));
   assert.equal(ssm.length, 1);
   assert.ok(JSON.stringify(ssm[0]!.Resource).includes(":parameter/zudocs/dev/agent-key"), "one parameter, by ARN");

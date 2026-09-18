@@ -13,9 +13,10 @@ cdk.context.json
 *.key.json
 *.pem
 
-# The local prompt registry for `airprompter dev` (prompt text lives in AirPrompter) and its dev root
+# The local prompt registry for `airprompter dev` (prompt text lives in AirPrompter; seeded by npm run prompts:seed)
+# and its dev root. Nothing under it but the keep file is committed: airprompter dev serves every .md there.
 prompts/*
-!prompts/README.md
+!prompts/.gitkeep
 .airprompter-dev/
 
 # Runtime state directories
@@ -26,3 +27,6 @@ state/
 .DS_Store
 .vscode/
 .idea/
+
+# The released CLI, installed by hand (see prompts/README.md); a binary never belongs in git
+.bin/

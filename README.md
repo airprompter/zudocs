@@ -11,20 +11,37 @@ Everything here depends only on what any customer has: the public npm and PyPI p
 CLI, the public root key, and keys issued in the AirPrompter console. No prompt text is committed. No key
 is ever in this repository, on a command line, or in a log.
 
-## What is here today (phase 1)
+## What is here today (phases 1–2)
 
 ```
 infra/             CDK: ZudocsCi (the deploy role), ZudocsDns (the zone), ZudocsSite (landing page,
                    sign-in, budget, trail) — all us-east-1
 apps/landing/      the public site at zudocs.com
-prompts/           the local registry for `airprompter dev` — ignored; seeded in phase 2
-keys/              public root JWKs the verify action pins — filled in phase 2
-scripts/           account-baseline.sh, check-headers.mjs, check-keys.mjs
-docs/              ARCHITECTURE.md
+airprompter.config.json   where the prompts live in AirPrompter: identifiers only, never a key
+prompts/           the local registry for `airprompter dev` — ignored; `npm run prompts:seed` fills it
+keys/              public root JWKs the hosts and the verify action pin (dev today, prod at the cutover)
+scripts/           prompts-seed, dev-smoke, dev-proof, account-baseline.sh, check-headers, check-keys
+docs/              ARCHITECTURE.md, PROMPTS.md (the slots, variables, checks, golden set, models)
 ```
+
+Phase 2 put the prompts in AirPrompter: one Agent, `zudocs-support`, four slots (`support.triage` on Nova Micro;
+`support.reply` and the two-step escalation on GPT-5.6 Luna), variables the desk fills from its own customer table,
+declared output checks, a golden set, settings on the version — promoted to the dev environment. `docs/PROMPTS.md`
+is the contract; the text is not here.
 
 Later phases add `apps/desk/` (phase 3), `services/` (phases 3–5), the demo script and the reset path
 (phase 6). See `docs/ARCHITECTURE.md`.
+
+## Work on the prompts locally
+
+```sh
+# once: the released CLI (verify the digest; see docs/PROMPTS.md), installed at .bin/airprompter or on PATH
+eval "$(.bin/airprompter login --email you@zudocs.com --base-url https://api-dev.airprompter.com)"
+npm run prompts:seed            # ./prompts from the release promoted to dev (prompt text stays out of git)
+npm run dev:smoke               # airprompter dev --daemon + the SDK: every slot renders, fills, fences, passes its checks
+set -a; . ~/.config/zudocs/dev.env; set +a        # the Agent key, from a 0600 file, into the environment
+npm run dev:proof               # the same render against AirPrompter dev, telemetry uploaded
+```
 
 ## Run the checks
 

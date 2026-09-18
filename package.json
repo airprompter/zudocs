@@ -12,11 +12,17 @@
     "infra"
   ],
   "scripts": {
-    "test": "npm test --workspaces --if-present",
+    "test": "node --test \"scripts/test/*.test.mjs\" && npm test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "synth": "npm run synth --workspace infra",
     "deploy": "npm run deploy --workspace infra --",
     "check-headers": "node scripts/check-headers.mjs",
-    "check-keys": "node scripts/check-keys.mjs"
+    "check-keys": "node scripts/check-keys.mjs",
+    "prompts:seed": "node scripts/prompts-seed.mjs",
+    "dev:smoke": "node scripts/dev-smoke.mjs",
+    "dev:proof": "node scripts/dev-proof.mjs"
+  },
+  "dependencies": {
+    "@airprompter/agent-sdk": "0.2.14"
   }
 }

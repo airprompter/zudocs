@@ -38,6 +38,7 @@ export function variableMarker(variable) {
     if (required || endUser) throw new Error(`variable ${name}: a default belongs to an optional operator variable only`);
     if (variable.default === "") throw new Error(`variable ${name}: a default is never empty`);
     if (variable.default.includes(",") || variable.default.includes("\n")) throw new Error(`variable ${name}: the dev grammar cannot carry a default with a comma or a line break (change the default in AirPrompter, or fill it at the call site)`);
+    if (variable.default !== variable.default.trim()) throw new Error(`variable ${name}: the dev grammar trims a default, so one with leading or trailing whitespace cannot round-trip`);
     marker += `=${variable.default}`;
   }
   return marker;

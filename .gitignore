@@ -28,5 +28,5 @@ state/
 .vscode/
 .idea/
 
-# The released CLI, installed by hand (see prompts/README.md); a binary never belongs in git
+# The released CLI, installed by hand (docs/PROMPTS.md); a binary never belongs in git
 .bin/

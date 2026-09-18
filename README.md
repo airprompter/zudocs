@@ -38,9 +38,9 @@ Later phases add `apps/desk/` (phase 3), `services/` (phases 3–5), the demo sc
 # once: the released CLI (verify the digest; see docs/PROMPTS.md), installed at .bin/airprompter or on PATH
 eval "$(.bin/airprompter login --email you@zudocs.com --base-url https://api-dev.airprompter.com)"
 npm run prompts:seed            # ./prompts from the release promoted to dev (prompt text stays out of git)
-npm run dev:smoke               # airprompter dev --daemon + the SDK: every slot renders, fills, fences, passes its checks
+npm run dev:smoke               # airprompter dev --daemon + the SDK: every slot renders, fills, fences, passes its checks (no model)
 set -a; . ~/.config/zudocs/dev.env; set +a        # the Agent key, from a 0600 file, into the environment
-npm run dev:proof               # the same render against AirPrompter dev, telemetry uploaded
+npm run dev:proof               # the same render against AirPrompter dev: two customers, two tiers, one heartbeat
 ```
 
 ## Run the checks

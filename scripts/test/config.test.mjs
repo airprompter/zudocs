@@ -4,7 +4,7 @@ import { readConfig, secretFromEnv } from "../lib/config.mjs";
 
 test("the committed config names the dev deployment and the models the desk can call", () => {
   const config = readConfig({});
-  assert.match(config.baseUrl, /^https:\/\/api(-dev)?\.airprompter\.com$/);
+  assert.equal(config.baseUrl, "https://api-dev.airprompter.com", "phases 2–6 prove on dev; the prod cutover changes this line");
   assert.match(config.rootUrl, /\/roots\/dev\/root\.json$/);
   assert.equal(config.hostedEnvironment, "dev");
   assert.equal(config.environment, "dev");
@@ -25,6 +25,7 @@ test("a bad environment or an empty model list is refused by name", () => {
   assert.throws(() => readConfig({ AIRPROMPTER_ENVIRONMENT: "production" }), /environment must be dev, staging or prod/);
   assert.throws(() => readConfig({ AIRPROMPTER_MODELS: " , " }), /models is empty/);
   assert.throws(() => readConfig({ AIRPROMPTER_AGENT_ID: "   " }), /agentId is missing/);
+  assert.deepEqual(readConfig({ AIRPROMPTER_MODELS: "one-model" }).models, ["one-model"], "a single model needs no comma");
 });
 
 test("a secret comes from the environment only, and a missing one is named without echoing anything", () => {

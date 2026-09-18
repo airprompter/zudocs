@@ -30,7 +30,8 @@ npm run check-headers && npm run check-keys && npm run typecheck && npm test && 
 
 A change to the seed, the smoke or the prompt-file grammar is also run for real: `npm run prompts:seed && npm run
 dev:smoke` (needs the CLI and a login), and `npm run dev:proof` when the SDK path changed (needs the Agent key in
-the environment). Paste their output — never a key — into the pull request.
+the environment). Their output carries ids, counts and verdicts and never prompt text or a key, so paste it into
+the pull request.
 
 ## Deploying
 

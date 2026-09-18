@@ -33,6 +33,10 @@ test("what the grammar cannot carry is refused, never mangled", () => {
   assert.throws(() => variableMarker({ name: "tone", required: false, trust: "operator", default: "warm, brief" }), /comma/, "the line is comma-separated");
   assert.throws(() => variableMarker({ name: "tone", required: false, trust: "operator", default: "one\ntwo" }), /line break/);
   assert.throws(() => variableMarker({ name: "tone", required: false, trust: "operator", default: "" }), /never empty/);
+  assert.throws(() => variableMarker({ name: "tone", required: false, trust: "operator", default: " warm" }), /trims a default/);
+  // A default may hold "=": the CLI splits on the first one only.
+  assert.equal(variableMarker({ name: "sign", required: false, trust: "operator", default: "a=b" }), "sign=a=b");
+  assert.deepEqual(parseVariableMarker("sign=a=b"), { name: "sign", required: false, trust: "operator", default: "a=b" });
   assert.throws(() => variableMarker({ name: "ticket", required: true, trust: "operator", default: "x" }), /optional operator/);
   assert.throws(() => variableMarker({ name: "ticket", required: false, trust: "end_user", default: "x" }), /optional operator/);
   assert.throws(() => variableMarker({ name: "bad name", required: false, trust: "operator" }), /name refused/);

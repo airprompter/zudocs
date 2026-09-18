@@ -16,7 +16,7 @@ variable of the same name, `AIRPROMPTER_AGENT_ID` and so on):
 | `rootUrl` | `https://dwp5emkmjpv8.cloudfront.net/roots/dev/root.json` | the signed root document the pinned key verifies |
 | `organizationId` / `workspaceId` / `agentId` | the "Zudocs" workspace and the `zudocs-support` Agent | the scope every SDK call carries |
 | `environment` | `dev` | the Agent environment this checkout syncs (`staging`, `prod` later) |
-| `models` | `amazon.nova-micro`, `openai.gpt-5-6-luna` | what this application can call — reported on every heartbeat; a seal refuses a slot pinned to a model no instance reports |
+| `models` | `amazon.nova-micro`, `openai.gpt-5-6-luna`, `anthropic.claude-haiku-4-5` | what this application can call, in AirPrompter's catalogue spelling — reported on every heartbeat; a seal refuses a slot pinned to a model no instance reports. Haiku 4.5 is the experiment's candidate arm (phase 6); the desk host reports all three (`services/desk-api/src/modelCatalogue.ts`) |
 
 Secrets are never in that file. Two of them exist:
 

@@ -9,7 +9,8 @@
  * ```
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -31,10 +32,20 @@ const CONTEXT = {
 /** The feature flags from cdk.json, so the tests synthesize what `cdk deploy` synthesizes. */
 const FLAGS = Object.fromEntries(Object.entries((JSON.parse(readFileSync(join(fileURLToPath(new URL(".", import.meta.url)), "..", "cdk.json"), "utf8")) as { context: Record<string, unknown> }).context).filter(([k]) => k.startsWith("@aws-cdk/")));
 
+/** The desk stack needs built artefacts to exist; these tests are about the other stacks, so stand-ins suffice (desk-stack.test.ts pins the desk). */
+function fixtures(): { deskApi: string; deskSite: string } {
+  const deskApi = mkdtempSync(join(tmpdir(), "zudocs-desk-api-"));
+  const deskSite = mkdtempSync(join(tmpdir(), "zudocs-desk-site-"));
+  writeFileSync(join(deskApi, "index.mjs"), "export const handler = async () => ({ statusCode: 200 });\n");
+  writeFileSync(join(deskSite, "index.html"), "<!doctype html><title>fixture</title>\n");
+  return { deskApi, deskSite };
+}
+const IDS = { baseUrl: "https://api-dev.airprompter.com", hostedEnvironment: "dev", rootUrl: "https://edge.example/roots/dev/root.json", organizationId: "org-1", agentId: "agent_x", environment: "dev", rootJwk: JSON.stringify({ kty: "EC", crv: "P-256", x: "x", y: "y", kid: "k" }) };
+
 function synth(email = "owner@example.test", context: Record<string, unknown> = {}) {
   const app = new cdk.App({ context: { ...FLAGS, ...CONTEXT, ...context } });
   const config = readConfig(app.node, { BUDGET_EMAIL: email });
-  const stacks = buildStacks(app, config);
+  const stacks = buildStacks(app, config, { assets: fixtures(), airprompter: IDS });
   // Every stack is on the tree before the first synth: a template after a synth is a modified tree.
   return { dns: Template.fromStack(stacks.dns), site: Template.fromStack(stacks.site), ci: Template.fromStack(stacks.ci), stacks };
 }
@@ -53,7 +64,7 @@ test("config refuses what would weaken the deploy: no account, an alert below th
 
 test("the stack ids are the ones the workflow names, and the site depends on the DNS stack's zone", () => {
   const { stacks } = synth();
-  assert.deepEqual(Object.values(STACK_IDS).sort(), ["ZudocsCi", "ZudocsDns", "ZudocsSite"]);
+  assert.deepEqual(Object.values(STACK_IDS).sort(), ["ZudocsCi", "ZudocsDesk", "ZudocsDns", "ZudocsSite"]);
   assert.ok(stacks.site.dependencies.includes(stacks.dns), "the site's certificate validates through the zone");
   assert.ok(!stacks.ci.dependencies.length && !stacks.dns.dependencies.includes(stacks.ci) && !stacks.site.dependencies.includes(stacks.ci), "CI is deployed alone, by the owner");
 });
@@ -131,7 +142,7 @@ test("money: a $30 budget with [actual 100 %, actual 166.67 %, forecast 100 %] t
     [["ACTUAL", 100], ["ACTUAL", 166.67], ["FORECASTED", 100]],
   );
   for (const n of props.NotificationsWithSubscribers) assert.deepEqual(n.Subscribers, [{ SubscriptionType: "EMAIL", Address: "owner@example.test" }]);
-  site.hasResourceProperties("AWS::IAM::ManagedPolicy", { ManagedPolicyName: "ZudocsBudgetBedrockDeny", PolicyDocument: Match.objectLike({ Statement: [Match.objectLike({ Effect: "Deny", Action: ["bedrock:Converse", "bedrock:ConverseStream", "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"] })] }) });
+  site.hasResourceProperties("AWS::IAM::ManagedPolicy", { ManagedPolicyName: "ZudocsBudgetBedrockDeny", PolicyDocument: Match.objectLike({ Statement: [Match.objectLike({ Effect: "Deny", Action: ["bedrock-mantle:*", "bedrock:Converse", "bedrock:ConverseStream", "bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"] })] }) });
   site.hasResourceProperties("AWS::CE::AnomalySubscription", { Frequency: "DAILY", Subscribers: [{ Type: "EMAIL", Address: "owner@example.test" }] });
   site.hasResourceProperties("AWS::CloudTrail::Trail", { IsMultiRegionTrail: true, EnableLogFileValidation: true, IncludeGlobalServiceEvents: true });
 });

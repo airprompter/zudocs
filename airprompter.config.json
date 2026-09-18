@@ -7,5 +7,5 @@
   "workspaceId": "a83801e5-31c7-48f0-bd87-bf80b2f7a693",
   "agentId": "agent_1QNnYql4RXq9taZn",
   "environment": "dev",
-  "models": ["amazon.nova-micro", "openai.gpt-5-6-luna"]
+  "models": ["amazon.nova-micro", "openai.gpt-5-6-luna", "anthropic.claude-haiku-4-5"]
 }

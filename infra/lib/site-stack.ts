@@ -7,7 +7,9 @@
  * - Sign-in for the desk: a Cognito user pool with no self-signup, no account
  *   recovery, hosted UI only, a public PKCE client scoped to `openid email` —
  *   users are created by hand (`admin-create-user`) for the owner today and
- *   sales people later.
+ *   sales people later. A second client, `proof`, has no hosted UI and allows
+ *   the server-side password flow only: the automated proof signs in as
+ *   `proof@zudocs.com` with a password that lives in the owner's environment.
  * - The monthly budget (e-mail alerts; the Bedrock deny action attaches to the
  *   runtime roles in phase 3), a management-events trail, and a cost anomaly
  *   monitor. The IAM policy the budget action will attach exists from day one.
@@ -31,6 +33,9 @@ export interface SiteStackProps extends cdk.StackProps {
   readonly zone: route53.IHostedZone;
 }
 
+/** The monthly budget's name: the desk stack's Bedrock deny action is attached to it by name. */
+export const BUDGET_NAME = "zudocs-monthly";
+
 /** The Cognito hosted-UI prefix is unique per region across all accounts, so it is derived from ours (never the id itself). */
 export function cognitoDomainPrefix(account: string): string {
   return `zudocs-${createHash("sha256").update(account).digest("hex").slice(0, 8)}`;
@@ -40,6 +45,10 @@ export class SiteStack extends cdk.Stack {
   readonly certificate: acm.Certificate;
   readonly userPool: cognito.UserPool;
   readonly userPoolClient: cognito.UserPoolClient;
+  /** The hosted UI's domain (the desk's sign-in and token endpoints live under it). */
+  readonly hostedUiDomain: cognito.UserPoolDomain;
+  /** The proof script's client: ADMIN_USER_PASSWORD_AUTH only, no hosted UI, no secret. */
+  readonly proofClient: cognito.UserPoolClient;
   /** Attached to every runtime role by the budget action when spend crosses the monthly line. */
   readonly bedrockDenyPolicy: iam.ManagedPolicy;
 
@@ -120,6 +129,7 @@ export class SiteStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
     const hosted = this.userPool.addDomain("HostedUi", { cognitoDomain: { domainPrefix: cognitoDomainPrefix(config.account) } });
+    this.hostedUiDomain = hosted;
     this.userPoolClient = this.userPool.addClient("Desk", {
       userPoolClientName: "desk",
       generateSecret: false,
@@ -139,7 +149,20 @@ export class SiteStack extends cdk.Stack {
       idTokenValidity: cdk.Duration.hours(1),
       refreshTokenValidity: cdk.Duration.hours(24),
     });
+    this.proofClient = this.userPool.addClient("Proof", {
+      userPoolClientName: "proof",
+      generateSecret: false,
+      // The automated proof only: a server-side password sign-in the owner's session performs with the proof user's
+      // password from its environment. No hosted UI, no OAuth flow, no callback — nothing a browser could use.
+      authFlows: { adminUserPassword: true, userSrp: false },
+      disableOAuth: true,
+      preventUserExistenceErrors: true,
+      accessTokenValidity: cdk.Duration.hours(1),
+      idTokenValidity: cdk.Duration.hours(1),
+      refreshTokenValidity: cdk.Duration.hours(1),
+    });
     new cdk.CfnOutput(this, "UserPoolId", { value: this.userPool.userPoolId });
+    new cdk.CfnOutput(this, "ProofClientId", { value: this.proofClient.userPoolClientId });
     new cdk.CfnOutput(this, "UserPoolClientId", { value: this.userPoolClient.userPoolClientId });
     new cdk.CfnOutput(this, "HostedUiBase", { value: hosted.baseUrl() });
 
@@ -147,12 +170,12 @@ export class SiteStack extends cdk.Stack {
     this.bedrockDenyPolicy = new iam.ManagedPolicy(this, "BedrockDeny", {
       managedPolicyName: "ZudocsBudgetBedrockDeny",
       description: "Attached by the budget action when the month's spend crosses the line: no more model calls",
-      statements: [new iam.PolicyStatement({ effect: iam.Effect.DENY, actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:ConverseStream"], resources: ["*"] })],
+      statements: [new iam.PolicyStatement({ effect: iam.Effect.DENY, actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:ConverseStream", "bedrock-mantle:*"], resources: ["*"] })],
     });
     const subscribers = config.budget.email ? [{ subscriptionType: "EMAIL", address: config.budget.email }] : [];
     new budgets.CfnBudget(this, "Budget", {
       budget: {
-        budgetName: "zudocs-monthly",
+        budgetName: BUDGET_NAME,
         budgetType: "COST",
         timeUnit: "MONTHLY",
         budgetLimit: { amount: config.budget.monthlyUsd, unit: "USD" },

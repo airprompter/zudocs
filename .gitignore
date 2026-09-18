@@ -30,3 +30,8 @@ state/
 
 # The released CLI, installed by hand (docs/PROMPTS.md); a binary never belongs in git
 .bin/
+
+# The desk app's local configuration (the deployed values, written by hand for `vite dev`; the stack writes the real one)
+apps/desk/public/config.json
+# Anything a local session writes beside the app for a laptop run (a signed-in session for a visual check)
+apps/desk/public/dev-*.json

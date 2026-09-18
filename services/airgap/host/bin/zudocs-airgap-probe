@@ -1,0 +1,32 @@
+#!/bin/bash
+# What this host can and cannot reach, measured once at boot and kept as JSON for the status document (the desk's card
+# shows it): an HTTPS connect to AirPrompter's API host, which must fail — there is no route out — and a public name
+# lookup, which resolves (the VPC's resolver answers for any name; a name is not a route). Exit codes are curl's own:
+# 28 is a connect timeout, 7 a refused connect, 6 a name that did not resolve. Nothing here is a claim: the numbers are
+# what the commands returned.
+#
+#   $ zudocs-airgap-probe /var/lib/zudocs/probe.json      # → {"at":…,"curl":{"url":…,"exit":28,"seconds":8.0,…},"dns":{…}}
+set -u
+out="${1:?usage: zudocs-airgap-probe <output.json>}"
+url="${ZUDOCS_PROBE_URL:-https://api-dev.airprompter.com/}"
+name="${ZUDOCS_PROBE_NAME:-api-dev.airprompter.com}"
+start="$(date +%s.%N)"
+curl -sS -o /dev/null --connect-timeout 8 --max-time 10 "$url" 2>/dev/null
+exit_code=$?
+end="$(date +%s.%N)"
+seconds="$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.1f", b - a }')"
+case "$exit_code" in
+  0) meaning="connected — this host has a route out; that is a defect" ;;
+  28) meaning="connect timed out — no route out" ;;
+  7) meaning="connect refused — no route out" ;;
+  6) meaning="name did not resolve" ;;
+  *) meaning="curl exit ${exit_code}" ;;
+esac
+if resolved="$(getent hosts "$name" 2>/dev/null | head -1)"; then
+  dns_ok=true; dns_detail="resolved by the VPC resolver (a name is not a route)"
+else
+  dns_ok=false; dns_detail="did not resolve"
+fi
+printf '{"at":"%s","curl":{"url":"%s","exit":%d,"seconds":%s,"meaning":"%s"},"dns":{"name":"%s","resolved":%s,"detail":"%s"}}\n' \
+  "$(date -u +%FT%TZ)" "$url" "$exit_code" "$seconds" "$meaning" "$name" "$dns_ok" "$dns_detail" > "$out"
+cat "$out"

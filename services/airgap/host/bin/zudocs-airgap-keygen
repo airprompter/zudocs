@@ -1,0 +1,32 @@
+#!/bin/bash
+# The distribution keypair, born on this host: `airprompter keygen --purpose distribution` as the airprompter user under
+# /var/lib/airprompter/keys (a directory that is not, and can never be, a git worktree — the CLI refuses one), the private
+# half left exactly as the CLI wrote it (0600, its owner the runtime's user), and the PUBLIC half copied to the exchange
+# bucket under the one key object the instance role may write. Idempotent: an existing private key is kept (the CLI
+# refuses to overwrite a key; a new host is a new key), and the public half is re-published so a lost object is put
+# back. Nothing prints key material: the CLI prints paths and the key id, and so does this.
+#
+#   $ sudo zudocs-airgap-keygen        # → key id …, public half at s3://<exchange>/keys/airgap.distribution.pub.json
+set -euo pipefail
+. /etc/airprompter/zudocs.env
+: "${EXCHANGE_BUCKET:?zudocs.env names no EXCHANGE_BUCKET}"
+: "${ZUDOCS_DISTRIBUTION_KEY_PATH:?zudocs.env names no ZUDOCS_DISTRIBUTION_KEY_PATH}"
+: "${ZUDOCS_REGION:?zudocs.env names no ZUDOCS_REGION}"
+prefix="${ZUDOCS_DISTRIBUTION_KEY_PATH%.key.json}"
+public="${prefix}.pub.json"
+dir="$(dirname "$prefix")"
+if [ -e "${dir}/.git" ]; then echo "zudocs-airgap-keygen: ${dir} is a git directory; refusing" >&2; exit 2; fi
+install -d -o airprompter -g airprompter -m 0700 "$dir"
+if [ ! -f "$ZUDOCS_DISTRIBUTION_KEY_PATH" ]; then
+  runuser -u airprompter -- /usr/local/bin/airprompter keygen --purpose distribution --out "$prefix" --json
+else
+  echo "zudocs-airgap-keygen: ${ZUDOCS_DISTRIBUTION_KEY_PATH} exists; keeping it (a key is never regenerated in place)"
+fi
+chown airprompter:airprompter "$ZUDOCS_DISTRIBUTION_KEY_PATH" "$public"
+chmod 0600 "$ZUDOCS_DISTRIBUTION_KEY_PATH"
+chmod 0644 "$public"
+# The public half only. The path is spelled out — never a glob over the keys directory.
+grep -q '"kind": *"airprompter-distribution-public-key"' "$public" || { echo "zudocs-airgap-keygen: ${public} is not a public key file; refusing to publish" >&2; exit 2; }
+grep -q '"privateKey"' "$public" && { echo "zudocs-airgap-keygen: ${public} carries a private member; refusing to publish" >&2; exit 2; }
+aws s3 cp --region "$ZUDOCS_REGION" --content-type application/json "$public" "s3://${EXCHANGE_BUCKET}/keys/airgap.distribution.pub.json" >/dev/null
+echo "zudocs-airgap-keygen: public half published to s3://${EXCHANGE_BUCKET}/keys/airgap.distribution.pub.json (key id $(sed -n 's/.*"keyId": *"\([^"]*\)".*/\1/p' "$public" | head -1))"

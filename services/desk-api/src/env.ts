@@ -25,6 +25,8 @@ export interface DeskEnv {
   readonly kmsKeyId: string;
   /** The eu-west wire function (`zudocs-wire`) the presenter's cut / restore invoke; empty until that stack exists. */
   readonly wireFunctionArn: string;
+  /** The fleet's nudge queue in ap-southeast-1 (`zudocs-nudge`) the presenter posts to; empty until that stack exists. */
+  readonly nudgeQueueUrl: string;
   /** The SSM SecureString parameter NAME the Agent key is read from at cold start. */
   readonly agentKeyParameter: string;
   readonly airprompter: {
@@ -76,6 +78,7 @@ export function readEnv(env: NodeJS.ProcessEnv = process.env): DeskEnv {
     }),
     kmsKeyId: need(env, "KMS_KEY_ID"),
     wireFunctionArn: env.WIRE_FUNCTION_ARN?.trim() || "",
+    nudgeQueueUrl: env.NUDGE_QUEUE_URL?.trim() || "",
     agentKeyParameter: parameter,
     airprompter: Object.freeze({
       baseUrl: need(env, "AIRPROMPTER_BASE_URL"),

@@ -1,0 +1,37 @@
+# One import pass: the air-gapped host's telemetry exports from the exchange bucket to AirPrompter through the released
+# CLI's `import-telemetry` (src/importTelemetry.ts). Started by zudocs-import.timer every five minutes, as the
+# airprompter user. The Agent key reaches it as a systemd credential: the daemon's root-only env file is mounted under
+# $CREDENTIALS_DIRECTORY for this unit alone, the script reads the value and hands it to the CLI's environment only —
+# the file's mode does not change and no other unit sees it.
+#
+#   $ systemctl start zudocs-import.service && tail -5 /var/log/zudocs/import.log
+
+[Unit]
+Description=Zudocs eu-west host: import the air-gapped host's telemetry exports from the exchange bucket
+After=network-online.target airprompterd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=airprompter
+Group=airprompter
+EnvironmentFile=/etc/airprompter/zudocs.env
+Environment=NODE_OPTIONS=--enable-source-maps
+LoadCredential=airprompterd.env:/etc/airprompter/airprompterd.env
+ExecStart=/usr/local/bin/node /opt/zudocs/import.mjs
+StandardOutput=append:/var/log/zudocs/import.log
+StandardError=append:/var/log/zudocs/import.log
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/zudocs /var/log/zudocs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+UMask=0077

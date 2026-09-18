@@ -1,0 +1,16 @@
+# Every five minutes, a minute after boot: the export (zudocs-airgap-export.service). The spool closes a window at the
+# end of its minute, so an export carries everything a minute old or older; nothing is lost between two exports.
+#
+#   $ systemctl list-timers zudocs-airgap-export.timer
+
+[Unit]
+Description=Zudocs air-gapped host: export telemetry every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=15s
+Unit=zudocs-airgap-export.service
+
+[Install]
+WantedBy=timers.target

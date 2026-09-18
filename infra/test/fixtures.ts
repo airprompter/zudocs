@@ -17,6 +17,7 @@ import { Template } from "aws-cdk-lib/assertions";
 import { buildStacks } from "../lib/app.js";
 import { readConfig } from "../lib/config.js";
 import type { AirPrompterIds } from "../lib/desk-stack.js";
+import type { AirgapPins } from "../lib/fleet-names.js";
 import type { Pins } from "../lib/shared-host-names.js";
 
 export const CONTEXT = {
@@ -31,9 +32,10 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 export const FLAGS = Object.fromEntries(Object.entries((JSON.parse(readFileSync(join(here, "..", "cdk.json"), "utf8")) as { context: Record<string, unknown> }).context).filter(([k]) => k.startsWith("@aws-cdk/")));
 export const IDS: AirPrompterIds = { baseUrl: "https://api-dev.airprompter.com", hostedEnvironment: "dev", rootUrl: "https://edge.example/roots/dev/root.json", edgePointerUrl: "https://edge.example/g/tok/generation.json", organizationId: "org-1", agentId: "agent_x", environment: "dev", rootJwk: JSON.stringify({ kty: "EC", crv: "P-256", x: "x", y: "y", kid: "k" }) };
 export const PINS: Pins = { cli: { tag: "cli/v0.1.0", asset: "airprompter-linux-arm64", sha256: "f".repeat(64), url: "https://github.com/airprompter/airprompter-agent-sdk/releases/download/cli/v0.1.0/airprompter-linux-arm64" }, pythonSdk: { tag: "sdk-python/v0.2.14", commit: "0".repeat(40), repo: "https://github.com/airprompter/airprompter-agent-sdk", packages: ["core", "sync", "telemetry", "runtime", "agent"] }, ami: { name: "al2023-fixture", "eu-west-1": "ami-0535b4996339a5410" } };
+export const AIRGAP_PINS: AirgapPins = { node: { version: "v22.23.2", asset: "node-v22.23.2-linux-arm64.tar.gz", sha256: "e".repeat(64), url: "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-arm64.tar.gz" }, ami: { name: "al2023-fixture", "ap-southeast-1": "ami-033ccd61cb71cb72b" } };
 
 /** Stand-ins for the built artefacts: the stacks only need the directories to exist. */
-export function fixtures(): { deskApi: string; deskSite: string; euHostBundle: string; wire: string } {
+export function fixtures(): { deskApi: string; deskSite: string; euHostBundle: string; wire: string; puller: string; airgapBundle: string } {
   const dir = (name: string, file: string, text: string) => {
     const path = mkdtempSync(join(tmpdir(), `zudocs-${name}-`));
     writeFileSync(join(path, file), text);
@@ -44,15 +46,17 @@ export function fixtures(): { deskApi: string; deskSite: string; euHostBundle: s
     deskSite: dir("desk-site", "index.html", "<!doctype html><title>fixture</title>\n"),
     euHostBundle: dir("eu-host-bundle", "worker.mjs", "// fixture\n"),
     wire: dir("wire", "index.mjs", "export const handler = async () => ({});\n"),
+    puller: dir("puller", "index.mjs", "export const handler = async () => ({});\n"),
+    airgapBundle: dir("airgap-bundle", "runtime.mjs", "// fixture\n"),
   };
 }
 
 export function synthAll(email = "owner@example.test", context: Record<string, unknown> = {}) {
   const app = new cdk.App({ context: { ...FLAGS, ...CONTEXT, ...context } });
   const config = readConfig(app.node, { BUDGET_EMAIL: email });
-  const stacks = buildStacks(app, config, { assets: fixtures(), airprompter: IDS, pins: PINS });
+  const stacks = buildStacks(app, config, { assets: fixtures(), airprompter: IDS, pins: PINS, airgapPins: AIRGAP_PINS });
   // Every stack is on the tree before the first synth: a template after a synth is a modified tree.
-  return { dns: Template.fromStack(stacks.dns), site: Template.fromStack(stacks.site), ci: Template.fromStack(stacks.ci), desk: Template.fromStack(stacks.desk), sharedHost: Template.fromStack(stacks.sharedHost), stacks, app, config };
+  return { dns: Template.fromStack(stacks.dns), site: Template.fromStack(stacks.site), ci: Template.fromStack(stacks.ci), desk: Template.fromStack(stacks.desk), sharedHost: Template.fromStack(stacks.sharedHost), fleet: Template.fromStack(stacks.fleet), airgap: Template.fromStack(stacks.airgap), stacks, app, config };
 }
 
 export type Resources = Record<string, { Properties: Record<string, any> }>;

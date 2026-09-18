@@ -1,0 +1,44 @@
+# The Zudocs air-gapped runtime: the Agent SDK offline (no key, no base URL, no route out), booted on a vendored
+# bundle fetched from the exchange bucket through the VPC's gateway endpoint, applying each newer bundle the puller
+# sealed to this host's key, filing refused observations for its render probes (no model is reachable here), and
+# writing its status document back to the bucket. Runs as the airprompter user, who owns the store, the spool and
+# the distribution private key (0600).
+#
+#   $ systemctl status zudocs-airgap
+#   $ tail -f /var/log/zudocs/runtime.log
+
+[Unit]
+Description=Zudocs air-gapped runtime (AirPrompter Agent SDK, offline, vendored bundle + applyBundle from the exchange)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=airprompter
+Group=airprompter
+EnvironmentFile=/etc/airprompter/zudocs.env
+Environment=NODE_OPTIONS=--enable-source-maps
+ExecStart=/usr/local/bin/node /opt/zudocs/runtime.mjs
+StandardOutput=append:/var/log/zudocs/runtime.log
+StandardError=append:/var/log/zudocs/runtime.log
+Restart=always
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/airprompter /var/log/zudocs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -7,6 +7,7 @@
           { "file_path": "/var/log/zudocs/airprompterd.log", "log_group_name": "/zudocs/eu-host", "log_stream_name": "{instance_id}/airprompterd", "timezone": "UTC" },
           { "file_path": "/var/log/zudocs/worker.log", "log_group_name": "/zudocs/eu-host", "log_stream_name": "{instance_id}/worker", "timezone": "UTC" },
           { "file_path": "/var/log/zudocs/pyworker.log", "log_group_name": "/zudocs/eu-host", "log_stream_name": "{instance_id}/pyworker", "timezone": "UTC" },
+          { "file_path": "/var/log/zudocs/import.log", "log_group_name": "/zudocs/eu-host", "log_stream_name": "{instance_id}/import", "timezone": "UTC" },
           { "file_path": "/var/log/zudocs-boot.log", "log_group_name": "/zudocs/eu-host", "log_stream_name": "{instance_id}/boot", "timezone": "UTC" }
         ]
       }

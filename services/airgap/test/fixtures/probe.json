@@ -1,0 +1,1 @@
+{"at":"2026-09-18T20:00:10Z","curl":{"url":"https://api-dev.airprompter.com/","exit":28,"seconds":8.0,"meaning":"connect timed out — no route out"},"dns":{"name":"api-dev.airprompter.com","resolved":true,"detail":"resolved by the VPC resolver (a name is not a route)"}}

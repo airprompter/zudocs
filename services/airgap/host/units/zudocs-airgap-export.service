@@ -1,0 +1,32 @@
+# One export: `airprompter export-telemetry` over the runtime's spool, the document to the exchange bucket
+# (host/bin/zudocs-airgap-export). Started by zudocs-airgap-export.timer every five minutes, as the airprompter user —
+# the spool and the store are its; the instance role's credentials come from IMDS, which any user may read.
+#
+#   $ systemctl start zudocs-airgap-export.service && tail -3 /var/log/zudocs/export.log
+
+[Unit]
+Description=Zudocs air-gapped host: export the telemetry spool to the exchange bucket
+After=zudocs-airgap.service
+
+[Service]
+Type=oneshot
+User=airprompter
+Group=airprompter
+EnvironmentFile=/etc/airprompter/zudocs.env
+ExecStart=/usr/local/bin/zudocs-airgap-export
+StandardOutput=append:/var/log/zudocs/export.log
+StandardError=append:/var/log/zudocs/export.log
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/airprompter /var/lib/zudocs /var/log/zudocs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+UMask=0077

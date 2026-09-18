@@ -6,7 +6,7 @@
  *
  * @example
  * ```js
- * renderHostEnv(config, cdkContext);          // "ZUDOCS_HOST_ID=eu-west-1/ec2\nZUDOCS_REGION=eu-west-1\n…"
+ * renderHostEnv(config, cdkContext);          // "ZUDOCS_HOST_ID=eu-west-1/ec2\nZUDOCS_REGION=eu-west-1\n…EXCHANGE_BUCKET=@EXCHANGE_BUCKET@…" (the boot fills the bucket)
  * renderRequirements(pins);                    // "airprompter-agent-core @ git+https://…@<commit>#subdirectory=…"
  * ```
  */
@@ -20,7 +20,8 @@ export function renderHostEnv(config, cdkContext, env = process.env) {
   };
   const region = cdkContext.regions?.sharedHost;
   const tablesRegion = cdkContext.regions?.site;
-  if (!region || !tablesRegion) throw new Error("eu-host build: infra/cdk.json names no regions.sharedHost / regions.site");
+  const fleetRegion = cdkContext.regions?.fleet;
+  if (!region || !tablesRegion || !fleetRegion) throw new Error("eu-host build: infra/cdk.json names no regions.sharedHost / regions.site / regions.fleet");
   const environment = pick("environment", "AIRPROMPTER_ENVIRONMENT");
   const pointer = env.AIRPROMPTER_EDGE_POINTER_URL ?? config.edgePointerUrl ?? "";
   if (typeof pointer !== "string" || !pointer.trim()) throw new Error("eu-host build: edgePointerUrl is missing (the daemon idles on the environment's pointer)");
@@ -29,6 +30,10 @@ export function renderHostEnv(config, cdkContext, env = process.env) {
     ZUDOCS_REGION: region,
     ZUDOCS_TABLES_REGION: tablesRegion,
     ZUDOCS_BEDROCK_REGION: tablesRegion,
+    // The exchange bucket (account-qualified, filled by the boot script from the stack) and its region: the import timer reads the air-gapped host's exports there.
+    EXCHANGE_BUCKET: "@EXCHANGE_BUCKET@",
+    ZUDOCS_EXCHANGE_REGION: fleetRegion,
+    ZUDOCS_IMPORT_DIR: "/var/lib/zudocs/import",
     ZUDOCS_AGENT_KEY_PARAMETER: `/zudocs/${environment}/agent-key`,
     ZUDOCS_DAILY_RUN_CAP: "2000",
     ZUDOCS_TICKET_INTERVAL_SECONDS: "600",

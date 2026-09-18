@@ -12,6 +12,8 @@
     "infra",
     "services/desk-api",
     "services/eu-host",
+    "services/puller",
+    "services/airgap",
     "apps/desk"
   ],
   "scripts": {
@@ -26,7 +28,11 @@
     "dev:smoke": "node scripts/dev-smoke.mjs",
     "dev:proof": "node scripts/dev-proof.mjs",
     "desk:proof": "node scripts/desk-proof.mjs",
-    "eu:proof": "node scripts/eu-host-proof.mjs"
+    "eu:proof": "node scripts/eu-host-proof.mjs",
+    "fleet:proof": "node scripts/fleet-proof.mjs",
+    "airgap:up": "node scripts/airgap.mjs up",
+    "airgap:down": "node scripts/airgap.mjs down",
+    "airgap:status": "node scripts/airgap.mjs status"
   },
   "dependencies": {
     "@airprompter/agent-sdk": "0.2.14"
@@ -34,7 +40,14 @@
   "devDependencies": {
     "@aws-sdk/client-cloudformation": "^3.1135.0",
     "@aws-sdk/client-cloudwatch": "^3.1135.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.1136.0",
     "@aws-sdk/client-cognito-identity-provider": "^3.1135.0",
-    "@aws-sdk/client-ssm": "^3.1135.0"
+    "@aws-sdk/client-dynamodb": "^3.1135.0",
+    "@aws-sdk/client-ec2": "^3.1135.0",
+    "@aws-sdk/client-ec2-instance-connect": "^3.1135.0",
+    "@aws-sdk/client-s3": "^3.1135.0",
+    "@aws-sdk/client-sqs": "^3.1135.0",
+    "@aws-sdk/client-ssm": "^3.1135.0",
+    "@aws-sdk/lib-dynamodb": "^3.1135.0"
   }
 }

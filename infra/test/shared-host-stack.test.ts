@@ -83,8 +83,14 @@ test("the instance role: Session Manager by its own actions (not the managed pol
   const mantle = statements.find((st) => actionsOf(st).includes("bedrock-mantle:CreateInference"))!;
   assert.ok(JSON.stringify(mantle.Resource).includes("arn:aws:bedrock-mantle:us-east-1:111122223333:project/default"));
   const s3 = statements.filter((st) => actionsOf(st).some((a) => a.startsWith("s3:")));
-  assert.equal(s3.length, 1, "the asset bucket, read only");
-  assert.ok(!actionsOf(s3[0]!).some((a) => /Put|Delete/.test(a)));
+  assert.equal(s3.length, 3, "the asset bucket, and the exchange bucket's telemetry/ prefix (read + a listing of that prefix): all read only");
+  for (const st of s3) assert.ok(!actionsOf(st).some((a) => /Put|Delete/.test(a)), "the host writes nothing to any bucket");
+  const telemetryRead = s3.find((st) => st.Sid === "ExchangeTelemetryRead")!;
+  assert.deepEqual(actionsOf(telemetryRead), ["s3:GetObject"]);
+  assert.deepEqual(telemetryRead.Resource, "arn:aws:s3:::zudocs-exchange-111122223333/telemetry/*", "the exports only — never releases/, keys/ or status/");
+  const telemetryList = s3.find((st) => st.Sid === "ExchangeTelemetryList")!;
+  assert.deepEqual(actionsOf(telemetryList), ["s3:ListBucket"]);
+  assert.deepEqual(telemetryList.Condition, { StringLike: { "s3:prefix": ["telemetry/*"] } }, "a listing of the telemetry/ prefix only");
   const logsStatements = statements.filter((st) => actionsOf(st).includes("logs:PutLogEvents"));
   assert.equal(logsStatements.length, 1);
   assert.ok(JSON.stringify(logsStatements[0]!.Resource).includes("HostLogs"), "its own group");
@@ -117,8 +123,10 @@ test("user data rendering: every placeholder replaced, none left, nothing shell-
   assert.throws(() => renderUserData("__X__", { X: "$(rm)" }), /shell would misread/);
   assert.throws(() => renderUserData("AIRPROMPTER_AGENT_KEY=__X__", { X: "1" }), /carry a key/);
   const pins = readPins();
-  const rendered = renderUserData(readFileSync(USER_DATA_TEMPLATE, "utf8"), { CLI_URL: pins.cli.url, CLI_SHA256: pins.cli.sha256, BUNDLE_S3_URL: "s3://bucket/key.zip" });
+  const rendered = renderUserData(readFileSync(USER_DATA_TEMPLATE, "utf8"), { CLI_URL: pins.cli.url, CLI_SHA256: pins.cli.sha256, BUNDLE_S3_URL: "s3://bucket/key.zip", EXCHANGE_BUCKET: "zudocs-exchange-111122223333" });
   assert.ok(rendered.includes(`echo "${pins.cli.sha256}  /tmp/airprompter.bin" | sha256sum -c -`));
+  assert.ok(rendered.includes("sed 's#@EXCHANGE_BUCKET@#zudocs-exchange-111122223333#'"), "the boot fills the bucket into zudocs.env");
+  assert.ok(rendered.includes("zudocs-import.timer"), "the import timer is installed and enabled");
   assert.ok(rendered.startsWith("#!/bin/bash"));
   assert.equal(PINS.pythonSdk.packages.length, 5);
 });

@@ -29,6 +29,10 @@ export const TOOLTIPS = {
   daemon: "airprompterd: one sync loop and one store per host, served to every attached SDK over a local socket; the workers hold no key.",
   lease: "How long this host may keep serving without hearing from AirPrompter. After it lapses the host degrades (keeps serving, says so) — the wire-cut drill shows it.",
   wire: "Cut: the host's outbound rules are replaced so only the desk's tables stay reachable — AirPrompter and Bedrock go dark and the card shows it. A rule restores the wire 15 minutes after a cut whatever happens.",
+  puller: "The fleet pattern: one function holds the Agent key for the region and pulls each promoted release pointer-first (an idle interval is one CDN read, no API call) into a table and an exchange bucket. Runtimes behind it hold no key.",
+  nudge: "The change-notification placeholder: one message on a queue the company owns. The puller reads the origin now instead of waiting for its schedule. A nudge can only say \"look\" — pull-and-verify stays the only source of truth.",
+  airgap: "A host with no route out: no internet gateway, no NAT. It reads the exchange bucket and the releases table through gateway endpoints, applies each bundle the puller sealed to its key, and cannot call a model — every render it files is a refusal, never an invented answer. Its telemetry leaves by export and arrives by import on eu-west.",
+  distributionKey: "The X25519 keypair airprompter keygen generated on the host at first boot. Only the public half left it (to the exchange); the puller seals every bundle to it; the private half opens them and never leaves.",
 } as const;
 
 /** A model's answer as a class-name suffix: lower-case letters and dashes only (an answer is data, a class is not). */
@@ -173,8 +177,11 @@ export function effectiveApplyState(status: HostStatusLike): string | undefined 
   return status.applyState === "refused" && staleRefusal(status) && (status.generation ?? 0) > 0 ? "active" : status.applyState;
 }
 
-export function releaseSummary(hosts: Array<{ hostId?: string; region?: string; status?: HostStatusLike; healthz?: { status?: string } }>): { generation: number | null; activeOn: number; total: number; staged: { generation: number; hosts: string[] } | null; refusal: string | null; staleRefusal: string | null; failing: number; degraded: number } {
-  if (hosts.length === 0) return { generation: null, activeOn: 0, total: 0, staged: null, refusal: null, staleRefusal: null, failing: 0, degraded: 0 };
+export function releaseSummary(allHosts: Array<{ hostId?: string; region?: string; kind?: string; status?: HostStatusLike; healthz?: { status?: string } }>): { generation: number | null; activeOn: number; total: number; staged: { generation: number; hosts: string[] } | null; refusal: string | null; staleRefusal: string | null; failing: number; degraded: number; exchange: number | null } {
+  // The puller is not a host that serves prompts: it reports the generation the exchange holds, which the bar shows beside the count.
+  const hosts = allHosts.filter((h) => h.kind !== "puller");
+  const exchange = allHosts.find((h) => h.kind === "puller")?.status?.generation ?? null;
+  if (hosts.length === 0) return { generation: null, activeOn: 0, total: 0, staged: null, refusal: null, staleRefusal: null, failing: 0, degraded: 0, exchange };
   const statusOf = (h: (typeof hosts)[number]) => h.status ?? {};
   const generation = Math.max(...hosts.map((h) => Math.max(statusOf(h).generation ?? 0, statusOf(h).stagedGeneration ?? 0)));
   const activeOn = hosts.filter((h) => (statusOf(h).generation ?? 0) === generation && effectiveApplyState(statusOf(h)) === "active").length;
@@ -184,7 +191,7 @@ export function releaseSummary(hosts: Array<{ hostId?: string; region?: string; 
   const stale = hosts.map((h) => (staleRefusal(statusOf(h)) ? (statusOf(h).lastRefusal ?? null) : null)).find((r) => r !== null) ?? null;
   const failing = hosts.filter((h) => h.healthz?.status === "failing").length;
   const degraded = hosts.filter((h) => h.healthz?.status === "degraded").length;
-  return { generation, activeOn, total: hosts.length, staged, refusal, staleRefusal: stale, failing, degraded };
+  return { generation, activeOn, total: hosts.length, staged, refusal, staleRefusal: stale, failing, degraded, exchange };
 }
 
 /** Timeline rows merged without repeats: the API's row id first, the (at, kind, host) triple for rows without one. Newest last. */

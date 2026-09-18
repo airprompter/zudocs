@@ -19,9 +19,14 @@ request that goes through an adversarial review before merge, and `main` deploys
   carry ids, counts and the SDK's own events. The app's CSP allows no inline style or script, so components use
   classes only.
 - On the eu-west host one process is configured with the Agent key (`airprompterd`, from a root-only file written
-  from SSM); the workers' environment carries identifiers only and they refuse to start with a key in it. User data
+  from SSM); the workers' environment carries identifiers only and they refuse to start with a key in it; the import
+  timer gets the same file as a systemd credential and hands the value to the CLI's environment only. User data
   never carries a key; the stack's tests pin it. The workers share the daemon's uid (the socket is 0600), so this is
   configuration, not a boundary — `docs/EU-WEST.md` › "Keys, exactly" says so.
+- The air-gapped host holds no Agent key and no base URL (its env reader refuses either); its distribution private
+  key is born on the host, stays at 0600, and its role can write exactly the public half to the exchange. The puller
+  is the one process in ap-southeast-1 with the Agent key, read from SSM by name at cold start.
+- Nothing on the air-gapped host pretends to call a model: its render probes file `status: "refused"` observations.
 
 ## File headers
 
@@ -42,9 +47,11 @@ the pull request.
 
 ## Deploying
 
-CI deploys `ZudocsDns`, `ZudocsSite`, `ZudocsSharedHost` and `ZudocsDesk` from `main` through the OIDC role (the
-desk API bundle, the desk app and the eu-west host bundle are built in the workflow first: `npm run build`; the desk
-stack is ordered after the host stack because it names the host's role and function). A change under
-`services/eu-host/` or to `pins.json` replaces the eu-west instance. `ZudocsCi` (the role
-itself) and the CDK bootstrap are deployed from the owner's Identity Center session only — see the
-README's "First deploy".
+CI deploys `ZudocsDns`, `ZudocsSite`, `ZudocsSharedHost`, `ZudocsFleet` and `ZudocsDesk` from `main` through the OIDC
+role (the desk API bundle, the desk app, the eu-west host bundle, the puller and the airgap bundle are built in the
+workflow first: `npm run build`; the desk stack is ordered after the host and fleet stacks because it names the host's
+role and function and the nudge queue). A change under `services/eu-host/` or to its `pins.json` replaces the eu-west
+instance; a change under `services/airgap/` or to its `pins.json` replaces the air-gapped instance on the next
+`airgap:up`. `ZudocsAirgap` is deployed on demand from the owner's profile only (`npm run airgap:up` / `airgap:down`;
+`infra/test/airgap-stack.test.ts` pins that CI never lists it). `ZudocsCi` (the role itself) and the CDK bootstrap are
+deployed from the owner's Identity Center session only — see the README's "First deploy".

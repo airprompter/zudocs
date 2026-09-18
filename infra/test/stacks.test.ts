@@ -33,7 +33,7 @@ test("config refuses what would weaken the deploy: no account, an alert below th
 
 test("the stack ids are the ones the workflow names, and the site depends on the DNS stack's zone", () => {
   const { stacks } = synth();
-  assert.deepEqual(Object.values(STACK_IDS).sort(), ["ZudocsCi", "ZudocsDesk", "ZudocsDns", "ZudocsSharedHost", "ZudocsSite"]);
+  assert.deepEqual(Object.values(STACK_IDS).sort(), ["ZudocsAirgap", "ZudocsCi", "ZudocsDesk", "ZudocsDns", "ZudocsFleet", "ZudocsSharedHost", "ZudocsSite"]);
   assert.ok(stacks.site.dependencies.includes(stacks.dns), "the site's certificate validates through the zone");
   assert.ok(!stacks.ci.dependencies.length && !stacks.dns.dependencies.includes(stacks.ci) && !stacks.site.dependencies.includes(stacks.ci), "CI is deployed alone, by the owner");
 });

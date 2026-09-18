@@ -215,13 +215,15 @@ if (flag("--wire")) {
   const restore = await api("POST", "/presenter/restore_wire");
   console.log(`restore → ${restore.status} ${restore.json.message ?? JSON.stringify(restore.json)}`);
   (restore.status === 200 && restore.json.state === "connected" ? ok : fail)("the wire is back");
+  // Recovered = the sync is back (no sync_failing, zero failures in a row); other degraded reasons the host may carry
+  // (a forced downgrade from the rollback drill — sticky until the store is replaced, SDK #45) are not the wire's.
   let recovered = null;
   for (let i = 0; i < 36 && !recovered; i += 1) {
     await sleep(5000);
     const current = await hostRow();
-    if (current && current.healthz.status === "ok" && Number(current.status.consecutiveSyncFailures) === 0) recovered = current;
+    if (current && !(current.healthz.reasons ?? []).includes("sync_failing") && Number(current.status.consecutiveSyncFailures) === 0 && current.status.lastSyncOutcome !== "unavailable") recovered = current;
   }
-  (recovered ? ok : fail)(recovered ? `the host recovered: ${describeRow(recovered)}` : "the host did not report ok within three minutes of the restore");
+  (recovered ? ok : fail)(recovered ? `the host's sync recovered: ${describeRow(recovered)}` : "the host still reported sync_failing three minutes after the restore");
 }
 
 console.log(failures === 0 ? "eu-host proof ok" : `eu-host proof failed: ${failures} problem(s)`);

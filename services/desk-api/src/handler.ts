@@ -4,7 +4,9 @@
  * happen inside `ap.invoke()` — a sync pass before, the invocation's telemetry flushed after — and every one of
  * them writes this host's status row. The daily cap is taken atomically before a run and refused as HTTP 429 with
  * the count; nothing is simulated at the line. `replay` is the one asynchronous action: the function invokes itself
- * with a job event and walks it sequentially under the same cap.
+ * with a job event and walks it sequentially under the same cap. Approvals are the eu-west host's staged releases:
+ * the host writes the row, `POST /approvals/{id}/approve` records the owner's decision exactly once (a repeat
+ * answers with the row as it stands), and the host activates through its daemon and settles the row.
  *
  * Errors answer as JSON with a class and a message; ticket bodies, rendered text and keys never reach a log line.
  *
@@ -110,7 +112,8 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       const day = dayOf(new Date().toISOString());
       const slot = await store.takeRunSlot(day, env.dailyRunCap);
       if (!slot.ok) {
-        await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, day, cap: env.dailyRunCap, used: slot.used, by });
+        // `capDay`, not `day`: the events table's partition key is `day` and the reader does not return it.
+        await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, capDay: day, cap: env.dailyRunCap, used: slot.used, by });
         return { statusCode: 429, body: { error: "daily_cap", message: `this host refuses past ${env.dailyRunCap} runs per UTC day; ${slot.used} were used on ${day}. Nothing was simulated.`, cap: env.dailyRunCap, used: slot.used, day } };
       }
       const record = await ap.invoke(() => runTicket(host, ticket, { by, kind: name === "run_ticket" ? "run" : "escalate", capUsed: slot.used }));
@@ -148,6 +151,8 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
           hosts,
           cap: { day, used, cap: env.dailyRunCap },
           airprompter: { baseUrl: env.airprompter.baseUrl, environment: env.airprompter.environment, agentId: env.airprompter.agentId },
+          // What the presenter panel may offer: the wire buttons exist only when the eu-west stack is deployed.
+          features: { wire: env.wireFunctionArn !== "" },
         },
       };
     }
@@ -155,6 +160,21 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       const since = event.queryStringParameters?.since ?? null;
       const events = await store.listEvents(since && /^\d{4}-\d{2}-\d{2}T/.test(since) ? since : null, 100);
       return { statusCode: 200, body: { events } };
+    }
+    case "list_approvals": {
+      const approvals = await store.listApprovals(50);
+      return { statusCode: 200, body: { approvals, pending: approvals.filter((a) => a.decision === "pending").length } };
+    }
+    case "approve": {
+      // Everyone who can sign in is the owner (README › sign-in); the decision is recorded once, under the signer's name.
+      const at = new Date().toISOString();
+      const decided = await store.approve(params.approvalId!, by, at);
+      if (!decided.row) return { statusCode: 404, body: { error: "no_such_approval" } };
+      if (decided.ok) {
+        await store.appendEvent({ at, kind: "approval_decided", host: env.hostId, approvalId: decided.row.approvalId, forHost: decided.row.hostId, generation: decided.row.generation, decision: "approved", by });
+        return { statusCode: 200, body: { approval: decided.row, already: false, message: `release #${decided.row.generation} approved for ${decided.row.hostId}; the host activates it through its daemon and the card flips when it has` } };
+      }
+      return { statusCode: 200, body: { approval: decided.row, already: true, message: decided.row.decision === "pending" ? "that approval changed under you; read it again" : `release #${decided.row.generation} on ${decided.row.hostId} is already ${decided.row.decision}${decided.row.decidedBy ? ` (by ${decided.row.decidedBy})` : ""}` } };
     }
     case "healthz": {
       const healthz = ap.healthz();
@@ -235,8 +255,32 @@ async function presenter(host: Host, action: string, body: Record<string, unknow
       await store.appendEvent({ at: at(), kind: "presenter", host: env.hostId, action, by, n });
       return { statusCode: 202, body: { action, n, message: `${n} run(s) queued on this host; watch the timeline` } };
     }
+    case "enqueue": {
+      // "Run this ticket on that host now": the host's worker takes the queue before its timer picks a ticket.
+      const ticketId = typeof body.ticketId === "string" ? body.ticketId : "";
+      const hostId = typeof body.host === "string" ? body.host : "";
+      if (!hostId || hostId === env.hostId) return { statusCode: 400, body: { error: "no_such_host", message: "enqueue names another host (this one runs tickets on request)" } };
+      const ticket = ticketId ? await store.getTicket(ticketId) : null;
+      if (!ticket) return { statusCode: 404, body: { error: "no_such_ticket" } };
+      const depth = await store.enqueueTicket(hostId, ticket.ticketId);
+      await store.appendEvent({ at: at(), kind: "presenter", host: env.hostId, action, by, ticketId: ticket.ticketId, forHost: hostId, depth });
+      return { statusCode: 202, body: { action, ticketId: ticket.ticketId, host: hostId, depth, message: `${ticket.ticketId} queued for ${hostId} (${depth} waiting); its worker runs it on its next pass` } };
+    }
+    case "cut_wire":
+    case "restore_wire": {
+      // The eu-west wire function replaces the host's egress (cut) or puts it back (restore); a rule restores it
+      // 15 minutes after a cut regardless, so a forgotten drill cannot strand the host.
+      if (!env.wireFunctionArn) return { statusCode: 501, body: { error: "no_wire_function", message: "the eu-west stack (ZudocsSharedHost) is not deployed: nothing to cut" } };
+      const region = env.wireFunctionArn.split(":")[3] ?? env.region;
+      const wire = action === "cut_wire" ? "cut" : "restore";
+      const out = await new LambdaClient({ region }).send(new InvokeCommand({ FunctionName: env.wireFunctionArn, InvocationType: "RequestResponse", Payload: Buffer.from(JSON.stringify({ action: wire, by })) }));
+      const answer = out.Payload ? (JSON.parse(Buffer.from(out.Payload).toString("utf8")) as Record<string, unknown>) : {};
+      if (out.FunctionError) return { statusCode: 502, body: { error: "wire_failed", action, message: String(answer.errorMessage ?? out.FunctionError).slice(0, 300) } };
+      await store.appendEvent({ at: at(), kind: "wire", host: env.hostId, action: wire, by, forHost: answer.hostId ?? null, state: answer.state ?? null, restoreBy: answer.restoreBy ?? null });
+      return { statusCode: 200, body: { action, ...answer, message: wire === "cut" ? `egress cut on ${String(answer.hostId ?? "the host")}: only the desk's tables stay reachable; the rule restores it by ${String(answer.restoreBy ?? "15 minutes from now")}` : `egress restored on ${String(answer.hostId ?? "the host")}` } };
+    }
     default:
-      return { statusCode: 404, body: { error: "no_such_action", actions: ["heartbeat", "upload", "sync", "seed", "replay"] } };
+      return { statusCode: 404, body: { error: "no_such_action", actions: ["heartbeat", "upload", "sync", "seed", "replay", "enqueue", "cut_wire", "restore_wire"] } };
   }
 }
 
@@ -253,7 +297,7 @@ async function replay(host: Host, job: ReplayJob, context?: Context): Promise<vo
     const day = dayOf(new Date().toISOString());
     const slot = await store.takeRunSlot(day, env.dailyRunCap);
     if (!slot.ok) {
-      await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, day, cap: env.dailyRunCap, used: slot.used, by: job.replay.by });
+      await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, capDay: day, cap: env.dailyRunCap, used: slot.used, by: job.replay.by });
       break;
     }
     await ap.invoke(() => runTicket(host, ticket, { by: job.replay.by, kind: "run", capUsed: slot.used }));

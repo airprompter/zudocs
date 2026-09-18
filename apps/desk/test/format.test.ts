@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { authorizeUrl, challengeOf, claimsOf, logoutUrl, randomVerifier, tokensFrom } from "../src/auth";
 import { parseConfig } from "../src/config";
-import { ORIGIN_LABELS, TOOLTIPS, armLabel, latency, modelLabel, money, releaseSummary, score, segmentRender, slug, tokens, versionBadge } from "../src/format";
+import { ORIGIN_LABELS, TOOLTIPS, armLabel, countdown, latency, mergeEvents, modelLabel, money, releaseSummary, score, segmentRender, slug, tokens, versionBadge } from "../src/format";
 
 test("vocabulary: the badge says prompt version and release #N; generation/manifest/slot/arm live in tooltips only", () => {
   assert.equal(versionBadge("support.reply", "rev-2", 1), "reply rev-2 · release #1");
@@ -67,11 +67,27 @@ test("segmentation: values highlighted by origin, the fence shown around end-use
   assert.deepEqual(segmentRender("nothing here", variables).map((s) => s.text), ["nothing here"]);
 });
 
-test("the release bar summarises the fleet's own status rows", () => {
-  const row = (generation: number, applyState: string, extra: Record<string, unknown> = {}, health = "ok") => ({ status: { generation, applyState, stagedGeneration: null, lastRefusal: null, ...extra }, healthz: { status: health } });
-  assert.deepEqual(releaseSummary([]), { generation: null, activeOn: 0, total: 0, staged: null, refusal: null, failing: 0 });
-  assert.deepEqual(releaseSummary([row(3, "active"), row(3, "active"), row(2, "staged", { stagedGeneration: 3 })]), { generation: 3, activeOn: 2, total: 3, staged: 3, refusal: null, failing: 0 });
-  assert.deepEqual(releaseSummary([row(3, "refused", { lastRefusal: "disabled" }, "failing")]), { generation: 3, activeOn: 0, total: 1, staged: null, refusal: "disabled", failing: 1 });
+test("the release bar summarises the fleet's own status rows: the newest generation anywhere (staged counts), who serves it, which host is waiting, who is degraded", () => {
+  const row = (generation: number, applyState: string, extra: Record<string, unknown> = {}, health = "ok", region = "us-east-1") => ({ region, hostId: `${region}/x`, status: { generation, applyState, stagedGeneration: null, lastRefusal: null, ...extra }, healthz: { status: health } });
+  assert.deepEqual(releaseSummary([]), { generation: null, activeOn: 0, total: 0, staged: null, refusal: null, failing: 0, degraded: 0 });
+  assert.deepEqual(releaseSummary([row(3, "active"), row(3, "active"), row(2, "awaiting_unlock", { stagedGeneration: 3 }, "ok", "eu-west-1")]), { generation: 3, activeOn: 2, total: 3, staged: { generation: 3, hosts: ["eu-west-1"] }, refusal: null, failing: 0, degraded: 0 });
+  assert.deepEqual(releaseSummary([row(1, "active"), row(1, "awaiting_unlock", { stagedGeneration: 2 }, "degraded", "eu-west-1")]), { generation: 2, activeOn: 0, total: 2, staged: { generation: 2, hosts: ["eu-west-1"] }, refusal: null, failing: 0, degraded: 1 }, "a staged generation nobody serves yet is still the fleet's newest: active on 0/2");
+  assert.deepEqual(releaseSummary([row(3, "refused", { lastRefusal: "disabled" }, "failing")]), { generation: 3, activeOn: 0, total: 1, staged: null, refusal: "disabled", failing: 1, degraded: 0 });
+});
+
+test("the timeline merge never shows a row twice (by the API's id, else by at/kind/host), keeps order, and bounds the list", () => {
+  const e = (at: string, kind: string, id?: string) => ({ at, kind, host: "h", ...(id ? { id } : {}) });
+  const first = mergeEvents([], [e("t1", "a", "1"), e("t2", "b", "2")]);
+  assert.deepEqual(first.map((x) => x.id), ["1", "2"]);
+  const again = mergeEvents(first, [e("t1", "a", "1"), e("t2", "b", "2"), e("t3", "c", "3")]);
+  assert.deepEqual(again.map((x) => x.id), ["1", "2", "3"], "the overlapping poll added one row");
+  assert.deepEqual(mergeEvents([e("t1", "a")], [e("t1", "a"), e("t1", "b")]).map((x) => x.kind), ["a", "b"], "rows without an id fall back to the triple");
+  assert.equal(mergeEvents([], Array.from({ length: 300 }, (_, i) => e(`t${String(i).padStart(3, "0")}`, "k", String(i)))).length, 200);
+  assert.equal(countdown("2026-09-18T16:00:00.000Z", Date.parse("2026-09-18T15:17:30.000Z")), "in 42m");
+  assert.equal(countdown("2026-09-18T18:05:00.000Z", Date.parse("2026-09-18T15:00:00.000Z")), "in 3h 05m");
+  assert.equal(countdown("2026-09-18T14:58:00.000Z", Date.parse("2026-09-18T15:00:00.000Z")), "expired 2m ago");
+  assert.equal(countdown(null), "—");
+  assert.equal(modelLabel("amazon.nova-2-lite"), "Nova 2 Lite");
 });
 
 test("PKCE: the challenge is the S256 digest of the verifier; the authorize URL carries it and the desk client; tokens expire a minute early", async () => {

@@ -1,0 +1,34 @@
+#!/bin/bash
+# The operator's CLI on this host: runs `airprompter <command>` as the daemon's user (the socket and the store are
+# its, 0600), scoped to this host's Agent and environment from zudocs.env, against the same state directory the
+# daemon serves — so `unlock`, `rollback` and `policy` go through the daemon and every attached worker follows.
+# `doctor` gets the Agent key in its environment (from the root-only env file; run as root), never on argv and
+# never echoed, so its source check runs; every other command takes no key. Prints what the CLI prints.
+#
+#   $ sudo zudocs-cli status --json
+#   $ sudo zudocs-cli doctor --json           # key_protection warns: file_key (this host's honest answer)
+#   $ sudo zudocs-cli unlock --generation 3
+#   $ sudo zudocs-cli rollback
+#   $ sudo zudocs-cli policy show
+set -euo pipefail
+. /etc/airprompter/zudocs.env
+cmd="${1:?usage: zudocs-cli <status|doctor|unlock|rollback|policy|diff|verify|pull|export-telemetry> [args]}"
+shift
+scope=(--agent "$AIRPROMPTER_AGENT" --environment "$AIRPROMPTER_ENVIRONMENT")
+case "$cmd" in
+  doctor|verify|pull|diff)
+    scope+=(--org "$AIRPROMPTER_ORG" --root /etc/airprompter/root.jwk.json --hosted-environment "$AIRPROMPTER_HOSTED_ENVIRONMENT")
+    ;;
+esac
+case "$cmd" in
+  doctor|pull) scope+=(--base-url "$AIRPROMPTER_BASE_URL" --edge-pointer-url "$AIRPROMPTER_EDGE_POINTER_URL") ;;
+esac
+export HOME=/var/lib/airprompter XDG_STATE_HOME=/var/lib/airprompter
+if [ "$cmd" = doctor ] && [ "$(id -u)" = 0 ] && [ -r /etc/airprompter/airprompterd.env ]; then
+  # The key into the environment of the child only; setpriv drops to the daemon's user and keeps the environment.
+  set -a; . /etc/airprompter/airprompterd.env; set +a
+fi
+if [ "$(id -u)" = 0 ]; then
+  exec setpriv --reuid=airprompter --regid=airprompter --init-groups -- /usr/local/bin/airprompter "$cmd" "${scope[@]}" "$@"
+fi
+exec /usr/local/bin/airprompter "$cmd" "${scope[@]}" "$@"

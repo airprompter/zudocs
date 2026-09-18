@@ -16,7 +16,8 @@ variable of the same name, `AIRPROMPTER_AGENT_ID` and so on):
 | `rootUrl` | `https://dwp5emkmjpv8.cloudfront.net/roots/dev/root.json` | the signed root document the pinned key verifies |
 | `organizationId` / `workspaceId` / `agentId` | the "Zudocs" workspace and the `zudocs-support` Agent | the scope every SDK call carries |
 | `environment` | `dev` | the Agent environment this checkout syncs (`staging`, `prod` later) |
-| `models` | `amazon.nova-micro`, `openai.gpt-5-6-luna`, `anthropic.claude-haiku-4-5` | what this application can call, in AirPrompter's catalogue spelling — reported on every heartbeat; a seal refuses a slot pinned to a model no instance reports. Haiku 4.5 is the experiment's candidate arm (phase 6); the desk host reports all three (`services/desk-api/src/modelCatalogue.ts`) |
+| `edgePointerUrl` | `https://dwp5emkmjpv8.cloudfront.net/g/…/generation.json` | the dev environment's edge pointer — an identifier (every heartbeat names it, the environment page shows it); a resident host idles on it with one CDN 304 per poll |
+| `models` | `amazon.nova-micro`, `amazon.nova-2-lite`, `openai.gpt-5-6-luna`, `anthropic.claude-haiku-4-5` | what this application can call, in AirPrompter's catalogue spelling — reported on every heartbeat; a seal refuses a slot pinned to a model no instance reports. Haiku 4.5 is the experiment's candidate arm (phase 6); every host reports all four (`services/desk-api/src/modelCatalogue.ts`) |
 
 Secrets are never in that file. Two of them exist:
 
@@ -28,12 +29,22 @@ Secrets are never in that file. Two of them exist:
 
 ## The slots
 
-| Slot | Model | Variables | Declared output checks | Settings on the version |
+| Slot | Model (dev, generation 2) | Variables | Declared output checks | Settings on the version |
 |---|---|---|---|---|
-| `support.triage` | `amazon.nova-micro` | `ticket?` | `shape` (json_schema: `category`, `priority`, `summary`), `category` (enum), `priority` (enum) | temperature 0, max 200 tokens |
-| `support.reply` | `openai.gpt-5-6-luna` | `tone=friendly`, `customer_tier!~`, `ticket?` | `under-300-tokens` (length), `no-guarantee` (must_not_match), `signed` (must_match) | max 600 tokens, reasoning effort low |
-| `support.escalate.summary` | `openai.gpt-5-6-luna` | `ticket?` | `has-symptom` (must_match), `under-400-tokens` (length) | max 400 tokens, reasoning effort low |
-| `support.escalate.handoff` | `openai.gpt-5-6-luna` | `summary!`, `customer_tier!~` | `has-severity` (must_match) | max 500 tokens, reasoning effort low |
+| `support.triage` | `amazon.nova-micro` | `ticket?` | `shape` (json_schema: `category`, `priority`, `summary`), `category` (enum), `priority` (enum) | temperature 0, max 200 tokens (rev-2) |
+| `support.reply` | `amazon.nova-2-lite` (intended: `openai.gpt-5-6-luna`) | `tone=friendly`, `customer_tier!~`, `ticket?` | `under-300-tokens` (length), `no-guarantee` (must_not_match), `signed` (must_match) | temperature 0.3, max 600 tokens (rev-3) |
+| `support.escalate.summary` | `amazon.nova-2-lite` (intended: Luna) | `ticket?` | `has-symptom` (must_match), `under-400-tokens` (length) | temperature 0.2, max 400 tokens (rev-3) |
+| `support.escalate.handoff` | `amazon.nova-2-lite` (intended: Luna) | `summary!`, `customer_tier!~` | `has-severity` (must_match) | temperature 0.2, max 500 tokens (rev-3) |
+
+**Luna is the intended model** for the reply and the escalation. GPT-5.6 Luna is gated at the account level in
+the demo's AWS account ("not available for this account — contact AWS Sales"; the request is open), so on
+2026-09-18 the owner chose a cheap model until the gate lifts: the three slots were re-pinned to **Nova 2 Lite**
+(`amazon.nova-2-lite`, $0.30 / $2.50 per million tokens, answering through Converse in us-east-1) — a new version of
+each (rev-3: the same text, settings the model takes: a temperature and an output cap instead of a reasoning
+effort), sealed and promoted as **generation 2** on dev. Luna stays in every host's `models` list and IAM, so the
+day the gate lifts the swap back is one more version and one more promotion, and the hosts pick it up as they
+picked up generation 2: us-east activated it on its next invocation; eu-west staged it under `unlock_required` and
+the owner approved it on the desk. Nova Micro keeps triage and the judge.
 
 The variable markers are the CLI's grammar: `name!` required, `name?` end-user text — fenced `<name>…</name>` at
 render time, so a ticket is data the model reads and never instructions it follows — `name~` filled by the
@@ -56,10 +67,11 @@ Categories the triage prompt answers with: `search`, `permissions`, `publishing`
 `low`, `normal`, `high`, `urgent`. The `shape` check pins that as a JSON schema, so an answer that is not that JSON
 counts as a failed check on the host and nothing of it leaves.
 
-Nova Micro takes every setting, so triage pins temperature 0. GPT-5.6 Luna is a reasoning model and takes no
-temperature or top-p — the seal refuses them for it — so the Luna slots carry an output cap and a reasoning effort.
-The settings are part of the version and ride the release pin; the SDK's wrappers apply them when the call names
-the same model.
+Nova Micro and Nova 2 Lite take every setting, so triage pins temperature 0 and the rev-3 slots a low temperature
+with an output cap. GPT-5.6 Luna is a reasoning model and takes no temperature or top-p — the seal refuses them for
+it — so the Luna versions (rev-2) carry an output cap and a reasoning effort; that is why the re-pin needed new
+versions and not only new pins. The settings are part of the version and ride the release pin; the SDK's wrappers
+apply them when the call names the same model.
 
 ## The golden set
 
@@ -73,11 +85,12 @@ sensitive as the prompt they exercise: the seed writes them under `prompts/golde
 
 ## Environments and versions
 
-Every slot is pinned to `rev-2` on `dev` (apply policy `auto`, lease 3600 s, `degrade` on expiry; the seed prints
-the current generation and release digest). `rev-1` is the imported text; `rev-2` is the same text with the
-version's settings.
-Staging and prod hold nothing yet; prod's policy is `unlock_required` by default, which phase 4's eu-west host will
-show. A promotion is a new generation, and every host learns of it by pull — the SDK's edge pointer (one CDN
+On `dev` (generation 2; apply policy `auto` on the environment, lease 3600 s, `degrade` on expiry; the seed prints
+the current generation and release digest) `support.triage` is pinned to `rev-2` and the three other slots to
+`rev-3`. `rev-1` is the imported text; `rev-2` the same text with the Luna settings; `rev-3` the same text with
+the Nova 2 Lite settings. Staging and prod hold nothing yet. The environment's policy is `auto`; the eu-west host
+pins `unlock_required` locally (`--apply-policy`), which is what the desk's Approvals page shows — the console's
+`auto` is advisory there (`docs/EU-WEST.md`). A promotion is a new generation, and every host learns of it by pull — the SDK's edge pointer (one CDN
 304 per idle poll), the origin only when the pointer moved.
 
 ## The local registry (`./prompts`)

@@ -11,20 +11,23 @@ Everything here depends only on what any customer has: the public npm and PyPI p
 CLI, the public root key, and keys issued in the AirPrompter console. No prompt text is committed. No key
 is ever in this repository, on a command line, or in a log.
 
-## What is here today (phases 1–3)
+## What is here today (phases 1–4)
 
 ```
-infra/             CDK: ZudocsCi (the deploy role), ZudocsDns (the zone), ZudocsSite (landing page,
-                   sign-in, budget, trail), ZudocsDesk (the desk API, its tables and key, the desk app) — all us-east-1
+infra/             CDK: ZudocsCi (the deploy role), ZudocsDns (the zone), ZudocsSite (landing page, sign-in, budget,
+                   trail), ZudocsDesk (the desk API, its tables and key, the desk app) in us-east-1;
+                   ZudocsSharedHost (the daemon host and the wire function) in eu-west-1
 apps/landing/      the public site at zudocs.com
-apps/desk/         the desk at desk.zudocs.com: React + Vite, hosted-UI sign-in, the run panel, the fleet, the timeline
+apps/desk/         the desk at desk.zudocs.com: React + Vite, hosted-UI sign-in, the run panel, the fleet, approvals, the timeline
 services/desk-api/ the us-east-1 host: one Lambda running the Agent SDK in on_invoke mode (docs/DESK.md)
+services/eu-host/  the eu-west-1 host: airprompterd, the Node and Python workers, the units, the boot script, the wire (docs/EU-WEST.md)
 airprompter.config.json   where the prompts live in AirPrompter: identifiers only, never a key
 prompts/           the local registry for `airprompter dev` — ignored; `npm run prompts:seed` fills it
 keys/              public root JWKs the hosts and the verify action pin (dev today, prod at the cutover)
-scripts/           prompts-seed, dev-smoke, dev-proof, desk-proof, ssm-put-agent-key.sh, cognito-users.sh,
+scripts/           prompts-seed, dev-smoke, dev-proof, desk-proof, eu-host-proof, ssm-put-agent-key.sh, cognito-users.sh,
                    account-baseline.sh, check-headers, check-keys
-docs/              ARCHITECTURE.md, PROMPTS.md (the slots, variables, checks, golden set, models), DESK.md (the host and the app)
+docs/              ARCHITECTURE.md, PROMPTS.md (the slots, variables, checks, golden set, models), DESK.md (the us-east host
+                   and the app), EU-WEST.md (the daemon host, the approval, the wire)
 ```
 
 Phase 2 put the prompts in AirPrompter: one Agent, `zudocs-support`, four slots (`support.triage` on Nova Micro;
@@ -37,8 +40,16 @@ SDK in `on_invoke` mode, the store key wrapped by KMS, the Agent key read from S
 Bedrock's OpenAI-compatible endpoint under `wrap()`, Nova Micro through Converse under `aiSdkMiddleware()`, the
 `customer_tier` variable from the desk's own table, telemetry to AirPrompter and, through a tee, to CloudWatch
 metrics — behind an HTTP API with the Cognito JWT authorizer, and the desk app at
-[desk.zudocs.com](https://desk.zudocs.com). `docs/DESK.md` is the tour. Phases 4 and 5 add `services/eu-host/` and
-`services/puller/` + `services/airgap/`; phase 6 the demo script and the reset path. See `docs/ARCHITECTURE.md`.
+[desk.zudocs.com](https://desk.zudocs.com). `docs/DESK.md` is the tour.
+
+Phase 4 built the second host and the second shape: a `t4g.micro` in eu-west-1 running `airprompterd` (the released
+CLI's daemon, one key, `unlock_required` pinned on the host, `file_key` shown honestly) with a Node worker and a
+Python worker attached to it over its socket, neither holding a key; the desk's **Approvals** page, where a release
+AirPrompter staged waits for the owner and activates through the daemon when approved; the second host card; and
+the wire-cut drill with its automatic restore. It also re-pinned the reply and escalation slots to Nova 2 Lite while
+the account's access to GPT-5.6 Luna is gated — the first change that reached every host. `docs/EU-WEST.md` is the
+tour. Phase 5 adds `services/puller/` + `services/airgap/`; phase 6 the demo script and the reset path. See
+`docs/ARCHITECTURE.md`.
 
 ## Work on the prompts locally
 
@@ -56,7 +67,7 @@ npm run dev:proof               # the same render against AirPrompter dev: two c
 ```sh
 npm install
 npm run check-headers && npm run check-keys && npm run typecheck && npm test
-npm run build          # the desk API bundle (esbuild) and the desk app (vite) — the desk stack deploys these
+npm run build          # the desk API bundle, the desk app, the eu-west host bundle and the wire function — the stacks deploy these
 npm run synth          # CDK synth with a placeholder account and no budget e-mail: no credentials needed
 ```
 
@@ -111,7 +122,22 @@ ZUDOCS_PROOF_PASSWORD="$(openssl rand -base64 27 | tr -d '/+=' | cut -c1-30)Aa1"
 ```
 
 Until the parameter exists, every request answers `503 host_unavailable` with a message naming the parameter; the
-next request after it exists starts the host. Bedrock in a fresh account needs, per model, an agreement (`CreateFoundationModelAgreement`,
+next request after it exists starts the host.
+
+### The eu-west host (phase 4), once
+
+`ZudocsSharedHost` deploys from CI. The host reads the same parameter name in its own region, under the AWS-managed
+SSM key (no key of ours exists in eu-west-1), so the owner writes it there once; the daemon's unit reads it into a
+root-only file before every start, and until it exists the daemon fails its start loudly and systemd retries:
+
+```sh
+set -a; . ~/.config/zudocs/dev.env; set +a
+AWS_PROFILE=zudocs AWS_REGION=eu-west-1 ZUDOCS_SSM_KEY_ID=alias/aws/ssm bash scripts/ssm-put-agent-key.sh
+npm run eu:proof              # with ZUDOCS_PROOF_PASSWORD: the row, then status and doctor on the host through Run Command
+```
+
+The first boot takes about ten minutes (the Python worker's dependencies). `docs/EU-WEST.md` has the proof flags
+(`--approve`, `--enqueue`, `--cli`, `--wire`). Bedrock in a fresh account needs, per model, an agreement (`CreateFoundationModelAgreement`,
 which the console's "model access" page does) and an account verification AWS runs in the background; until both are
 done the desk shows the refusal on the run panel — it never simulates a model. `npm run desk:proof` (with
 `ZUDOCS_PROOF_PASSWORD` in the environment) runs one ticket end to end and checks the status row, the timeline and

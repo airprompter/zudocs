@@ -6,13 +6,15 @@
  *
  * Luna goes through Bedrock's OpenAI-compatible `bedrock-mantle` endpoint — the only one with a live token quota
  * for GPT-5.6 in a fresh account (the cross-region profile starts at 0 TPM) — under the SDK's `wrap()` of an
- * OpenAI client. Nova Micro and Haiku 4.5 go through Converse with the Vercel AI SDK's Bedrock provider under
- * `aiSdkMiddleware()`.
+ * OpenAI client. Nova 2 Lite, Nova Micro and Haiku 4.5 go through Converse with the Vercel AI SDK's Bedrock
+ * provider under `aiSdkMiddleware()`. Luna is the intended model for the reply and escalation slots; while the
+ * account's access to it is gated it stays in the catalogue (so a release pinned to it is accepted the day the
+ * gate lifts) and those slots are pinned to Nova 2 Lite (`docs/PROMPTS.md`).
  *
  * @example
  * ```ts
  * bedrockIdOf("openai.gpt-5-6-luna");   // "openai.gpt-5.6-luna" (mantle)
- * bedrockIdOf("amazon.nova-micro");     // "us.amazon.nova-micro-v1:0" (converse)
+ * bedrockIdOf("amazon.nova-2-lite");    // "us.amazon.nova-2-lite-v1:0" (converse)
  * MODELS;                               // the ids reported on the heartbeat, in the catalogue's spelling
  * ```
  */
@@ -31,6 +33,7 @@ export interface CatalogueEntry {
 
 export const CATALOGUE: Readonly<Record<string, CatalogueEntry>> = Object.freeze({
   "openai.gpt-5-6-luna": { bedrockId: "openai.gpt-5.6-luna", foundationModelId: "openai.gpt-5.6-luna", path: "mantle", usdPerMillion: { input: 0.2, output: 1.2 } },
+  "amazon.nova-2-lite": { bedrockId: "us.amazon.nova-2-lite-v1:0", foundationModelId: "amazon.nova-2-lite-v1:0", path: "converse", usdPerMillion: { input: 0.3, output: 2.5 } },
   "amazon.nova-micro": { bedrockId: "us.amazon.nova-micro-v1:0", foundationModelId: "amazon.nova-micro-v1:0", path: "converse", usdPerMillion: { input: 0.035, output: 0.14 } },
   "anthropic.claude-haiku-4-5": { bedrockId: "us.anthropic.claude-haiku-4-5-20251001-v1:0", foundationModelId: "anthropic.claude-haiku-4-5-20251001-v1:0", path: "converse", usdPerMillion: { input: 1, output: 5 } },
 });

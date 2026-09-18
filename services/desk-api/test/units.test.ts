@@ -29,6 +29,8 @@ test("routes: matched on the raw path alone; parameters bounded; unknown paths a
   assert.equal(match("GET", "/nope"), null);
   assert.equal(match("POST", "/tickets/" + "x".repeat(65) + "/run"), null, "a parameter past 64 characters is refused");
   assert.equal(match("POST", "/tickets/a%2Fb/run"), null, "an encoded slash is not a segment");
+  assert.deepEqual(match("GET", "/approvals"), { name: "list_approvals", params: {} });
+  assert.deepEqual(match("POST", "/approvals/eu-west-1-ec2-g2/approve"), { name: "approve", params: { approvalId: "eu-west-1-ec2-g2" } }, "an approval id is one segment (host and generation, slugged)");
   assert.equal(new Set(ROUTES.map((r) => `${r.method} ${r.pattern}`)).size, ROUTES.length, "every route key is distinct");
 });
 
@@ -92,10 +94,12 @@ test("tee: the fetch forwards everything untouched and emits only after a 2xx on
   assert.equal(seen.length, 3, "every request was forwarded");
 });
 
-test("catalogue: three models under AirPrompter's names, each mapped to Bedrock's; the Mantle body carries Bedrock's id; cost from reported usage only", () => {
-  assert.deepEqual(MODELS, ["openai.gpt-5-6-luna", "amazon.nova-micro", "anthropic.claude-haiku-4-5"]);
+test("catalogue: four models under AirPrompter's names (Luna kept while the account's gate is up), each mapped to Bedrock's; the Mantle body carries Bedrock's id; cost from reported usage only", () => {
+  assert.deepEqual(MODELS, ["openai.gpt-5-6-luna", "amazon.nova-2-lite", "amazon.nova-micro", "anthropic.claude-haiku-4-5"]);
   assert.equal(bedrockIdOf("openai.gpt-5-6-luna"), "openai.gpt-5.6-luna");
   assert.equal(bedrockIdOf("amazon.nova-micro"), "us.amazon.nova-micro-v1:0");
+  assert.equal(bedrockIdOf("amazon.nova-2-lite"), "us.amazon.nova-2-lite-v1:0", "the model the reply and escalation slots are pinned to while Luna is gated");
+  assert.equal(CATALOGUE["amazon.nova-2-lite"]!.path, "converse");
   assert.equal(catalogueNameOf("us.anthropic.claude-haiku-4-5-20251001-v1:0"), "anthropic.claude-haiku-4-5");
   assert.throws(() => bedrockIdOf("openai.gpt-6-astra"), /cannot call/);
   for (const [name, entry] of Object.entries(CATALOGUE)) assert.ok(entry.bedrockId.endsWith(entry.foundationModelId) || entry.bedrockId === entry.foundationModelId, `${name}: the profile wraps its foundation model`);
@@ -169,10 +173,12 @@ test("seed: every ticket names a seeded customer; ids are stable and unique; eve
 });
 
 test("env: names are required, the key parameter is a name, the cap is a positive integer; nothing key-shaped is read", () => {
-  const base = { TICKETS_TABLE: "t", CUSTOMERS_TABLE: "c", RUNS_TABLE: "r", FEEDBACK_TABLE: "f", STATUS_TABLE: "s", EVENTS_TABLE: "e", COUNTERS_TABLE: "n", KMS_KEY_ID: "k", AGENT_KEY_PARAMETER: "/zudocs/dev/agent-key", AIRPROMPTER_BASE_URL: "https://api-dev.airprompter.com", AIRPROMPTER_ORGANIZATION_ID: "o", AIRPROMPTER_AGENT_ID: "a", AIRPROMPTER_ENVIRONMENT: "dev", AIRPROMPTER_HOSTED_ENVIRONMENT: "dev", AIRPROMPTER_ROOT_URL: "https://x/root.json", AIRPROMPTER_ROOT_JWK: "{}", DAILY_RUN_CAP: "2000", STATE_EPOCH: "1" };
+  const base = { TICKETS_TABLE: "t", CUSTOMERS_TABLE: "c", RUNS_TABLE: "r", FEEDBACK_TABLE: "f", STATUS_TABLE: "s", EVENTS_TABLE: "e", COUNTERS_TABLE: "n", APPROVALS_TABLE: "a", KMS_KEY_ID: "k", AGENT_KEY_PARAMETER: "/zudocs/dev/agent-key", AIRPROMPTER_BASE_URL: "https://api-dev.airprompter.com", AIRPROMPTER_ORGANIZATION_ID: "o", AIRPROMPTER_AGENT_ID: "a", AIRPROMPTER_ENVIRONMENT: "dev", AIRPROMPTER_HOSTED_ENVIRONMENT: "dev", AIRPROMPTER_ROOT_URL: "https://x/root.json", AIRPROMPTER_ROOT_JWK: "{}", DAILY_RUN_CAP: "2000", STATE_EPOCH: "1" };
   const env = readEnv(base);
   assert.equal(env.stateDir, "/tmp/airprompter/1");
   assert.equal(env.dailyRunCap, 2000);
+  assert.equal(env.wireFunctionArn, "", "no wire function until the eu-west stack names it");
+  assert.equal(readEnv({ ...base, WIRE_FUNCTION_ARN: "arn:aws:lambda:eu-west-1:111122223333:function:zudocs-wire" }).wireFunctionArn, "arn:aws:lambda:eu-west-1:111122223333:function:zudocs-wire");
   assert.throws(() => readEnv({ ...base, TICKETS_TABLE: "" }), /TICKETS_TABLE is missing/);
   assert.throws(() => readEnv({ ...base, AGENT_KEY_PARAMETER: "apa_test_xxx" }), /parameter name/);
   assert.throws(() => readEnv({ ...base, DAILY_RUN_CAP: "0" }), /positive integer/);

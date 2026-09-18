@@ -8,6 +8,8 @@
  * @example
  * ```ts
  * versionBadge("support.reply", "rev-2", 1);   // "reply rev-2 · release #1"
+ * releaseSummary(hosts).staged;                // { generation: 2, hosts: ["eu-west-1"] } — what the bar says is awaiting approval
+ * mergeEvents(current, fresh);                 // the timeline without a row shown twice
  * segmentRender("Hi <ticket>help</ticket>, tier team.", [{ name: "ticket", value: "help", fenced: true, origin: "call_site", … }, …]);
  * ```
  */
@@ -23,6 +25,10 @@ export const TOOLTIPS = {
   release: "A release is a signed manifest at a generation; hosts pull it and apply it under their own policy.",
   storage: "How the slot store's data key is protected on this host. kms: wrapped by a KMS key. file_key: a 0600 file — reported, never hidden.",
   cap: "Runs per UTC day this host allows. At the line the API refuses with HTTP 429; nothing is simulated.",
+  approval: "This host's policy is unlock_required: AirPrompter stages a release and only your approval (or an operator's unlock on the host) makes it live. The console can request an unlock; it can never grant one.",
+  daemon: "airprompterd: one sync loop and one store per host, served to every attached SDK over a local socket; the workers hold no key.",
+  lease: "How long this host may keep serving without hearing from AirPrompter. After it lapses the host degrades (keeps serving, says so) — the wire-cut drill shows it.",
+  wire: "Cut: the host's outbound rules are replaced so only the desk's tables stay reachable — AirPrompter and Bedrock go dark and the card shows it. A rule restores the wire 15 minutes after a cut whatever happens.",
 } as const;
 
 /** A model's answer as a class-name suffix: lower-case letters and dashes only (an answer is data, a class is not). */
@@ -41,6 +47,7 @@ export function versionBadge(tag: string, versionId: string | null, generation: 
 
 export const MODEL_LABELS: Record<string, string> = {
   "openai.gpt-5-6-luna": "GPT-5.6 Luna",
+  "amazon.nova-2-lite": "Nova 2 Lite",
   "amazon.nova-micro": "Nova Micro",
   "anthropic.claude-haiku-4-5": "Haiku 4.5",
 };
@@ -79,6 +86,16 @@ export function ago(iso: string | null | undefined, now = Date.now()): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+/** "in 42m" / "in 3h 05m" / "expired 2m ago" — the lease as a countdown; "—" when there is none. */
+export function countdown(iso: string | null | undefined, now = Date.now()): string {
+  if (!iso) return "—";
+  const delta = Math.round((Date.parse(iso) - now) / 1000);
+  if (!Number.isFinite(delta)) return "—";
+  const abs = Math.abs(delta);
+  const text = abs < 60 ? `${abs}s` : abs < 3600 ? `${Math.floor(abs / 60)}m` : `${Math.floor(abs / 3600)}h ${String(Math.floor((abs % 3600) / 60)).padStart(2, "0")}m`;
+  return delta >= 0 ? `in ${text}` : `expired ${text} ago`;
 }
 
 export function clock(iso: string): string {
@@ -137,13 +154,29 @@ export function segmentRender(text: string, variables: readonly VariableOrigin[]
 
 export const ORIGIN_LABELS: Record<VariableOrigin["origin"], string> = { call_site: "call site", your_source: "your source", default: "default", unfilled: "unfilled" };
 
-/** The release bar's sentence from the status rows: the newest generation, how many hosts serve it, what is staged. */
-export function releaseSummary(hosts: Array<{ status: { generation?: number; stagedGeneration?: number | null; applyState?: string; lastRefusal?: string | null }; healthz: { status?: string } }>): { generation: number | null; activeOn: number; total: number; staged: number | null; refusal: string | null; failing: number } {
-  if (hosts.length === 0) return { generation: null, activeOn: 0, total: 0, staged: null, refusal: null, failing: 0 };
-  const generation = Math.max(...hosts.map((h) => h.status.generation ?? 0));
+/** The release bar's sentence from the status rows: the newest generation, how many hosts serve it, what is staged and where. */
+export function releaseSummary(hosts: Array<{ hostId?: string; region?: string; status: { generation?: number; stagedGeneration?: number | null; applyState?: string; lastRefusal?: string | null }; healthz: { status?: string } }>): { generation: number | null; activeOn: number; total: number; staged: { generation: number; hosts: string[] } | null; refusal: string | null; failing: number; degraded: number } {
+  if (hosts.length === 0) return { generation: null, activeOn: 0, total: 0, staged: null, refusal: null, failing: 0, degraded: 0 };
+  const generation = Math.max(...hosts.map((h) => Math.max(h.status.generation ?? 0, h.status.stagedGeneration ?? 0)));
   const activeOn = hosts.filter((h) => (h.status.generation ?? 0) === generation && h.status.applyState === "active").length;
-  const staged = hosts.map((h) => h.status.stagedGeneration ?? null).find((g) => g !== null) ?? null;
+  const stagedHosts = hosts.filter((h) => (h.status.stagedGeneration ?? null) !== null);
+  const staged = stagedHosts.length > 0 ? { generation: Math.max(...stagedHosts.map((h) => h.status.stagedGeneration!)), hosts: stagedHosts.map((h) => h.region ?? h.hostId ?? "a host") } : null;
   const refusal = hosts.map((h) => h.status.lastRefusal ?? null).find((r) => r !== null) ?? null;
   const failing = hosts.filter((h) => h.healthz.status === "failing").length;
-  return { generation, activeOn, total: hosts.length, staged, refusal, failing };
+  const degraded = hosts.filter((h) => h.healthz.status === "degraded").length;
+  return { generation, activeOn, total: hosts.length, staged, refusal, failing, degraded };
+}
+
+/** Timeline rows merged without repeats: the API's row id first, the (at, kind, host) triple for rows without one. Newest last. */
+export function mergeEvents<T extends { at: string; kind: string; host: string; id?: string }>(current: readonly T[], fresh: readonly T[], keep = 200): T[] {
+  const keyOf = (e: T) => e.id ?? `${e.at}|${e.kind}|${e.host}`;
+  const seen = new Set(current.map(keyOf));
+  const merged = [...current];
+  for (const e of fresh) {
+    const key = keyOf(e);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(e);
+  }
+  return merged.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)).slice(-keep);
 }

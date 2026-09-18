@@ -1,6 +1,6 @@
 /**
  * One ticket through the promoted prompts, inside `ap.invoke()`: triage (`support.triage` on Nova Micro, its JSON
- * read for the inbox), the reply (`support.reply` on Luna — `customer_tier` filled by the desk's own source,
+ * read for the inbox), the reply (`support.reply` on the release's model — `customer_tier` filled by the desk's own source,
  * `tone: "formal"` passed only for an enterprise customer, the ticket fenced), the judge (`ap.judge` with the
  * prompt's own `## Success criteria`, scored on the desk's judge model), and — on `escalate` — the two-step hand-off
  * (`support.escalate.summary` then `.handoff` with the summary passed along). Every number on the record is the
@@ -20,7 +20,7 @@
  * ```
  */
 import type { Observation, Rendered, SlotVariable } from "@airprompter/agent-sdk";
-import type { Host } from "./runtime.js";
+import type { RunHost } from "./runtime.js";
 import { costUsd } from "./modelCatalogue.js";
 import type { Customer, Ticket } from "./store.js";
 
@@ -105,7 +105,7 @@ const emptyStep = (step: StepName, tag: string): StepRecord => ({ step, tag, ver
 
 const errorOf = (error: unknown): { name: string; message: string } => ({ name: (error as Error)?.name ?? "Error", message: String((error as Error)?.message ?? error).slice(0, 400) });
 
-export async function runTicket(host: Host, ticket: Ticket, options: { by: string; kind: "run" | "escalate"; capUsed: number }): Promise<RunRecord> {
+export async function runTicket(host: RunHost, ticket: Ticket, options: { by: string; kind: "run" | "escalate"; capUsed: number }): Promise<RunRecord> {
   const { ap, store, callers, env } = host;
   const started = Date.now();
   const at = new Date(started).toISOString();

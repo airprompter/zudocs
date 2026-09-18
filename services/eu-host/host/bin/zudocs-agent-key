@@ -1,0 +1,31 @@
+#!/bin/bash
+# Reads the Agent key from the SSM SecureString the instance role may read (its name in zudocs.env) and writes it
+# to the daemon's env file, root:root 0600 — the only place on the host that holds it. Runs as root before every
+# daemon start (ExecStartPre=+…), so a rotated parameter is live at the next restart. Nothing is echoed; the value
+# goes from the AWS CLI's stdout into the file through a 0600 temporary and an atomic rename. An unreadable
+# parameter leaves the previous file in place and fails the start loudly.
+#
+#   $ sudo /usr/local/sbin/zudocs-agent-key            # → wrote /etc/airprompter/airprompterd.env (version N)
+set -euo pipefail
+umask 077
+. /etc/airprompter/zudocs.env
+: "${ZUDOCS_AGENT_KEY_PARAMETER:?zudocs.env names no ZUDOCS_AGENT_KEY_PARAMETER}"
+: "${ZUDOCS_REGION:?zudocs.env names no ZUDOCS_REGION}"
+target=/etc/airprompter/airprompterd.env
+tmp="$(mktemp /etc/airprompter/.airprompterd.env.XXXXXX)"
+trap 'rm -f "$tmp"' EXIT
+if ! aws ssm get-parameter --region "$ZUDOCS_REGION" --name "$ZUDOCS_AGENT_KEY_PARAMETER" --with-decryption --query Parameter.Value --output text > "$tmp"; then
+  echo "zudocs-agent-key: ${ZUDOCS_AGENT_KEY_PARAMETER} could not be read in ${ZUDOCS_REGION}; the owner writes it with scripts/ssm-put-agent-key.sh" >&2
+  exit 1
+fi
+value="$(cat "$tmp")"
+case "$value" in
+  ""|None|*" "*|*$'\n'*) echo "zudocs-agent-key: the parameter's value is empty or malformed; refusing" >&2; exit 1 ;;
+esac
+printf 'AIRPROMPTER_AGENT_KEY=%s\n' "$value" > "$tmp"
+unset value
+chown root:root "$tmp" && chmod 0600 "$tmp"
+mv -f "$tmp" "$target"
+trap - EXIT
+version="$(aws ssm get-parameter --region "$ZUDOCS_REGION" --name "$ZUDOCS_AGENT_KEY_PARAMETER" --query Parameter.Version --output text 2>/dev/null || echo '?')"
+echo "zudocs-agent-key: wrote ${target} (parameter version ${version})"

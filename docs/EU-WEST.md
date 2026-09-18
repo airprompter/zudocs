@@ -123,6 +123,13 @@ watch `sync_failing`, restore, watch it recover).
 
 ## Honest notes
 
+- The released daemon (`cli/v0.1.0`) drops `--hosted-environment` for a pinned JWK, so a dev key is read as prod's
+  and every dev manifest is refused: the boot fetches the environment's `root.json`, verifies it against the pinned
+  key for the hosted environment with the SDK's own rules (`verify-root` on the worker bundle) and hands the daemon
+  that document — the same chain of trust, one step earlier. And the daemon's `healthz` socket op answers with the
+  document's own `ok` spliced into the reply envelope, so the SDK's client reads a failing host's healthz as a
+  refused request; the status writer reads that one op over the socket itself. Both filed upstream (#44).
+
 - The `apply.onStaged` hook and `unlockRequest` do not reach a process attached to a daemon; the watcher reads
   `stagedGeneration` instead and the row's note is empty until the daemon's socket carries the request. Filed.
 - The daemon's socket does not carry its heartbeat block; the card shows the daemon's last **contact** with the

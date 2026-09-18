@@ -25,8 +25,9 @@ export function HostCards({ state }: { state: State | null }) {
 }
 
 function HostCard({ host }: { host: HostStatus }) {
-  const s = host.status;
-  const z = host.healthz;
+  // A row written while the daemon was unreachable carries a health verdict and no status block: render what is there.
+  const s = host.status ?? {};
+  const z = host.healthz ?? {};
   const stale = Date.now() - Date.parse(host.writtenAt) > 10 * 60_000;
   const protection = String(s.storageProtection ?? "—");
   const daemon = host.kind === "daemon";

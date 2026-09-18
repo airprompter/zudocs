@@ -38,6 +38,7 @@ import type { RunHost } from "../../desk-api/src/runtime.js";
 import { createStore, dayOf, type Store, type Ticket } from "../../desk-api/src/store.js";
 import { ApprovalWatcher } from "./approvals.js";
 import { readHostEnv, type HostEnv } from "./hostEnv.js";
+import { readDaemonHealthz } from "./daemonHealthz.js";
 import { statusFields, type DaemonStatusDoc } from "./statusRow.js";
 import { verifyRootCommand } from "./verifyRoot.js";
 
@@ -169,7 +170,9 @@ async function main(): Promise<void> {
     }
     return latest;
   };
-  const daemonHealthz = async (): Promise<(Healthz & Record<string, unknown>) | null> => daemon.request("healthz").then((h) => h as unknown as Healthz & Record<string, unknown>).catch(() => null);
+  // Not through the SDK's client: the daemon's healthz reply carries the document's own `ok`, and `ok: false` (a host
+  // with nothing verified) reads as a refused request there (daemonHealthz.ts; filed upstream).
+  const daemonHealthz = (): Promise<(Healthz & Record<string, unknown>) | null> => readDaemonHealthz(socketPath);
   const first = await refresh();
   log({ event: "daemon_found", socketPath, daemon: client.hello.daemon, storeId, generation: first?.generation ?? null, stagedGeneration: first?.stagedGeneration ?? null, storageProtection: first?.storageProtection ?? null, applyPolicy: first?.applyPolicy ?? null });
 

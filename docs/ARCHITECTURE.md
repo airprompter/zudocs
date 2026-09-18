@@ -23,9 +23,10 @@ are the product's brain and none of them are in this repository.
                                                                               └───────────────────────────┘
 ```
 
-Phase 1 (this repository today): the hosted zone and mail records, the landing page, sign-in, the
-budget, the trail, the CI deploy role. The full plan, its reviewers' findings and the demo script
-live with the AirPrompter team; the phases land here one pull request at a time.
+Phase 1: the hosted zone and mail records, the landing page, sign-in, the budget, the trail, the CI deploy role.
+Phase 2: the prompts in AirPrompter (`PROMPTS.md`), the local registry seed and the laptop smoke. The full plan,
+its reviewers' findings and the demo script live with the AirPrompter team; the phases land here one pull request
+at a time.
 
 ## Invariants
 

@@ -32,7 +32,13 @@ const promptsDir = resolve(process.argv[2] ?? join(repoRoot, "prompts"));
 const cli = process.env.AIRPROMPTER_CLI ?? (existsSync(join(repoRoot, ".bin", "airprompter")) ? join(repoRoot, ".bin", "airprompter") : "airprompter");
 const stateDir = join(promptsDir, ".airprompter-dev", "state");
 const scope = { organizationId: "org_dev", agentId: "agt_dev", target: "dev" };
-const config = readConfig();
+let config;
+try {
+  config = readConfig();
+} catch (error) {
+  console.log(error.message);
+  process.exit(2);
+}
 
 let failures = 0;
 const fail = (message) => { failures += 1; console.log(`  ✗ ${message}`); };

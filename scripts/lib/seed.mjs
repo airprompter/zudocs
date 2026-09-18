@@ -112,7 +112,7 @@ function foreignEntries(dir, prefix = "") {
   const foreign = [];
   for (const entry of readdirSync(dir)) {
     const rel = prefix ? `${prefix}/${entry}` : entry;
-    if (!prefix && (KEPT.has(entry) || NOISE.has(entry))) continue;
+    if ((!prefix && KEPT.has(entry)) || NOISE.has(entry)) continue;
     const path = join(dir, entry);
     const stat = lstatSync(path);
     if (stat.isSymbolicLink()) { foreign.push(`${rel} (a symbolic link)`); continue; }

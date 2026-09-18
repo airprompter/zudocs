@@ -113,8 +113,10 @@ test("writeSeed replaces a registry directory but keeps the keep file and the de
   const finder = mkdtempSync(join(tmpdir(), "zudocs-finder-"));
   writeFileSync(join(finder, ".gitkeep"), "");
   writeFileSync(join(finder, ".DS_Store"), "");
+  mkdirSync(join(finder, "support"));
+  writeFileSync(join(finder, "support", ".DS_Store"), "");
   writeSeed({ outDir: finder, plan });
-  assert.ok(!existsSync(join(finder, ".DS_Store")) && existsSync(join(finder, "release.json")), "Finder's droppings are swept, not refused");
+  assert.ok(!existsSync(join(finder, ".DS_Store")) && !existsSync(join(finder, "support", ".DS_Store")) && existsSync(join(finder, "release.json")), "Finder's droppings are swept at any depth, not refused");
   const foreign = mkdtempSync(join(tmpdir(), "zudocs-foreign-"));
   writeFileSync(join(foreign, ".gitkeep"), "");
   writeFileSync(join(foreign, "README.md"), "# not a registry\n");

@@ -4,7 +4,8 @@
 # request a token — installs with --ignore-scripts and assumes the one role
 # the CI stack created (zudocs-deploy), which may only assume the CDK bootstrap
 # roles. That role's trust is the `ref:` form of the subject, so this job names
-# no GitHub environment. CI deploys the DNS and site stacks, never ZudocsCi:
+# no GitHub environment. CI deploys the DNS, site and desk stacks (the desk
+# API bundle and the SPA are built first), never ZudocsCi:
 # the thing that assumes the role must not be the thing that can break it.
 #
 # Repository variables (Settings › Variables — none of these is a secret):
@@ -49,6 +50,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund --ignore-scripts
+      - run: npm run build
       - name: The budget has a recipient
         run: test -n "$BUDGET_EMAIL" || { echo "set the BUDGET_EMAIL repository variable"; exit 1; }
         env:
@@ -57,9 +59,9 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/zudocs-deploy
           aws-region: us-east-1
-      - name: Deploy the DNS and site stacks
+      - name: Deploy the DNS, site and desk stacks
         # The account comes from the assumed credentials (CDK_DEFAULT_ACCOUNT); no variable reaches the shell text.
-        run: npx cdk deploy ZudocsDns ZudocsSite --require-approval never
+        run: npx cdk deploy ZudocsDns ZudocsSite ZudocsDesk --require-approval never
         working-directory: infra
         env:
           BUDGET_EMAIL: ${{ vars.BUDGET_EMAIL }}

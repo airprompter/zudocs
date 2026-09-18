@@ -1,0 +1,35 @@
+{
+  "name": "@zudocs/desk-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Zudocs desk API: one Lambda in us-east-1 running the AirPrompter Agent SDK in on_invoke mode — runs tickets through the promoted prompts on Bedrock, files feedback, writes this host's status and timeline events.",
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/amazon-bedrock": "5.0.87",
+    "@airprompter/agent-sdk": "0.2.14",
+    "@aws-crypto/sha256-js": "5.2.0",
+    "@aws-sdk/client-dynamodb": "3.1135.0",
+    "@aws-sdk/client-kms": "3.1135.0",
+    "@aws-sdk/client-lambda": "3.1135.0",
+    "@aws-sdk/client-ssm": "3.1135.0",
+    "@aws-sdk/credential-provider-node": "3.972.83",
+    "@aws-sdk/lib-dynamodb": "3.1135.0",
+    "@smithy/protocol-http": "5.3.3",
+    "@smithy/signature-v4": "5.7.3",
+    "ai": "7.0.106",
+    "openai": "7.18.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "8.10.163",
+    "@types/node": "^22.17.0",
+    "esbuild": "0.28.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

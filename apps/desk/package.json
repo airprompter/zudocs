@@ -1,0 +1,26 @@
+{
+  "name": "@zudocs/desk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Zudocs support desk: the React app the owner signs in to, where a prospect watches prompts run, updates land, and data go back to AirPrompter.",
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vite": "8.3.0"
+  }
+}

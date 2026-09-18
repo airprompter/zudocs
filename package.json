@@ -9,20 +9,29 @@
     "node": ">=22"
   },
   "workspaces": [
-    "infra"
+    "infra",
+    "services/desk-api",
+    "apps/desk"
   ],
   "scripts": {
     "test": "node --test \"scripts/test/*.test.mjs\" && npm test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
     "synth": "npm run synth --workspace infra",
     "deploy": "npm run deploy --workspace infra --",
     "check-headers": "node scripts/check-headers.mjs",
     "check-keys": "node scripts/check-keys.mjs",
     "prompts:seed": "node scripts/prompts-seed.mjs",
     "dev:smoke": "node scripts/dev-smoke.mjs",
-    "dev:proof": "node scripts/dev-proof.mjs"
+    "dev:proof": "node scripts/dev-proof.mjs",
+    "desk:proof": "node scripts/desk-proof.mjs"
   },
   "dependencies": {
     "@airprompter/agent-sdk": "0.2.14"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-cloudformation": "^3.1135.0",
+    "@aws-sdk/client-cloudwatch": "^3.1135.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.1135.0"
   }
 }

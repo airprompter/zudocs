@@ -147,6 +147,7 @@ export class AirgapStack extends cdk.Stack {
     new cdk.CfnOutput(this, "InstanceConnectEndpointId", { value: eice.attrId });
     new cdk.CfnOutput(this, "ShellCommand", { value: `aws ec2-instance-connect ssh --region ${this.region} --instance-id ${this.instance.instanceId} --connection-type eice --os-user ec2-user`, description: "A shell on the host through the Instance Connect Endpoint (the owner's profile)" });
     new cdk.CfnOutput(this, "RouteTableId", { value: routeTable.ref, description: "Has no route out: local plus the two gateway endpoints' prefix lists" });
+    new cdk.CfnOutput(this, "SubnetId", { value: cfnSubnet.ref });
     new cdk.CfnOutput(this, "ExchangeBucketName", { value: bucketName });
     new cdk.CfnOutput(this, "PublicKeyObject", { value: `s3://${bucketName}/${EXCHANGE.publicKey}`, description: "The public half of the distribution key the host generated at first boot; the private half never leaves" });
   }

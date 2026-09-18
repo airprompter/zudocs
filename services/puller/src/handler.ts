@@ -85,8 +85,11 @@ export interface PassResult {
   generation: number | null;
 }
 
-/** One tick or one nudge, over the dependencies: the real ones in production, fakes in a test. */
-export async function pass(d: PullerDeps, event: unknown): Promise<PassResult> {
+/**
+ * One tick or one nudge, over the dependencies: the real ones in production, fakes in a test. `retrying` is the
+ * second run of a nudge whose first run lost the state's version race: the nudge is not counted or announced again.
+ */
+export async function pass(d: PullerDeps, event: unknown, options: { retrying?: boolean } = {}): Promise<PassResult> {
   const { env } = d;
   invocations += 1;
   const now = d.now();
@@ -97,13 +100,7 @@ export async function pass(d: PullerDeps, event: unknown): Promise<PassResult> {
   const newest = await d.releases.newest();
   const publicKey = await d.exchange.readPublicKey();
   const key: KeyInExchange = { keyId: publicKey.key?.keyId ?? null, malformed: publicKey.reason && publicKey.reason !== "absent" ? publicKey.reason : null };
-  if (key.malformed) log({ event: "public_key_malformed", reason: key.malformed });
-  if (trigger.kind === "nudge") {
-    state = { ...state, nudges: state.nudges + 1 };
-    await d.desk.appendEvent({ at: now, kind: "nudged", host: env.hostId, by: trigger.by, sentAt: trigger.sentAt, messages: trigger.messageIds.length });
-    log({ event: "nudged", by: trigger.by, messages: trigger.messageIds.length });
-  }
-  const plan = planPull({ now, trigger, state, newest, key });
+  if (key.malformed) log({ event: publicKey.reason?.startsWith("denied:") ? "public_key_unreadable" : "public_key_malformed", reason: key.malformed });
   let keyReadable = true;
   let apiKey: string | null = null;
   try {
@@ -112,6 +109,20 @@ export async function pass(d: PullerDeps, event: unknown): Promise<PassResult> {
     keyReadable = false;
     log({ event: "agent_key_unreadable", parameter: env.agentKeyParameter, name: (error as Error).name, message: (error as Error).message.slice(0, 200) });
   }
+  // A nudge the puller cannot honour (no Agent key) is not counted or announced: the queue retries it, and one click is one row.
+  if (!keyReadable && trigger.kind === "nudge") {
+    await writePullerRow(d, { state, newest, key, keyReadable, now });
+    throw new Error(`the Agent key parameter ${env.agentKeyParameter} is unreadable; the nudge was not honoured`);
+  }
+  if (trigger.kind === "nudge") {
+    // The count travels with the state (a run that lost the race never wrote it, so the retry counts it); the timeline row is written once.
+    state = { ...state, nudges: state.nudges + 1 };
+    if (!options.retrying) {
+      await d.desk.appendEvent({ at: now, kind: "nudged", host: env.hostId, by: trigger.by, sentAt: trigger.sentAt, messages: trigger.messageIds.length });
+      log({ event: "nudged", by: trigger.by, messages: trigger.messageIds.length });
+    }
+  }
+  const plan = planPull({ now, trigger, state, newest, key });
 
   let outcome: string | null = null;
   let generation: number | null = null;
@@ -140,15 +151,17 @@ export async function pass(d: PullerDeps, event: unknown): Promise<PassResult> {
       const row: Omit<ReleaseRow, "pk"> = { generation: result.generation, releaseDigest: result.releaseDigest, pulledAt: result.createdAt, keyId: key.keyId, object, bytes: Buffer.byteLength(text), notAfter: result.notAfter, via: trigger2 };
       const written = await d.releases.writeRelease(row, next, version);
       version = written.version;
+      state = next;
       if (written.written) {
-        await d.exchange.writeLatest({ generation: result.generation, releaseDigest: result.releaseDigest, keyId: key.keyId, object, pulledAt: result.createdAt, notAfter: result.notAfter });
         await d.desk.appendEvent({ at: now, kind: "bundle_pulled", host: env.hostId, generation: result.generation, releaseDigest: result.releaseDigest, keyId: key.keyId, object, bytes: row.bytes, trigger: row.via, sealed: key.keyId !== null, previous: newest?.generation ?? null });
         log({ event: "bundle_pulled", generation: result.generation, releaseDigest: result.releaseDigest, keyId: key.keyId, object, bytes: row.bytes, trigger: row.via, pointerKnown: next.edge?.pointerUrl !== null });
       } else {
         // The same generation with a different digest never happens on an honest control plane: say so loudly, keep the
-        // row (its object is its own: the key carries the digest).
+        // row (its object is its own: the key carries the digest), and keep saying so on the card until a newer generation lands.
         await d.desk.appendEvent({ at: now, kind: "pull_conflict", host: env.hostId, generation: result.generation, releaseDigest: result.releaseDigest, held: newest?.releaseDigest ?? null, object });
         log({ event: "pull_conflict", generation: result.generation, releaseDigest: result.releaseDigest, held: newest?.releaseDigest ?? null, object });
+        state = { ...state, conflict: { generation: result.generation, releaseDigest: result.releaseDigest, at: now } };
+        version = await d.releases.writeState(state, version);
       }
     } else {
       if (result.status === "unchanged") log({ event: "unchanged", via: result.via, generation: newest?.generation ?? 0, streak: next.unchangedStreak, skipTicks: next.skipTicks, nextPullAt: next.nextPullAt, reads: next.reads, trigger: plan.reason });
@@ -161,8 +174,8 @@ export async function pass(d: PullerDeps, event: unknown): Promise<PassResult> {
         if (!same) await d.desk.appendEvent({ at: now, kind: "pull_failed", host: env.hostId, outcome: result.status, reason, detail, trigger: plan.reason });
       }
       version = await d.releases.writeState(next, version);
+      state = next;
     }
-    state = next;
   } else if (!plan.pull) {
     if (plan.reason === "backoff") {
       state = { ...state, skipTicks: state.skipTicks - 1 };
@@ -173,6 +186,14 @@ export async function pass(d: PullerDeps, event: unknown): Promise<PassResult> {
     version = await d.releases.writeState(state, version);
   } else {
     // The key is unreadable: the plan stood but nothing was pulled; the row below says so.
+    version = await d.releases.writeState(state, version);
+  }
+
+  // --- latest.json: what the table's newest row says, repaired whenever the last write did not match it ----------------
+  const current = generation !== null ? await d.releases.newest() : newest;
+  if (current && (state.latest?.generation !== current.generation || state.latest?.keyId !== current.keyId || state.latest?.object !== current.object)) {
+    await d.exchange.writeLatest({ generation: current.generation, releaseDigest: current.releaseDigest, keyId: current.keyId, object: current.object, pulledAt: current.pulledAt, notAfter: current.notAfter });
+    state = { ...state, latest: { generation: current.generation, keyId: current.keyId, object: current.object } };
     version = await d.releases.writeState(state, version);
   }
 
@@ -187,9 +208,16 @@ export async function pass(d: PullerDeps, event: unknown): Promise<PassResult> {
     version = await d.releases.writeState(state, version);
   }
 
-  // --- The puller's own row ---------------------------------------------------------------------------------------------
-  const current = generation !== null ? await d.releases.newest() : newest;
-  const healthz = pullerHealth({ keyReadable, lastPull: state.lastPull, newest: current, key, reseal: state.reseal });
+  await writePullerRow(d, { state, newest: current, key, keyReadable, now });
+  coldStart = false;
+  return { plan: plan.reason, outcome, generation };
+}
+
+/** The puller's own row in the desk's status table. */
+async function writePullerRow(d: PullerDeps, input: { state: PullerState; newest: ReleaseRow | null; key: KeyInExchange; keyReadable: boolean; now: string }): Promise<void> {
+  const { env } = d;
+  const { state, newest: current, key, keyReadable, now } = input;
+  const healthz = pullerHealth({ keyReadable, lastPull: state.lastPull, newest: current, key, reseal: state.reseal, conflict: state.conflict });
   await d.desk.updateStatus(env.hostId, {
     region: env.region,
     kind: "puller",
@@ -211,6 +239,7 @@ export async function pass(d: PullerDeps, event: unknown): Promise<PassResult> {
       reads: state.reads,
       nudges: state.nudges,
       reseal: state.reseal,
+      conflict: state.conflict,
       intervalSeconds: env.pullIntervalSeconds,
       agentKeyParameter: env.agentKeyParameter,
       airgapMirroredAt: state.airgap.writtenAt,
@@ -218,17 +247,27 @@ export async function pass(d: PullerDeps, event: unknown): Promise<PassResult> {
     healthz,
     container: { instanceId: containerId, coldStart, startedAt, invocations },
   });
-  coldStart = false;
-  if (!keyReadable && trigger.kind === "nudge") throw new Error(`the Agent key parameter ${env.agentKeyParameter} is unreadable; the nudge was not honoured`);
-  return { plan: plan.reason, outcome, generation };
 }
 
-export const handler = async (event: unknown, _context?: Context): Promise<PassResult> => {
+export const handler = async (event: unknown, _context?: Context): Promise<PassResult> => runOnce(realDeps(), event);
+
+/** One invocation: a lost race is not an error — a tick stops (the winner's word stands); a nudge runs once more on the fresh state, so what a person asked for is never dropped. */
+export async function runOnce(d: PullerDeps, event: unknown): Promise<PassResult> {
+  const isRace = (error: unknown): boolean => error instanceof RaceLost || (error as Error)?.name === "RaceLost";
   try {
-    return await pass(realDeps(), event);
+    return await pass(d, event);
   } catch (error) {
-    if (error instanceof RaceLost || (error as Error).name === "RaceLost") {
-      // Another invocation (a nudge during a tick, or the reverse) wrote the state first: it did the work; this one is done.
+    if (isRace(error)) {
+      if (parseTrigger(event).kind === "nudge") {
+        log({ event: "state_race_lost", message: (error as Error).message, retrying: true });
+        try {
+          return await pass(d, event, { retrying: true });
+        } catch (again) {
+          if (!isRace(again)) throw again;
+          log({ event: "state_race_lost", message: (again as Error).message, retrying: false });
+          throw again;
+        }
+      }
       log({ event: "state_race_lost", message: (error as Error).message });
       return { plan: "race_lost", outcome: null, generation: null };
     }
@@ -236,4 +275,4 @@ export const handler = async (event: unknown, _context?: Context): Promise<PassR
     log({ event: "pass_failed", name: e.name, code: e.code ?? null, message: e.message.slice(0, 300) });
     throw error;
   }
-};
+}

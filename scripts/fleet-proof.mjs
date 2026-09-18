@@ -142,7 +142,8 @@ if (puller) {
   const pulled = await pullerLog(2 * 3_600_000, '{ $.event = "bundle_pulled" }');
   console.log(`  log, last two hours: ${unchanged.length} unchanged (${viaPointer} via the pointer — CDN 304s; ${viaOrigin} via the origin — API 304s), ${pulled.length} pulled (${pulled.map((e) => `#${e.generation} ${e.trigger}`).join(", ") || "none"})`);
   check(unchanged.length === 0 || viaPointer > 0, "idle ticks read the pointer, not the origin");
-  check(viaOrigin <= 2 + pulled.length, `origin reads are bounded (one per hour by the stuck-pointer bound, plus one per pull)`);
+  const asked = await pullerLog(2 * 3_600_000, '{ $.event = "nudged" }');
+  check(viaOrigin <= 2 + pulled.length + asked.length, `origin reads are bounded (one per hour by the stuck-pointer bound, plus one per pull, plus one per nudge; ${asked.length} nudge(s))`);
 }
 
 // --- (b) the nudge ----------------------------------------------------------------------------------------------------
@@ -161,10 +162,10 @@ if (flag("--nudge")) {
   await sleep(5_000);
   const after = await hostRow(fleet.PullerHostId);
   check((after?.status?.nudges ?? 0) > before, `nudges ${before} → ${after?.status?.nudges}`);
-  check(after?.status?.lastPull?.trigger === "nudge", `the last pull's trigger is \`nudge\` (${after?.status?.lastPull?.outcome}${after?.status?.lastPull?.via ? ` via ${after.status.lastPull.via}` : ""})`);
+  check(after?.status?.lastPull?.trigger === "nudge" || after?.status?.lastPull?.trigger === "reseal", `the last pull's trigger is \`nudge\` (or a re-seal that was due) (${after?.status?.lastPull?.trigger}: ${after?.status?.lastPull?.outcome}${after?.status?.lastPull?.via ? ` via ${after.status.lastPull.via}` : ""})`);
   const logged = await pullerLog(5 * 60_000, '{ $.event = "nudged" }');
   check(logged.length > 0, `the log carries the nudge (${logged.length} in five minutes)`);
-  const skip = (await pullerLog(5 * 60_000, '{ $.trigger = "nudge" }')).find((e) => e.event === "unchanged" || e.event === "bundle_pulled");
+  const skip = (await pullerLog(5 * 60_000, '{ ($.trigger = "nudge") || ($.trigger = "reseal") }')).find((e) => e.event === "unchanged" || e.event === "bundle_pulled");
   check(skip && (skip.event === "bundle_pulled" || skip.via === "origin"), `the nudged pull skipped the pointer and read the origin (${skip?.event}${skip?.via ? ` via ${skip.via}` : ""})`);
 }
 
@@ -193,8 +194,11 @@ if (flag("--airgap")) {
     const routes = tables.RouteTables?.[0]?.Routes ?? [];
     const describe = (r) => `${r.DestinationCidrBlock ?? r.DestinationPrefixListId ?? "?"} → ${r.GatewayId ?? r.NatGatewayId ?? r.InstanceId ?? "?"}`;
     console.log(`  VPC route table ${airgapStack.RouteTableId}: ${routes.map(describe).join(" · ")}`);
-    check(!routes.some((r) => r.DestinationCidrBlock === "0.0.0.0/0" || r.DestinationIpv6CidrBlock === "::/0" || r.NatGatewayId), "the VPC route table has no default route and no NAT");
-    check(routes.filter((r) => r.DestinationPrefixListId && /^vpce-/.test(String(r.GatewayId))).length === 2, "two gateway-endpoint prefix-list routes (S3, DynamoDB) beside the local route");
+    // Presence of only the allowed: the local route and the two gateway endpoints' prefix lists — no default route, no NAT, no
+    // peering, no transit gateway, no interface, no egress-only gateway, nothing else.
+    const allowed = (r) => r.GatewayId === "local" || (r.DestinationPrefixListId && /^vpce-/.test(String(r.GatewayId)));
+    check(routes.length === 3 && routes.every(allowed), "the VPC route table carries exactly the local route and the two gateway-endpoint prefix-list routes (S3, DynamoDB)");
+    check((tables.RouteTables?.[0]?.Associations ?? []).some((a) => a.SubnetId === airgapStack.SubnetId), `the host's subnet ${airgapStack.SubnetId} is associated with it`);
     console.log("  through the Instance Connect Endpoint (a session key, pushed for sixty seconds):");
     const run = (remote) => spawnSync("node", [join(repoRoot, "scripts", "airgap.mjs"), "run", remote], { encoding: "utf8", env: process.env, timeout: 180_000 });
     const probe = run("curl -sS -m 8 -o /dev/null https://api-dev.airprompter.com/ 2>&1; echo curl_exit=$?; getent hosts api-dev.airprompter.com | sed 's/^/dns: /'; sudo stat -c 'key: %a %U %n' /var/lib/airprompter/keys/airgap.key.json; sudo stat -c 'pub: %a %U %n' /var/lib/airprompter/keys/airgap.pub.json; systemctl is-active zudocs-airgap zudocs-airgap-export.timer | tr '\\n' ' '; echo; /usr/local/bin/airprompter --version; /usr/local/bin/node --version");

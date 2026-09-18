@@ -32,10 +32,11 @@ export function mirrorAirgap(input: { doc: AirgapStatusDoc; previous: PullerStat
     events.push({ at: doc.startedAt, kind: "distribution_key_born", keyId: doc.keyId, published: input.keyIdInExchange === doc.keyId });
   }
   // Every apply newer than the last one mirrored (the document keeps the newest twenty; a host that applied more
-  // than twenty between two mirrors loses the older ones here, never the newest).
+  // than twenty between two mirrors loses the older ones here, never the newest). A first mirror — a fresh puller
+  // state, or one reset — emits the newest apply only: the desk is not the place to replay a host's history.
   const since = previous.lastAppliedAt;
-  for (const apply of doc.applies) {
-    if (since && apply.at <= since) continue;
+  const applies = since ? doc.applies.filter((apply) => apply.at > since) : doc.applies.slice(-1);
+  for (const apply of applies) {
     events.push({ at: apply.at, kind: "airgap_applied", generation: apply.generation, outcome: apply.outcome, reason: apply.reason, detail: apply.detail, source: apply.source, object: apply.object });
   }
   if (doc.export && previous.lastExportAt !== doc.export.at) {

@@ -40,6 +40,7 @@ test("the releases table: the state row is read consistently; a write is conditi
   const fresh = fakeClient([{}]);
   await createReleasesTable(fresh, "t", "s").writeState({ ...EMPTY_STATE }, 0);
   assert.equal((fresh.sent[0] as PutCommand).input.ConditionExpression, "attribute_not_exists(pk) OR version = :v", "a first write tolerates an absent row");
+  assert.deepEqual((fresh.sent[0] as PutCommand).input.ExpressionAttributeValues, { ":v": 0 }, "and names the value the expression uses");
 });
 
 test("the releases table: the newest row is one consistent query, newest first; a release and the state go in one transaction whose cancellation reasons are read", async () => {
@@ -68,6 +69,8 @@ test("the releases table: the newest row is one consistent query, newest first; 
   // The state's condition failed: the other invocation won.
   const race = fakeClient([Object.assign(new Error("tx"), { name: "TransactionCanceledException", CancellationReasons: [{ Code: "None" }, { Code: "ConditionalCheckFailed" }] })]);
   await assert.rejects(() => createReleasesTable(race, "t", "s").writeRelease(row, state, 4), (error: unknown) => error instanceof RaceLost);
+  const conflictTx = fakeClient([Object.assign(new Error("tx"), { name: "TransactionCanceledException", CancellationReasons: [{ Code: "TransactionConflict" }, { Code: "None" }] })]);
+  await assert.rejects(() => createReleasesTable(conflictTx, "t", "s").writeRelease(row, state, 4), (error: unknown) => error instanceof RaceLost, "a transaction conflict on the same items is a lost race");
   const other = fakeClient([Object.assign(new Error("boom"), { name: "InternalServerError" })]);
   await assert.rejects(() => createReleasesTable(other, "t", "s").writeRelease(row, state, 4), /boom/, "anything else is an error");
 });
@@ -88,23 +91,24 @@ test("the desk's tables: updateStatus merges fields with SET; appendEvent writes
   assert.equal(item.kind, "bundle_pulled");
 });
 
-test("the exchange: a missing object is null whether S3 answers 404 or 403; a malformed key is a reason; a real error is thrown; writes carry their metadata", async () => {
+test("the exchange: a missing object (404) is absent; a refused read (403) is reported as denied — never taken for absent; a malformed key is a reason; a real error is thrown; writes carry their metadata", async () => {
   const body = (text: string) => ({ Body: { transformToString: async () => text } });
   const notFound = Object.assign(new Error("nope"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
   const denied = Object.assign(new Error("denied"), { name: "AccessDenied", $metadata: { httpStatusCode: 403 } });
-  const client = fakeClient([notFound, denied, body("{}"), body(JSON.stringify({ kind: "airprompter-airgap-status", v: 1, hostId: "h", writtenAt: "w", startedAt: "s", applies: [] })), Object.assign(new Error("throttled"), { name: "SlowDown", $metadata: { httpStatusCode: 503 } }), {}, {}]);
+  const client = fakeClient([notFound, denied, body("{}"), body(JSON.stringify({ kind: "airprompter-airgap-status", v: 1, hostId: "h", writtenAt: "w", startedAt: "s", applies: [] })), Object.assign(new Error("throttled"), { name: "SlowDown", $metadata: { httpStatusCode: 503 } }), denied, {}, {}]);
   const exchange = createExchange(client, "b");
   assert.deepEqual(await exchange.readPublicKey(), { key: null, reason: "absent" });
-  assert.deepEqual(await exchange.readPublicKey(), { key: null, reason: "absent" }, "a 403 on a key the role may not list is also absent");
+  assert.deepEqual(await exchange.readPublicKey(), { key: null, reason: "denied:AccessDenied" }, "a refused read is a misconfiguration to report, not an absent key");
   assert.equal((await exchange.readPublicKey()).reason, "not a distribution public key file (kind airprompter-distribution-public-key)");
   assert.equal((await exchange.readStatusDoc())?.hostId, "h");
   await assert.rejects(() => exchange.readStatusDoc(), /throttled/);
+  await assert.rejects(() => exchange.readStatusDoc(), /the read was refused/);
   await exchange.writeBundle("releases/3-3-plain.apbundle", "{}", { generation: "3" });
   await exchange.writeLatest({ generation: 3, releaseDigest: "d", keyId: null, object: "o", pulledAt: "t", notAfter: "n" });
-  const put = client.sent[5] as { input: { Key: string; Metadata: Record<string, string>; ContentType: string } };
+  const put = client.sent[6] as { input: { Key: string; Metadata: Record<string, string>; ContentType: string } };
   assert.equal(put.input.Key, "releases/3-3-plain.apbundle");
   assert.deepEqual(put.input.Metadata, { generation: "3" });
-  const latest = client.sent[6] as { input: { Key: string; CacheControl: string } };
+  const latest = client.sent[7] as { input: { Key: string; CacheControl: string } };
   assert.equal(latest.input.Key, "latest.json");
   assert.equal(latest.input.CacheControl, "no-store");
 });

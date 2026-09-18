@@ -22,7 +22,7 @@ export const EXCHANGE_KEYS = Object.freeze({ releasesPrefix: "releases/", latest
 
 export interface PublicKeyRead {
   key: { keyId: string; raw: Uint8Array } | null;
-  /** Why there is no usable key: absent, or what is wrong with the object. */
+  /** Why there is no usable key: `absent`, `denied:<code>` (the read was refused — a misconfiguration, never plaintext), or what is wrong with the object. */
   reason: string | null;
 }
 
@@ -55,22 +55,25 @@ export interface Exchange {
 
 export function createExchange(s3: Pick<S3Client, "send">, bucket: string): Exchange {
   const send = s3.send.bind(s3) as (command: unknown) => Promise<any>;
-  // A missing object is a 404 when the caller may list the key (the puller's role may, for these two keys) and a
-  // 403 otherwise; both mean "not there" for an object the host writes when it exists. Anything else is an error.
-  const read = async (key: string): Promise<string | null> => {
+  // A missing object is a 404 (the puller's role may list exactly these two keys, which is what makes it a 404 and
+  // not a 403). A 403 is a misconfiguration (a bucket policy, an SCP) and is reported as `denied`, never taken for
+  // "absent": a puller that cannot see the key must not write plaintext. Anything else is an error.
+  const read = async (key: string): Promise<{ text: string | null; denied: string | null }> => {
     try {
       const out = await send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-      return out.Body ? await out.Body.transformToString("utf8") : null;
+      return { text: out.Body ? await out.Body.transformToString("utf8") : null, denied: null };
     } catch (error) {
-      const name = (error as { name?: string }).name;
+      const name = (error as { name?: string }).name ?? "error";
       const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
-      if (name === "NoSuchKey" || name === "NotFound" || status === 404 || name === "AccessDenied" || status === 403) return null;
+      if (name === "NoSuchKey" || name === "NotFound" || status === 404) return { text: null, denied: null };
+      if (name === "AccessDenied" || status === 403) return { text: null, denied: name };
       throw error;
     }
   };
   return {
     async readPublicKey() {
-      const text = await read(EXCHANGE_KEYS.publicKey);
+      const { text, denied } = await read(EXCHANGE_KEYS.publicKey);
+      if (denied) return { key: null, reason: `denied:${denied}` };
       if (text === null) return { key: null, reason: "absent" };
       try {
         return { key: parsePublicKeyFile(JSON.parse(text)), reason: null };
@@ -79,7 +82,8 @@ export function createExchange(s3: Pick<S3Client, "send">, bucket: string): Exch
       }
     },
     async readStatusDoc() {
-      const text = await read(EXCHANGE_KEYS.status);
+      const { text, denied } = await read(EXCHANGE_KEYS.status);
+      if (denied) throw new Error(`${EXCHANGE_KEYS.status}: the read was refused (${denied}); the puller's role may read exactly this key — check the bucket policy`);
       return text === null ? null : parseStatusDoc(text);
     },
     async writeBundle(key, text, metadata) {

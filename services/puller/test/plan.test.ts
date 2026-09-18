@@ -52,7 +52,7 @@ test("advance: unchanged and failures each stretch the interval in ticks to skip
   let s = advance(state(), unchanged("pointer"), { now, intervalMs: interval, trigger: "tick", keyId: null });
   assert.equal(s.unchangedStreak, 1);
   assert.equal(s.skipTicks, 1, "one unchanged: two minutes, so one tick skipped");
-  assert.equal(s.nextPullAt, "2026-09-18T20:01:00.000Z");
+  assert.equal(s.nextPullAt, "2026-09-18T20:02:00.000Z", "the pull is the tick after the skipped one");
   assert.deepEqual(s.reads, { hour: "2026-09-18T20", pointer: 1, origin: 0 });
   assert.equal(s.edge?.pointerEtag, '"p2"');
   s = advance(s, unchanged("pointer"), { now, intervalMs: interval, trigger: "tick", keyId: null });
@@ -67,6 +67,9 @@ test("advance: unchanged and failures each stretch the interval in ticks to skip
   const five = advance(state(), unchanged("pointer"), { now, intervalMs: 300_000, trigger: "tick", keyId: null });
   assert.equal(five.skipTicks, 0, "at the plan's schedule the cap equals the tick: nothing is ever skipped");
   assert.equal(five.nextPullAt, null);
+  const nudged = advance(s, unchanged("origin"), { now, intervalMs: interval, trigger: "nudge", keyId: null });
+  assert.equal(nudged.skipTicks, 0, "a nudge that found nothing: the schedule resumes from the start (a person said look)");
+  assert.equal(nudged.unchangedStreak, 0);
   const ok: PullBundleResult = { status: "ok", bundle: {} as never, manifest: {} as never, generation: 4, releaseDigest: "sha256:4", createdAt: now, notAfter: "2026-12-17T20:00:00.000Z", trustedRoot: {} as never, edge: { ...edge, manifestEtag: '"m2"' } };
   s = advance(s, ok, { now, intervalMs: interval, trigger: "nudge", keyId: null });
   assert.equal(s.unchangedStreak, 0);
@@ -85,6 +88,11 @@ test("advance: unchanged and failures each stretch the interval in ticks to skip
   assert.equal(s.reads.origin, 4, "nothing promoted is an origin read");
   s = advance(s, { status: "refused", reason: "plaintext_not_allowed", edge }, { now, intervalMs: interval, trigger: "tick", keyId: null });
   assert.equal(s.reads.origin, 4, "a refusal before any network call is not a read");
+  assert.equal(s.failureStreak, 3);
+  const recovered = advance(s, unchanged("pointer"), { now, intervalMs: interval, trigger: "tick", keyId: null });
+  assert.equal(recovered.failureStreak, 0, "an unchanged tick ends the failure streak");
+  assert.equal(recovered.unchangedStreak, 1);
+  assert.equal(advance(state({ reseal: { keyId: "k9", failures: 2 } }), unchanged("pointer"), { now, intervalMs: interval, trigger: "tick", keyId: "k9" }).reseal?.failures, 2, "a tick leaves the re-seal count alone");
   const nextHour = advance(s, unchanged("pointer"), { now: "2026-09-18T21:00:01.000Z", intervalMs: interval, trigger: "tick", keyId: null });
   assert.deepEqual(nextHour.reads, { hour: "2026-09-18T21", pointer: 1, origin: 0 }, "a new hour starts the counters over");
   let r = advance(state(), { status: "unavailable", reason: "network", edge }, { now, intervalMs: interval, trigger: "reseal", keyId: "k9" });
@@ -107,4 +115,6 @@ test("objectKeyOf and pullerHealth", () => {
   assert.deepEqual(pullerHealth({ keyReadable: true, lastPull: last("unchanged", null), newest: row(3, "k"), key: key(null, "not a distribution public key file"), reseal: null }).reasons, ["public_key_malformed:not a distribution public key file"]);
   assert.deepEqual(pullerHealth({ keyReadable: true, lastPull: last("unchanged", null), newest: row(3, "old"), key: key("k9abcdef"), reseal: { keyId: "k9abcdef", failures: 3 } }).reasons, ["reseal_failing:k9abcdef"]);
   assert.deepEqual(pullerHealth({ keyReadable: true, lastPull: last("nothing_promoted", "nothing_promoted"), newest: null, key: key(null), reseal: null }).reasons, ["nothing_promoted", "nothing_pulled_yet"]);
+  assert.deepEqual(pullerHealth({ keyReadable: true, lastPull: last("unchanged", null), newest: row(3, "k"), key: key("k"), reseal: null, conflict: { generation: 3, releaseDigest: "sha256:other", at: now } }).reasons, ["pull_conflict:3"], "a conflict is said until a newer generation lands");
+  assert.deepEqual(pullerHealth({ keyReadable: true, lastPull: last("unchanged", null), newest: row(4, "k"), key: key("k"), reseal: null, conflict: { generation: 3, releaseDigest: "sha256:other", at: now } }).reasons, []);
 });

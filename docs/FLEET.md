@@ -27,8 +27,9 @@ The puller is the SDK's fleet pattern (`docs/change-notification.md` in the SDK 
 
 1. Read the state row (the edge pointer URL the control plane named, the pointer's ETag, the manifest's ETag, when
    the origin last answered; the backoff; its version), the table's newest row, and the host's public key from the
-   exchange (a missing key is "absent"; an object that is not a key stops the puller with `public_key_malformed` on
-   its card — never a quiet downgrade to plaintext).
+   exchange (a missing key is "absent" — the puller's role may list exactly the two keys the host writes, which is
+   what makes a missing one a 404; a read that is *refused* is reported as `denied` and stops the puller, and so does
+   an object that is not a key: `public_key_malformed` on its card — never a quiet downgrade to plaintext).
 2. Decide (`plan.ts`): a **tick** with ticks left to skip does nothing; a **nudge** pulls now and skips the pointer;
    a **re-seal** (the host published a key the held generation is not sealed to) reads the origin with the manifest
    ETag dropped, so a 304 cannot stand in for the bundle — given up after three failures on that key, said on the
@@ -40,13 +41,17 @@ The puller is the SDK's fleet pattern (`docs/change-notification.md` in the SDK 
    hash) before the bundle is built.
 4. On `ok`: the bundle object (its key carries the generation, the digest and the recipient), then the row and the
    state in one transaction, then `latest.json`, then a `bundle_pulled` timeline row. The same generation with another
-   digest never happens on an honest control plane; if it did, the row and its object stand and `pull_conflict` says
-   so. On `unchanged`, and on a refusal, an outage or nothing promoted: the SDK's `nextPullDelayMs` stretches the
-   interval, kept as ticks to skip — 1 → 2 → 4 → 5 minutes in demo; at the five-minute schedule the cap equals the
-   tick and nothing is ever skipped — and a change snaps it back. A failure is one `pull_failed` timeline row per
-   change of reason, not one per tick; the health says so until a pull works. Two invocations at once (a nudge during
-   a tick) both pull, and the second to write loses cleanly on the state's version (`state_race_lost`), writing
-   nothing.
+   digest never happens on an honest control plane; if it did, the row and its object stand, `pull_conflict` says so
+   on the timeline, and the card says so until a newer generation lands. `latest.json` follows the table's newest
+   row and is repaired on the next tick whenever the last write did not match it. On `unchanged`, and on a refusal,
+   an outage or nothing promoted: the SDK's `nextPullDelayMs` stretches the interval, kept as ticks to skip — 1 → 2 →
+   4 → 5 minutes in demo; at the five-minute schedule the cap equals the tick and nothing is ever skipped — and a
+   change, a nudge or a re-seal snaps it back (whatever a nudge finds, a person said "look" and the schedule resumes
+   from the start). A failure is one `pull_failed` timeline row per change of reason, not one per tick; the health
+   says so until a pull works. Two invocations at once (a nudge during a tick) both pull; the second to write loses
+   on the state's version (`state_race_lost`) and its table and timeline writes never happen (its bundle object, an
+   idempotent copy, may). A tick that lost stops there — the winner's word stands; a nudge that lost runs once more
+   on the fresh state, so what a person asked for is never dropped and the nudge is announced once.
 5. Every tick also mirrors `status/airgap.json`, when it changed, into the air-gapped host's row and turns what
    changed into timeline rows (`airgap_started`, `distribution_key_born`, `airgap_applied`, `telemetry_exported`,
    `health_changed`).
@@ -108,16 +113,22 @@ so a torn-down host fades exactly as a silent one would.
 On the host: `airprompter export-telemetry --state-dir /var/lib/airprompter --out …` packs every closed, unsent
 segment into one document (the segments verbatim, the store's generation beside them) and moves them to
 `spool/telemetry/exported/`; the document goes to `telemetry/<instance>/<time>.aptelemetry` when it carries a
-segment, and `last.json` records the result for the status document either way.
+segment, and `last.json` records the result for the status document either way. A document whose upload failed is
+kept and goes first on the next run — nothing the CLI packed is ever lost to one failed copy.
 
 On eu-west: the import timer lists `telemetry/` and `imports/` (its role may read the first, write the second,
 and list those two prefixes only), downloads each export it has no marker for, and runs `airprompter
 import-telemetry` on it. The CLI heartbeats as each instance the document carries — `syncMode: offline`, the
 exporting store's generation, `file_key` — for an upload grant to that instance's prefix and posts the segments
 through it. The platform is idempotent by key (importing the same file twice changes nothing); the ledger — a marker
-object per export in the bucket, so it outlives the instance — keeps the host from paying the heartbeat twice. Only a
-clean import writes the marker at once: the platform's "retry later", a refused segment, a network failure or a CLI
-that did not answer is retried on the next pass, five times, then recorded as failed with a marker. The Agent key
+object per export in the bucket, so it outlives the instance — keeps the host from paying the heartbeat twice. Exit 0
+is the CLI's contract for "every segment landed" and writes the marker (the `--json` document — the last line of
+stdout — is read for the counts; unreadable, the counts stay null and the log says so). Anything else is held for
+another pass: a transient failure (the CLI did not run, no document, the platform's "retry later") is held for as
+long as it takes — the exports expire from the bucket after thirty days, and holding while the platform is down
+costs nothing; only a deterministic refusal (segments the platform refused) counts toward five attempts and ends as
+failed with a marker (delete `imports/<marker>` in the bucket to try again). The CLI's stderr stays in the host's log
+and never reaches a timeline row. The Agent key
 reaches the CLI as a systemd credential: `LoadCredential=` mounts the daemon's root-only env file for this unit
 alone, the script reads the value and puts it in the child's environment only. On AirPrompter's fleet page the
 air-gapped instance appears as an offline resident with its windows — every one of them a refusal.
@@ -161,7 +172,8 @@ The airgap stack is never in CI's deploy list (`infra/test/airgap-stack.test.ts`
   at the demo's one-minute tick an idle puller stretches to five minutes and a nudge snaps it back. The proof's "one
   origin read per hour" is the SDK's stuck-pointer bound, visible in the log.
 - The host's Instance Connect Endpoint is the only way in; the OS route table shows a default route from DHCP (every
-  EC2 instance's does) — the VPC route table, which decides, has none, and the proof reads that one.
+  EC2 instance's does) — the VPC route table, which decides, has none, and the proof reads that one and asserts it
+  carries exactly the local route and the two gateway endpoints' prefix lists, with the host's subnet on it.
 - `npm run airgap:up` deploys `ZudocsAirgap --exclusively`: the fleet stack is CI's, and a deploy from a checkout
   must never redeploy it as a dependency.
 - A replacement of the eu-west instance (this phase changed its bundle) resets the sticky `forced_downgrade` flag

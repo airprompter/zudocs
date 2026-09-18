@@ -50,11 +50,15 @@ export interface PullerState {
   nudges: number;
   /** Re-seals that failed for a key: after `RESEAL_MAX_FAILURES` the puller stops trying until the key changes. */
   reseal: { keyId: string; failures: number } | null;
+  /** What `latest.json` was last written as, so a failed write is repaired on the next tick. */
+  latest: { generation: number; keyId: string | null; object: string } | null;
+  /** A generation the origin answered with another digest than the row holds: said on the card until a newer generation lands. */
+  conflict: { generation: number; releaseDigest: string; at: string } | null;
   /** What the puller mirrored last from the air-gapped host's status document. */
   airgap: { writtenAt: string | null; startedAt: string | null; lastAppliedAt: string | null; lastExportAt: string | null; health: string | null; keyId: string | null };
 }
 
-export const EMPTY_STATE: PullerState = Object.freeze({ edge: null, unchangedStreak: 0, failureStreak: 0, skipTicks: 0, nextPullAt: null, reads: { hour: "", pointer: 0, origin: 0 }, lastPull: null, nudges: 0, reseal: null, airgap: { writtenAt: null, startedAt: null, lastAppliedAt: null, lastExportAt: null, health: null, keyId: null } }) as PullerState;
+export const EMPTY_STATE: PullerState = Object.freeze({ edge: null, unchangedStreak: 0, failureStreak: 0, skipTicks: 0, nextPullAt: null, reads: { hour: "", pointer: 0, origin: 0 }, lastPull: null, nudges: 0, reseal: null, latest: null, conflict: null, airgap: { writtenAt: null, startedAt: null, lastAppliedAt: null, lastExportAt: null, health: null, keyId: null } }) as PullerState;
 export const RESEAL_MAX_FAILURES = 3;
 
 export type Trigger = { kind: "tick" } | { kind: "nudge"; by: string; sentAt: string | null; messageIds: string[] };
@@ -129,11 +133,14 @@ export function advance(state: PullerState, result: PullBundleResult, input: { n
   if (result.status === "unchanged" && result.via === "pointer") reads.pointer += 1;
   // A refusal the SDK gives before any network call (plaintext on a non-dev target) is not a read.
   else if (!(result.status === "refused" && result.reason === "plaintext_not_allowed")) reads.origin += 1;
-  const unchangedStreak = result.status === "unchanged" ? state.unchangedStreak + 1 : 0;
+  // A nudge or a re-seal is a person (or the host) saying "look": whatever it finds, the schedule resumes from the start.
+  const asked = input.trigger === "nudge" || input.trigger === "reseal";
+  const unchangedStreak = result.status === "unchanged" && !asked ? state.unchangedStreak + 1 : 0;
   const failureStreak = result.status === "ok" || result.status === "unchanged" ? 0 : state.failureStreak + 1;
-  const delay = result.status === "ok" ? input.intervalMs : nextPullDelayMs({ outcome: "unchanged", unchangedStreak: Math.max(unchangedStreak, failureStreak), intervalMs: input.intervalMs, capMs: input.capMs ?? 5 * 60_000 });
-  const skipTicks = result.status === "ok" ? 0 : Math.max(0, Math.round(delay / input.intervalMs) - 1);
-  const nextPullAt = skipTicks > 0 ? new Date(Date.parse(input.now) + skipTicks * input.intervalMs).toISOString() : null;
+  const delay = result.status === "ok" || asked ? input.intervalMs : nextPullDelayMs({ outcome: "unchanged", unchangedStreak: Math.max(unchangedStreak, failureStreak), intervalMs: input.intervalMs, capMs: input.capMs ?? 5 * 60_000 });
+  const skipTicks = Math.max(0, Math.round(delay / input.intervalMs) - 1);
+  // The pull happens on the tick after the skipped ones.
+  const nextPullAt = skipTicks > 0 ? new Date(Date.parse(input.now) + (skipTicks + 1) * input.intervalMs).toISOString() : null;
   const lastPull: PullerState["lastPull"] = {
     at: input.now,
     outcome: result.status,
@@ -156,11 +163,12 @@ export function objectKeyOf(prefix: string, generation: number, releaseDigest: s
   return `${prefix}${generation}-${safe(releaseDigest)}-${keyId ? safe(keyId) : "plain"}.apbundle`;
 }
 
-/** The health the puller reports for itself: failing when the key is unreadable or the last pull was unavailable, degraded on a refusal, a malformed key object or a re-seal given up. */
-export function pullerHealth(input: { keyReadable: boolean; lastPull: PullerState["lastPull"]; newest: ReleaseRow | null; key: KeyInExchange; reseal: PullerState["reseal"] }): { ok: boolean; status: "ok" | "degraded" | "failing"; reasons: string[] } {
+/** The health the puller reports for itself: failing when the key is unreadable or the last pull was unavailable, degraded on a refusal, a malformed or unreadable key object, a re-seal given up or a digest conflict still standing. */
+export function pullerHealth(input: { keyReadable: boolean; lastPull: PullerState["lastPull"]; newest: ReleaseRow | null; key: KeyInExchange; reseal: PullerState["reseal"]; conflict?: PullerState["conflict"] }): { ok: boolean; status: "ok" | "degraded" | "failing"; reasons: string[] } {
   const reasons: string[] = [];
   if (!input.keyReadable) reasons.push("agent_key_unreadable");
   if (input.key.malformed) reasons.push(`public_key_malformed:${input.key.malformed.slice(0, 60)}`);
+  if (input.conflict && (!input.newest || input.newest.generation <= input.conflict.generation)) reasons.push(`pull_conflict:${input.conflict.generation}`);
   if (input.lastPull?.outcome === "unavailable") reasons.push(`pull_unavailable:${input.lastPull.reason ?? "unknown"}`);
   if (input.lastPull?.outcome === "refused") reasons.push(`pull_refused:${input.lastPull.reason ?? "unknown"}`);
   if (input.lastPull?.outcome === "nothing_promoted") reasons.push("nothing_promoted");

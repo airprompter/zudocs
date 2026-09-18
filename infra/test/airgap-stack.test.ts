@@ -122,7 +122,7 @@ test("user data rendering with the committed template and pins; the outputs the 
   assert.ok(rendered.includes('EXCHANGE="s3://zudocs-exchange-111122223333"') && rendered.includes(`\${EXCHANGE}/tools/${airgapPins.node.asset}`), "Node from the exchange's tools/ prefix");
   const { airgap } = synthAll();
   const outputs = airgap.toJSON().Outputs as Record<string, { Value: unknown }>;
-  for (const key of ["InstanceId", "HostId", "InstanceConnectEndpointId", "ShellCommand", "RouteTableId", "ExchangeBucketName", "PublicKeyObject"]) assert.ok(outputs[key], key);
+  for (const key of ["InstanceId", "HostId", "InstanceConnectEndpointId", "ShellCommand", "RouteTableId", "SubnetId", "ExchangeBucketName", "PublicKeyObject"]) assert.ok(outputs[key], key);
   assert.equal(outputs.HostId!.Value, "ap-southeast-1/airgap");
 });
 

@@ -94,6 +94,8 @@ export function createReleasesTable(client: Pick<DynamoDBDocumentClient, "send">
             const version = await this.writeState(state, expectedVersion);
             return { written: false, version };
           }
+          // Another transaction touched the same items at the same instant: the same answer as a lost condition.
+          if (reasons.some((r) => r?.Code === "TransactionConflict")) throw new RaceLost(expectedVersion);
         }
         throw error;
       }

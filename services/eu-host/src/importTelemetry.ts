@@ -64,9 +64,14 @@ export function agentKeyFrom(env: NodeJS.ProcessEnv, readFile: (path: string) =>
   return match[1]!;
 }
 
-/** The CLI's JSON output parsed to the report; a missing or malformed field is a refusal to record, never a guess. */
+/**
+ * The CLI's JSON output parsed to the report: `--json` prints one document as the last line of stdout (a refusal
+ * prints `{ ok: false, error, exitCode }` instead); a missing or malformed field is a refusal to record, never a guess.
+ */
 export function parseImportReport(stdout: string): ImportReport {
-  const parsed = JSON.parse(stdout) as Partial<ImportReport>;
+  const last = stdout.trim().split("\n").filter((line) => line.trim()).at(-1) ?? "";
+  const parsed = JSON.parse(last) as Partial<ImportReport> & { ok?: boolean; error?: string };
+  if (parsed.ok === false) throw new Error(`the CLI refused: ${String(parsed.error ?? "no reason").slice(0, 200)}`);
   const n = (value: unknown, name: string): number => {
     if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`import-telemetry --json: ${name} is not a number`);
     return value;
@@ -83,11 +88,20 @@ export function parseImportReport(stdout: string): ImportReport {
 
 export type ImportOutcome = "imported" | "held" | "failed";
 
-/** The verdict on one CLI run: clean (exit 0) is imported; anything else is held for another pass until the attempts run out. Pure. */
-export function outcomeOf(run: { status: number | null; error?: Error | undefined }, report: ImportReport | null, attempts: number): { outcome: ImportOutcome; why: string } {
-  if (!run.error && run.status === 0 && report && report.refused === 0) return { outcome: "imported", why: "clean" };
-  const why = run.error ? `the CLI did not run: ${run.error.message}` : report?.retryAfterSeconds !== undefined ? `the platform asked to retry in ${report.retryAfterSeconds}s` : report && report.refused > 0 ? `${report.refused} segment(s) refused` : report ? `exit ${run.status}` : `exit ${run.status}, no report`;
-  return { outcome: attempts + 1 >= IMPORT_MAX_ATTEMPTS ? "failed" : "held", why };
+/**
+ * The verdict on one CLI run. Exit 0 is the CLI's contract for "every segment landed" and is imported even when the
+ * document could not be read (logged; the counts stay null). Anything else is held for another pass: a transient
+ * failure (the CLI did not run, no document, the platform's "retry later") is held for as long as it takes — the
+ * exports expire from the bucket after thirty days, and the cost of holding while the platform is down is nothing;
+ * only a deterministic refusal (segments the platform refused) counts toward `IMPORT_MAX_ATTEMPTS` and ends as failed.
+ */
+export function outcomeOf(run: { status: number | null; error?: Error | undefined }, report: ImportReport | null, attempts: number, unreadable: string | null = null): { outcome: ImportOutcome; why: string; counts: boolean } {
+  if (!run.error && run.status === 0 && (report === null || (report.refused === 0 && report.retryAfterSeconds === undefined))) return { outcome: "imported", why: report ? "clean" : `exit 0; the document could not be read${unreadable ? ` (${unreadable})` : ""}`, counts: false };
+  if (run.error) return { outcome: "held", why: `the CLI did not run: ${run.error.message}`, counts: false };
+  if (!report) return { outcome: "held", why: `exit ${run.status}, ${unreadable ?? "no document"}`, counts: false };
+  if (report.retryAfterSeconds !== undefined) return { outcome: "held", why: `the platform asked to retry in ${report.retryAfterSeconds}s`, counts: false };
+  if (report.refused > 0) return { outcome: attempts + 1 >= IMPORT_MAX_ATTEMPTS ? "failed" : "held", why: `${report.refused} segment(s) refused`, counts: true };
+  return { outcome: "held", why: `exit ${run.status}`, counts: false };
 }
 
 export interface ImportPorts {
@@ -146,16 +160,19 @@ export async function importPass(p: ImportPorts): Promise<ImportPassResult> {
     const run = p.runCli(p.inboxPath(name), text, apiKey);
     const stderr = (run.stderr ?? "").trim().slice(0, 400);
     let report: ImportReport | null = null;
+    let unreadable: string | null = null;
     try {
       report = run.stdout?.trim() ? parseImportReport(run.stdout) : null;
     } catch (error) {
-      p.log({ event: "import_report_unreadable", object: key, reason: (error as Error).message.slice(0, 200) });
+      unreadable = (error as Error).message.slice(0, 200);
+      p.log({ event: "import_report_unreadable", object: key, reason: unreadable });
     }
-    const { outcome, why } = outcomeOf(run, report, attempts);
-    const result = { at, object: key, outcome, why, exit: run.status, attempts: attempts + 1, exportedAt, generation, exportedInstances, segments: report?.segments ?? null, uploaded: report?.uploaded ?? null, refused: report?.refused ?? null, quarantined: report?.quarantined ?? null, instances: report?.instances.map((i) => i.instanceId) ?? [], granted: report?.instances.filter((i) => i.grant).length ?? null, retryAfterSeconds: report?.retryAfterSeconds ?? null, stderr: stderr || null };
-    p.log({ event: `import_${outcome}`, ...result });
+    const { outcome, why, counts } = outcomeOf(run, report, attempts, unreadable);
+    const result = { at, object: key, outcome, why, exit: run.status, attempts: counts ? attempts + 1 : attempts, exportedAt, generation, exportedInstances, segments: report?.segments ?? null, uploaded: report?.uploaded ?? null, refused: report?.refused ?? null, quarantined: report?.quarantined ?? null, instances: report?.instances.map((i) => i.instanceId) ?? [], granted: report?.instances.filter((i) => i.grant).length ?? null, retryAfterSeconds: report?.retryAfterSeconds ?? null };
+    // The CLI's stderr stays in the log: a channel from a binary into the desk's tables is not one to open.
+    p.log({ event: `import_${outcome}`, ...result, stderr: stderr || null });
     if (outcome === "held") {
-      p.setAttempts(name, attempts + 1);
+      if (counts) p.setAttempts(name, attempts + 1);
     } else {
       await p.putMarker(name, JSON.stringify(result) + "\n");
       p.setAttempts(name, 0);
@@ -233,8 +250,9 @@ async function main(): Promise<void> {
       writeFileSync(file, text, { mode: 0o600 });
       try {
         const run = spawnSync(env.cli, ["import-telemetry", "--org", env.host.airprompter.organizationId, "--agent", env.host.airprompter.agentId, "--environment", env.host.airprompter.environment, "--in", file, "--base-url", env.baseUrl, "--json"], {
-          // The key in the child's environment only; nothing else of this process's environment goes along.
-          env: { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME: process.env.HOME ?? "/var/lib/airprompter", AIRPROMPTER_AGENT_KEY: apiKey },
+          // The key in the child's environment only; nothing else of this process's environment goes along. HOME and
+          // TMPDIR point at the import directory: the unit's sandbox leaves nothing else writable.
+          env: { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", HOME: env.importDir, TMPDIR: env.importDir, AIRPROMPTER_AGENT_KEY: apiKey },
           encoding: "utf8",
           timeout: 120_000,
         });

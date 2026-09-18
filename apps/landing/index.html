@@ -1,0 +1,73 @@
+<!doctype html>
+<!--
+  The Zudocs landing page: a plausible small documentation company with one
+  call to action. Static, served from S3 through CloudFront. The only script
+  is none; the only external dependency is none. The footer says what this is.
+
+  Preview locally:  npx serve apps/landing   (or open the file)
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zudocs — documentation your customers actually read</title>
+  <meta name="description" content="Zudocs turns your product knowledge into documentation people find, read and trust. Hosted docs, search, permissions and a support desk that answers from your own pages.">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">Zu<span>docs</span></a>
+    <nav>
+      <a href="#product">Product</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#how">How support works</a>
+      <a class="cta" href="https://github.com/airprompter/zudocs">Source</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="eyebrow">Documentation, hosted</p>
+      <h1>Docs your customers actually read.</h1>
+      <p class="lede">Write in Markdown, publish in one click, and let search, permissions and a support desk that answers from your own pages do the rest. Zudocs is what a small product team uses instead of a wiki nobody updates.</p>
+      <!-- The desk opens in phase 3; until then the call to action is the explanation. -->
+      <p class="actions"><a class="button" href="#how">See how support works</a> <a class="quiet" href="https://github.com/airprompter/zudocs">Read the source →</a></p>
+    </section>
+
+    <section id="product" class="three">
+      <div>
+        <h2>Publish</h2>
+        <p>A repository of Markdown becomes a versioned site. Every change is reviewed, every version stays reachable.</p>
+      </div>
+      <div>
+        <h2>Search</h2>
+        <p>Full-text and semantic search across every space a reader is allowed to see, and nothing they are not.</p>
+      </div>
+      <div>
+        <h2>Support</h2>
+        <p>Tickets are triaged, drafted and escalated with help from prompts our team tunes without a deploy.</p>
+      </div>
+    </section>
+
+    <section id="how" class="how">
+      <h2>How support works here</h2>
+      <p>Every support ticket at Zudocs runs through three prompts — triage, reply and escalate. The prompts do not live in this app's code: they are governed in <a href="https://airprompter.com">AirPrompter</a>, versioned, checked against golden cases, rolled out gradually, and delivered to every Zudocs host in three regions the moment a change is approved. The desk shows exactly which version answered each ticket and what came back.</p>
+      <p>That is the point of Zudocs: it is a real deployment of the AirPrompter Agent SDK, in the open, so you can see how a prompt change reaches running software and how the results come back.</p>
+    </section>
+
+    <section id="pricing" class="pricing">
+      <h2>Plans</h2>
+      <div class="plans">
+        <div class="plan"><h3>Starter</h3><p class="price">$0</p><p>One space, public docs, community support.</p></div>
+        <div class="plan featured"><h3>Team</h3><p class="price">$24<span>/seat/month</span></p><p>Private spaces, permissions, the support desk.</p></div>
+        <div class="plan"><h3>Business</h3><p class="price">Talk to us</p><p>SSO, audit logs, a dedicated region.</p></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p><strong>Zudocs is a fictional company</strong> built to demonstrate <a href="https://airprompter.com">AirPrompter</a>. Nothing here is for sale; every ticket in the desk is synthetic. The source is public at <a href="https://github.com/airprompter/zudocs">github.com/airprompter/zudocs</a>.</p>
+  </footer>
+</body>
+</html>

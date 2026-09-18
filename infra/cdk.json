@@ -1,0 +1,50 @@
+{
+  "app": "npx tsx bin/zudocs.ts",
+  "watch": {
+    "include": [
+      "bin/**",
+      "lib/**"
+    ],
+    "exclude": [
+      "README.md",
+      "cdk*.json",
+      "**/*.d.ts",
+      "node_modules",
+      "test"
+    ]
+  },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:enablePartitionLiterals": true,
+    "@aws-cdk/aws-s3:createDefaultLoggingPolicy": true,
+    "@aws-cdk/aws-cloudfront:defaultSecurityPolicyTLSv1.2_2021": true,
+    "@aws-cdk/aws-route53-patters:useCertificate": true,
+    "@aws-cdk/aws-lambda:useCdkManagedLogGroup": true,
+    "domain": "zudocs.com",
+    "regions": {
+      "site": "us-east-1",
+      "sharedHost": "eu-west-1",
+      "fleet": "ap-southeast-1"
+    },
+    "github": {
+      "owner": "airprompter",
+      "repo": "zudocs",
+      "branch": "main"
+    },
+    "budget": {
+      "monthlyUsd": 30,
+      "alertUsd": 50
+    },
+    "mail": {
+      "inboundRegion": "us-east-1",
+      "dkimTokens": [
+        "yywsavox55jeaij2szsxv4owcw7vyrme",
+        "u62r4hfc5j7f36dvkd2dfhlxcz7e7fcl",
+        "trx6ezrc42kytguaryejh6o2q7o6s6y3"
+      ]
+    },
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
+  }
+}

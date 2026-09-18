@@ -44,6 +44,7 @@
         "u62r4hfc5j7f36dvkd2dfhlxcz7e7fcl",
         "trx6ezrc42kytguaryejh6o2q7o6s6y3"
       ]
-    }
+    },
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
   }
 }

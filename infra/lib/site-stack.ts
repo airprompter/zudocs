@@ -123,8 +123,9 @@ export class SiteStack extends cdk.Stack {
     this.userPoolClient = this.userPool.addClient("Desk", {
       userPoolClientName: "desk",
       generateSecret: false,
-      // Hosted UI with PKCE only: no SRP/password flow from the app itself.
-      authFlows: {},
+      // Hosted UI with PKCE only. An empty object would leave Cognito's defaults (SRP + custom auth) in
+      // place; naming userSrp false yields the refresh-token flow alone.
+      authFlows: { userSrp: false },
       oAuth: {
         flows: { authorizationCodeGrant: true },
         scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL],
@@ -165,7 +166,7 @@ export class SiteStack extends cdk.Stack {
         : undefined,
     });
     if (config.budget.email) {
-      // One DIMENSIONAL/SERVICE monitor is allowed per account; this is it — never make one by hand.
+      // One DIMENSIONAL/SERVICE monitor is allowed per account; this is it — a hand-made one fails this deploy.
       const monitor = new ce.CfnAnomalyMonitor(this, "AnomalyMonitor", { monitorName: "zudocs-services", monitorType: "DIMENSIONAL", monitorDimension: "SERVICE" });
       new ce.CfnAnomalySubscription(this, "AnomalyAlerts", {
         subscriptionName: "zudocs-anomalies",

@@ -39,7 +39,11 @@ export class CiStack extends cdk.Stack {
     super(scope, id, props);
     const { github, account, regions } = props.config;
     // The native resource: IAM trusts GitHub's certificate chain itself, no thumbprint, no custom resource.
-    const provider = new iam.OidcProviderNative(this, "GitHub", { url: GITHUB_OIDC_URL, clientIds: ["sts.amazonaws.com"] });
+    // An account holds one provider per URL; `--context githubOidcProviderArn=…` imports one that already exists.
+    const existing = this.node.tryGetContext("githubOidcProviderArn") as string | undefined;
+    const provider = existing
+      ? iam.OidcProviderNative.fromOidcProviderArn(this, "GitHub", existing)
+      : new iam.OidcProviderNative(this, "GitHub", { url: GITHUB_OIDC_URL, clientIds: ["sts.amazonaws.com"] });
     this.deployRole = new iam.Role(this, "DeployRole", {
       roleName: DEPLOY_ROLE_NAME,
       description: `Deploys ${github.owner}/${github.repo} from ${github.branch} through the CDK bootstrap roles`,

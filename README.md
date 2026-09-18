@@ -50,6 +50,13 @@ npx cdk deploy ZudocsCi ZudocsDns          # ZudocsCi is never deployed by CI
 npx cdk deploy ZudocsSite
 ```
 
+Things a synth cannot catch: if the registrar is not repointed yet, `ZudocsSite` sits in
+CREATE_IN_PROGRESS on the certificate until ACM gives up (hours) and rolls back — a killed CLI does not
+stop CloudFormation. An account holds one GitHub OIDC provider; if one exists, pass
+`--context githubOidcProviderArn=arn:aws:iam::<account>:oidc-provider/token.actions.githubusercontent.com`
+to `ZudocsCi`. One cost anomaly monitor of the service kind is allowed per account, and Budgets and
+Cost Explorer take up to a day to switch on in a fresh account.
+
 Then set the repository variables `AWS_ACCOUNT_ID` and `BUDGET_EMAIL`, and `main` deploys.
 
 ## Licence

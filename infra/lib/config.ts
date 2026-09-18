@@ -4,14 +4,16 @@
  * environment, validated, and handed to the stacks as one frozen object.
  *
  * Secrets are never here. The Agent keys and the run key live in SSM as
- * SecureStrings, written by the owner and read by the runtimes at cold start;
- * the budget e-mail comes from an environment variable so a public repository
- * carries no address.
+ * SecureStrings, written by the owner and read by the runtimes at cold start.
+ * The budget e-mail is the one environment read at synth time (it is an
+ * address, not a secret, and a public repository still should not carry it);
+ * it is required, so a deploy cannot quietly ship a budget nobody hears from —
+ * only a credential-less synth may waive it (`--context allowNoBudgetEmail=true`).
  *
  * @example
  * ```ts
  * const config = readConfig(app.node);          // throws with the missing key named
- * new SiteStack(app, "ZudocsSite", { config, env: { account: config.account, region: config.regions.site } });
+ * new SiteStack(app, "ZudocsSite", { config, zone, env: { account: config.account, region: config.regions.site } });
  * ```
  */
 import type { Node } from "constructs";
@@ -35,18 +37,16 @@ export interface ZudocsConfig {
     readonly monthlyUsd: number;
     /** A second, louder alert. */
     readonly alertUsd: number;
-    /** BUDGET_EMAIL in the environment; empty means no e-mail recipient (synth still works). */
+    /** BUDGET_EMAIL in the environment; empty only when `allowNoBudgetEmail` was passed. */
     readonly email: string;
   };
   /**
    * SES inbound for the root mailbox: the domain's mail is received by SES in the
    * organisation's management account and forwarded to the owner. The DKIM tokens are
-   * public DNS by nature; they are what the management account's identity was issued.
+   * public DNS by nature (every signed mail names its selector) and live in `cdk.json`.
    */
   readonly mail: { readonly inboundRegion: string; readonly dkimTokens: readonly string[] };
 }
-
-const DKIM_TOKENS = ["yywsavox55jeaij2szsxv4owcw7vyrme", "u62r4hfc5j7f36dvkd2dfhlxcz7e7fcl", "trx6ezrc42kytguaryejh6o2q7o6s6y3"] as const;
 
 export function readConfig(node: Node, env: NodeJS.ProcessEnv = process.env): ZudocsConfig {
   const account = (node.tryGetContext("account") as string | undefined) ?? env.CDK_DEFAULT_ACCOUNT;
@@ -55,15 +55,21 @@ export function readConfig(node: Node, env: NodeJS.ProcessEnv = process.env): Zu
   const regions = need<ZudocsConfig["regions"]>(node, "regions");
   const github = need<ZudocsConfig["github"]>(node, "github");
   const budget = need<{ monthlyUsd: number; alertUsd: number }>(node, "budget");
+  const mail = need<{ inboundRegion: string; dkimTokens: string[] }>(node, "mail");
   for (const [key, value] of Object.entries(regions)) if (!/^[a-z]{2}-[a-z]+-\d$/.test(value)) throw new Error(`config: regions.${key} is not a region: ${value}`);
   if (!(budget.monthlyUsd > 0 && budget.alertUsd > budget.monthlyUsd)) throw new Error("config: budget.alertUsd must exceed budget.monthlyUsd, both positive");
+  if (!Array.isArray(mail.dkimTokens) || mail.dkimTokens.length !== 3 || !mail.dkimTokens.every((t) => /^[a-z0-9]{32}$/.test(t))) throw new Error("config: mail.dkimTokens must be the three 32-character SES DKIM tokens");
+  const email = env.BUDGET_EMAIL ?? "";
+  const waived = String(node.tryGetContext("allowNoBudgetEmail")) === "true";
+  if (!email && !waived) throw new Error("config: BUDGET_EMAIL is required so the budget has a recipient (a credential-less synth may pass --context allowNoBudgetEmail=true)");
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("config: BUDGET_EMAIL is not an e-mail address");
   return Object.freeze({
     account,
     domain,
     regions: Object.freeze({ ...regions }),
     github: Object.freeze({ ...github }),
-    budget: Object.freeze({ ...budget, email: env.BUDGET_EMAIL ?? "" }),
-    mail: Object.freeze({ inboundRegion: "us-east-1", dkimTokens: DKIM_TOKENS }),
+    budget: Object.freeze({ ...budget, email }),
+    mail: Object.freeze({ inboundRegion: mail.inboundRegion, dkimTokens: Object.freeze([...mail.dkimTokens]) }),
   });
 }
 

@@ -4,10 +4,10 @@ The local registry that `airprompter dev` serves while you work on the desk on a
 **not committed** — prompt text lives in AirPrompter, and this directory also holds the dev root key
 (`.airprompter-dev/`) that must never reach git.
 
-Seed it from a console export:
+Seed it from a console export (the seed script arrives in phase 2 with the prompts themselves):
 
 ```sh
-npm run prompts:seed            # phase 2: writes ./prompts from the workspace export
+npm run prompts:seed            # phase 2
 airprompter dev ./prompts --daemon
 ```
 

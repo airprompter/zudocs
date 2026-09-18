@@ -1,25 +1,20 @@
 #!/usr/bin/env node
 /**
- * The CDK app: one stack per region plus the CI stack, all from one configuration.
+ * The CDK entry point: read the configuration, build the stacks.
  *
- * Phase 1 deploys `ZudocsSite` and `ZudocsCi` in us-east-1. Later phases add
- * `ZudocsSharedHost` (eu-west-1), `ZudocsFleet` (ap-southeast-1) and the
- * on-demand `ZudocsAirgap`.
+ * Phase 1 deploys `ZudocsCi`, `ZudocsDns` and `ZudocsSite` in us-east-1 (see
+ * `lib/app.ts` for who deploys which). Later phases add `ZudocsSharedHost`
+ * (eu-west-1), `ZudocsFleet` (ap-southeast-1) and the on-demand `ZudocsAirgap`.
  *
  * @example
  * ```sh
- * npx cdk synth --quiet                          # no credentials: --context account=123456789012
- * AWS_PROFILE=zudocs npx cdk deploy ZudocsCi ZudocsSite
+ * npx cdk synth --quiet --context account=111122223333 --context allowNoBudgetEmail=true   # no credentials
+ * AWS_PROFILE=zudocs BUDGET_EMAIL=billing@example.test npx cdk deploy ZudocsCi ZudocsDns
  * ```
  */
 import * as cdk from "aws-cdk-lib";
+import { buildStacks } from "../lib/app.js";
 import { readConfig } from "../lib/config.js";
-import { CiStack } from "../lib/ci-stack.js";
-import { SiteStack } from "../lib/site-stack.js";
 
 const app = new cdk.App();
-const config = readConfig(app.node);
-const tags = { Project: "zudocs", Purpose: "airprompter-demo" };
-
-new CiStack(app, "ZudocsCi", { config, env: { account: config.account, region: config.regions.site }, tags, description: "Zudocs: GitHub OIDC deploy role" });
-new SiteStack(app, "ZudocsSite", { config, env: { account: config.account, region: config.regions.site }, tags, description: "Zudocs: DNS, landing page, sign-in, budget, trail" });
+buildStacks(app, readConfig(app.node));

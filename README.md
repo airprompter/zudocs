@@ -11,35 +11,46 @@ Everything here depends only on what any customer has: the public npm and PyPI p
 CLI, the public root key, and keys issued in the AirPrompter console. No prompt text is committed. No key
 is ever in this repository, on a command line, or in a log.
 
-## Layout
+## What is here today (phase 1)
 
 ```
-infra/             CDK: one stack per region plus the CI (GitHub OIDC) stack
+infra/             CDK: ZudocsCi (the deploy role), ZudocsDns (the zone), ZudocsSite (landing page,
+                   sign-in, budget, trail) — all us-east-1
 apps/landing/      the public site at zudocs.com
-apps/desk/         the support desk (React) at desk.zudocs.com — phase 3
-services/          the hosts: desk-api (us-east-1 Lambda), eu-host (daemon + workers), puller, airgap
-prompts/           the local registry for `airprompter dev` — seeded by a script, never committed
-keys/              public root JWKs the verify action pins
-scripts/           account baseline, seed, replay, reset, cost report, teardown
-docs/              ARCHITECTURE, COST, RUNBOOK, DEMO
+prompts/           the local registry for `airprompter dev` — ignored; seeded in phase 2
+keys/              public root JWKs the verify action pins — filled in phase 2
+scripts/           account-baseline.sh, check-headers.mjs, check-keys.mjs
+docs/              ARCHITECTURE.md
 ```
 
-## Run it
+Later phases add `apps/desk/` (phase 3), `services/` (phases 3–5), the demo script and the reset path
+(phase 6). See `docs/ARCHITECTURE.md`.
+
+## Run the checks
 
 ```sh
 npm install
-npm test                                   # infra assertions
-npm run synth                              # CDK synth, no credentials needed
-AWS_PROFILE=zudocs npm run deploy -- ZudocsSite   # from a signed-in Identity Center session
+npm run check-headers && npm run check-keys && npm run typecheck && npm test
+npm run synth          # CDK synth with a placeholder account and no budget e-mail: no credentials needed
 ```
 
-The account baseline (`scripts/account-baseline.sh`) runs once per account and needs an administrator
-session; every deploy after that comes from CI through the OIDC role.
+## First deploy (owner's session, once)
 
-## Status
+Everything after this comes from CI. Order matters: the site's certificate validates through the
+domain's public nameservers, so the zone must exist and the registrar must point at it before
+`ZudocsSite` can finish.
 
-Phase 1 of the plan (site, sign-in, budget, trail). Later phases add the desk, the three host shapes,
-the demo script and the reset path. See `docs/ARCHITECTURE.md`.
+```sh
+export AWS_PROFILE=zudocs BUDGET_EMAIL=billing@zudocs.com
+bash scripts/account-baseline.sh
+cd infra
+npx cdk bootstrap aws://<account>/us-east-1 aws://<account>/eu-west-1 aws://<account>/ap-southeast-1
+npx cdk deploy ZudocsCi ZudocsDns          # ZudocsCi is never deployed by CI
+# point the registrar at the NameServers output; wait until `dig NS zudocs.com` agrees
+npx cdk deploy ZudocsSite
+```
+
+Then set the repository variables `AWS_ACCOUNT_ID` and `BUDGET_EMAIL`, and `main` deploys.
 
 ## Licence
 

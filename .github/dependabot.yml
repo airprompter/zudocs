@@ -1,0 +1,16 @@
+# Dependabot: weekly, grouped, for the npm workspaces and the pinned actions.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cdk:
+        patterns: ["aws-cdk", "aws-cdk-lib", "constructs"]
+      dev:
+        dependency-type: development
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

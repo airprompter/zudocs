@@ -1,36 +1,42 @@
 /**
- * The us-east-1 stack: the company's public face and its account hygiene.
+ * The us-east-1 site stack: the company's public face and its account hygiene.
  *
- * - The hosted zone for the domain (the registrar's nameservers are pointed at
- *   the `NameServers` output once, by hand, from the account that holds the
- *   registration), with the mail records that keep the root mailbox forwarding.
  * - The landing page: a private S3 bucket behind CloudFront with an origin
- *   access control, the certificate for the apex, `www.` and `desk.`.
+ *   access control, the certificate for the apex, `www.` and `desk.` (validated
+ *   through the zone `ZudocsDns` created and the registrar already points at).
  * - Sign-in for the desk: a Cognito user pool with no self-signup, no account
- *   recovery, a public PKCE client scoped to `openid email` — users are created
- *   by hand (`admin-create-user`) for the owner today and sales people later.
+ *   recovery, hosted UI only, a public PKCE client scoped to `openid email` —
+ *   users are created by hand (`admin-create-user`) for the owner today and
+ *   sales people later.
  * - The monthly budget (e-mail alerts; the Bedrock deny action attaches to the
  *   runtime roles in phase 3), a management-events trail, and a cost anomaly
  *   monitor. The IAM policy the budget action will attach exists from day one.
  *
  * @example
  * ```ts
- * new SiteStack(app, "ZudocsSite", { config, env: { account: config.account, region: config.regions.site } });
+ * new SiteStack(app, "ZudocsSite", { config, zone: dns.zone, env: { account: config.account, region: config.regions.site } });
  * ```
  */
 import * as cdk from "aws-cdk-lib";
 import { aws_budgets as budgets, aws_ce as ce, aws_certificatemanager as acm, aws_cloudfront as cloudfront, aws_cloudfront_origins as origins, aws_cloudtrail as cloudtrail, aws_cognito as cognito, aws_iam as iam, aws_route53 as route53, aws_route53_targets as targets, aws_s3 as s3, aws_s3_deployment as deploy } from "aws-cdk-lib";
 import type { Construct } from "constructs";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import type { ZudocsConfig } from "./config.js";
 
 export interface SiteStackProps extends cdk.StackProps {
   readonly config: ZudocsConfig;
+  /** The zone from `ZudocsDns`; the certificate validates through it. */
+  readonly zone: route53.IHostedZone;
+}
+
+/** The Cognito hosted-UI prefix is unique per region across all accounts, so it is derived from ours (never the id itself). */
+export function cognitoDomainPrefix(account: string): string {
+  return `zudocs-${createHash("sha256").update(account).digest("hex").slice(0, 8)}`;
 }
 
 export class SiteStack extends cdk.Stack {
-  readonly zone: route53.PublicHostedZone;
   readonly certificate: acm.Certificate;
   readonly userPool: cognito.UserPool;
   readonly userPoolClient: cognito.UserPoolClient;
@@ -39,24 +45,14 @@ export class SiteStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props: SiteStackProps) {
     super(scope, id, props);
-    const { config } = props;
+    const { config, zone } = props;
     const { domain } = config;
-
-    // --- DNS ------------------------------------------------------------------------------------
-    this.zone = new route53.PublicHostedZone(this, "Zone", { zoneName: domain, comment: "Zudocs (a fictional company built to demonstrate AirPrompter)" });
-    // The root mailbox: SES inbound in the organisation's management account forwards every
-    // address at the domain to the owner. The MX and DKIM records travel with the zone.
-    new route53.MxRecord(this, "Mx", { zone: this.zone, values: [{ priority: 10, hostName: `inbound-smtp.${config.mail.inboundRegion}.amazonaws.com` }], ttl: cdk.Duration.minutes(5) });
-    config.mail.dkimTokens.forEach((token, i) => {
-      new route53.CnameRecord(this, `Dkim${i + 1}`, { zone: this.zone, recordName: `${token}._domainkey`, domainName: `${token}.dkim.amazonses.com`, ttl: cdk.Duration.minutes(5) });
-    });
-    new cdk.CfnOutput(this, "NameServers", { value: cdk.Fn.join(" ", this.zone.hostedZoneNameServers ?? []), description: "Point the registrar at these once" });
 
     // --- Certificate (CloudFront needs it in us-east-1) --------------------------------------
     this.certificate = new acm.Certificate(this, "Certificate", {
       domainName: domain,
       subjectAlternativeNames: [`www.${domain}`, `desk.${domain}`],
-      validation: acm.CertificateValidation.fromDns(this.zone),
+      validation: acm.CertificateValidation.fromDns(zone),
     });
 
     // --- Landing page -------------------------------------------------------------------------
@@ -73,7 +69,8 @@ export class SiteStack extends cdk.Stack {
         frameOptions: { frameOption: cloudfront.HeadersFrameOption.DENY, override: true },
         referrerPolicy: { referrerPolicy: cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN, override: true },
         strictTransportSecurity: { accessControlMaxAge: cdk.Duration.days(365), includeSubdomains: true, override: true },
-        contentSecurityPolicy: { contentSecurityPolicy: "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'", override: true },
+        // The page has no inline style or script and fetches nothing from anywhere else.
+        contentSecurityPolicy: { contentSecurityPolicy: "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'", override: true },
       },
     });
     const distribution = new cloudfront.Distribution(this, "Landing", {
@@ -89,11 +86,15 @@ export class SiteStack extends cdk.Stack {
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
       minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
-      errorResponses: [{ httpStatus: 404, responsePagePath: "/404.html", responseHttpStatus: 404, ttl: cdk.Duration.minutes(5) }],
+      // The origin may only GetObject, so a missing key is a 403 from S3, not a 404: both map to the page.
+      errorResponses: [
+        { httpStatus: 403, responseHttpStatus: 404, responsePagePath: "/404.html", ttl: cdk.Duration.minutes(5) },
+        { httpStatus: 404, responseHttpStatus: 404, responsePagePath: "/404.html", ttl: cdk.Duration.minutes(5) },
+      ],
       comment: `${domain} landing page`,
     });
     new deploy.BucketDeployment(this, "LandingFiles", {
-      sources: [deploy.Source.asset(join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "apps", "landing"))],
+      sources: [deploy.Source.asset(join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "apps", "landing"), { exclude: [".*"] })],
       destinationBucket: site,
       distribution,
       distributionPaths: ["/*"],
@@ -101,8 +102,8 @@ export class SiteStack extends cdk.Stack {
     });
     for (const [name, recordName] of [["Apex", undefined], ["Www", "www"]] as const) {
       const target = route53.RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution));
-      new route53.ARecord(this, `${name}A`, { zone: this.zone, ...(recordName ? { recordName } : {}), target });
-      new route53.AaaaRecord(this, `${name}Aaaa`, { zone: this.zone, ...(recordName ? { recordName } : {}), target });
+      new route53.ARecord(this, `${name}A`, { zone, ...(recordName ? { recordName } : {}), target });
+      new route53.AaaaRecord(this, `${name}Aaaa`, { zone, ...(recordName ? { recordName } : {}), target });
     }
     new cdk.CfnOutput(this, "LandingUrl", { value: `https://${domain}` });
 
@@ -118,14 +119,17 @@ export class SiteStack extends cdk.Stack {
       deletionProtection: true,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
-    const hosted = this.userPool.addDomain("HostedUi", { cognitoDomain: { domainPrefix: `zudocs-${cdk.Names.uniqueResourceName(this, { maxLength: 8 }).toLowerCase()}` } });
+    const hosted = this.userPool.addDomain("HostedUi", { cognitoDomain: { domainPrefix: cognitoDomainPrefix(config.account) } });
     this.userPoolClient = this.userPool.addClient("Desk", {
       userPoolClientName: "desk",
       generateSecret: false,
-      authFlows: { userSrp: true },
+      // Hosted UI with PKCE only: no SRP/password flow from the app itself.
+      authFlows: {},
       oAuth: {
         flows: { authorizationCodeGrant: true },
         scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL],
+        // The localhost callback is the desk's Vite dev server; it is the same client on purpose so a
+        // laptop exercises the real pool (the user pool holds nothing but the owner's own login).
         callbackUrls: [`https://desk.${domain}/callback`, "http://localhost:5173/callback"],
         logoutUrls: [`https://desk.${domain}/`, "http://localhost:5173/"],
       },
@@ -155,12 +159,13 @@ export class SiteStack extends cdk.Stack {
       notificationsWithSubscribers: subscribers.length
         ? [
             { notification: { notificationType: "ACTUAL", comparisonOperator: "GREATER_THAN", threshold: 100, thresholdType: "PERCENTAGE" }, subscribers },
-            { notification: { notificationType: "ACTUAL", comparisonOperator: "GREATER_THAN", threshold: (config.budget.alertUsd / config.budget.monthlyUsd) * 100, thresholdType: "PERCENTAGE" }, subscribers },
+            { notification: { notificationType: "ACTUAL", comparisonOperator: "GREATER_THAN", threshold: Math.round((config.budget.alertUsd / config.budget.monthlyUsd) * 10000) / 100, thresholdType: "PERCENTAGE" }, subscribers },
             { notification: { notificationType: "FORECASTED", comparisonOperator: "GREATER_THAN", threshold: 100, thresholdType: "PERCENTAGE" }, subscribers },
           ]
-        : [],
+        : undefined,
     });
     if (config.budget.email) {
+      // One DIMENSIONAL/SERVICE monitor is allowed per account; this is it — never make one by hand.
       const monitor = new ce.CfnAnomalyMonitor(this, "AnomalyMonitor", { monitorName: "zudocs-services", monitorType: "DIMENSIONAL", monitorDimension: "SERVICE" });
       new ce.CfnAnomalySubscription(this, "AnomalyAlerts", {
         subscriptionName: "zudocs-anomalies",

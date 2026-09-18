@@ -16,6 +16,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "synth": "npm run synth --workspace infra",
     "deploy": "npm run deploy --workspace infra --",
-    "check-headers": "node scripts/check-headers.mjs"
+    "check-headers": "node scripts/check-headers.mjs",
+    "check-keys": "node scripts/check-keys.mjs"
   }
 }

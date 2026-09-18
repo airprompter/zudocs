@@ -2,10 +2,15 @@
  * The CI stack: GitHub's OIDC provider and the one role a deploy may assume.
  *
  * The role trusts exactly one subject — pushes to `main` of the configured
- * repository — and may do exactly one thing: assume the CDK bootstrap roles
- * in the three regions. Every resource permission lives on those bootstrap
- * roles (CDK's own execution role), so this role never needs widening and a
- * fork, a branch or a pull request can never deploy.
+ * repository (the `ref:` form: the workflow's deploy job must therefore name
+ * no GitHub environment, or the token's subject changes) — and may do exactly
+ * one thing: assume the CDK bootstrap roles in the three regions. Every
+ * resource permission lives on those bootstrap roles, so this role never needs
+ * widening, and the region in each bootstrap role's name is the region fence.
+ *
+ * This stack is deployed from the owner's Identity Center session, never from
+ * CI: the workflow that assumes the role must not be the thing that can break
+ * the role.
  *
  * @example
  * ```ts
@@ -23,6 +28,9 @@ export interface CiStackProps extends cdk.StackProps {
 }
 
 export const DEPLOY_ROLE_NAME = "zudocs-deploy";
+const GITHUB_OIDC_URL = "https://token.actions.githubusercontent.com";
+/** CDK v2's default bootstrap qualifier: the roles are named cdk-<qualifier>-<kind>-<account>-<region>. */
+const BOOTSTRAP_QUALIFIER = "hnb659fds";
 
 export class CiStack extends cdk.Stack {
   readonly deployRole: iam.Role;
@@ -30,26 +38,22 @@ export class CiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: CiStackProps) {
     super(scope, id, props);
     const { github, account, regions } = props.config;
-    const provider = new iam.OpenIdConnectProvider(this, "GitHub", {
-      url: "https://token.actions.githubusercontent.com",
-      clientIds: ["sts.amazonaws.com"],
-    });
+    // The native resource: IAM trusts GitHub's certificate chain itself, no thumbprint, no custom resource.
+    const provider = new iam.OidcProviderNative(this, "GitHub", { url: GITHUB_OIDC_URL, clientIds: ["sts.amazonaws.com"] });
     this.deployRole = new iam.Role(this, "DeployRole", {
       roleName: DEPLOY_ROLE_NAME,
       description: `Deploys ${github.owner}/${github.repo} from ${github.branch} through the CDK bootstrap roles`,
       maxSessionDuration: cdk.Duration.hours(1),
-      assumedBy: new iam.WebIdentityPrincipal(provider.openIdConnectProviderArn, {
+      assumedBy: new iam.WebIdentityPrincipal(provider.oidcProviderArn, {
         StringEquals: {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
           "token.actions.githubusercontent.com:sub": `repo:${github.owner}/${github.repo}:ref:refs/heads/${github.branch}`,
         },
       }),
     });
-    // CDK v2 bootstrap roles: cdk-<qualifier>-{deploy-role,file-publishing-role,image-publishing-role,lookup-role}-<account>-<region>.
-    const qualifier = "hnb659fds";
     this.deployRole.addToPolicy(new iam.PolicyStatement({
       actions: ["sts:AssumeRole"],
-      resources: Object.values(regions).map((region) => `arn:aws:iam::${account}:role/cdk-${qualifier}-*-${account}-${region}`),
+      resources: Object.values(regions).map((region) => `arn:aws:iam::${account}:role/cdk-${BOOTSTRAP_QUALIFIER}-*-${account}-${region}`),
     }));
     new cdk.CfnOutput(this, "DeployRoleArn", { value: this.deployRole.roleArn });
   }

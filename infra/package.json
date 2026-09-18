@@ -8,7 +8,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
-    "synth": "cdk synth --quiet",
+    "synth": "cdk synth --quiet --context account=111122223333 --context allowNoBudgetEmail=true",
     "deploy": "cdk deploy --require-approval never",
     "diff": "cdk diff"
   },

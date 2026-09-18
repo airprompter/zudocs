@@ -1,8 +1,13 @@
-# Deploy from main through GitHub OIDC: the workflow assumes the one role the
-# CI stack created (zudocs-deploy), which may only assume the CDK bootstrap
-# roles. No long-lived key exists anywhere in this repository or its settings.
+# Deploy from main through GitHub OIDC. Two jobs on purpose: `test` installs
+# and runs everything with no id-token permission at all (a dependency's
+# lifecycle script cannot mint one), and `deploy` — the only job that may
+# request a token — installs with --ignore-scripts and assumes the one role
+# the CI stack created (zudocs-deploy), which may only assume the CDK bootstrap
+# roles. That role's trust is the `ref:` form of the subject, so this job names
+# no GitHub environment. CI deploys the DNS and site stacks, never ZudocsCi:
+# the thing that assumes the role must not be the thing that can break it.
 #
-# Repository variables (Settings › Variables, not secrets — none of these is one):
+# Repository variables (Settings › Variables — none of these is a secret):
 #   AWS_ACCOUNT_ID   the demo account
 #   BUDGET_EMAIL     where the budget and anomaly alerts go
 name: Deploy
@@ -14,27 +19,44 @@ concurrency:
   group: deploy
   cancel-in-progress: false
 permissions:
-  id-token: write
   contents: read
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    environment: production
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - run: npm run check-headers
+      - run: npm run check-keys
+      - run: npm run typecheck
       - run: npm test
-      - uses: aws-actions/configure-aws-credentials@v4
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+      - name: The budget has a recipient
+        run: test -n "${{ vars.BUDGET_EMAIL }}" || { echo "set the BUDGET_EMAIL repository variable"; exit 1; }
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
         with:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/zudocs-deploy
           aws-region: us-east-1
-      - name: Deploy every stack
-        run: npx cdk deploy --all --require-approval never --context account=${{ vars.AWS_ACCOUNT_ID }}
+      - name: Deploy the DNS and site stacks
+        run: npx cdk deploy ZudocsDns ZudocsSite --require-approval never --context account=${{ vars.AWS_ACCOUNT_ID }}
         working-directory: infra
         env:
           BUDGET_EMAIL: ${{ vars.BUDGET_EMAIL }}

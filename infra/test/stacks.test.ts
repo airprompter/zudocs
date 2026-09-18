@@ -1,6 +1,7 @@
 /**
  * The stacks synthesize the shape the plan promises, and refuse the
- * configurations that would quietly weaken it.
+ * configurations that would quietly weaken it. Built through `buildStacks`,
+ * so the ids and references pinned here are the ones that deploy.
  *
  * @example
  * ```sh
@@ -11,9 +12,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as cdk from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
+import { buildStacks, STACK_IDS } from "../lib/app.js";
 import { readConfig } from "../lib/config.js";
-import { CiStack } from "../lib/ci-stack.js";
-import { SiteStack } from "../lib/site-stack.js";
+import { cognitoDomainPrefix } from "../lib/site-stack.js";
 
 const CONTEXT = {
   account: "111122223333",
@@ -21,26 +22,76 @@ const CONTEXT = {
   regions: { site: "us-east-1", sharedHost: "eu-west-1", fleet: "ap-southeast-1" },
   github: { owner: "airprompter", repo: "zudocs", branch: "main" },
   budget: { monthlyUsd: 30, alertUsd: 50 },
+  mail: { inboundRegion: "us-east-1", dkimTokens: ["a".repeat(32), "b".repeat(32), "c".repeat(32)] },
 };
 
-function synth(email = "owner@example.test") {
-  const app = new cdk.App({ context: CONTEXT });
+function synth(email = "owner@example.test", context: Record<string, unknown> = {}) {
+  const app = new cdk.App({ context: { ...CONTEXT, ...context } });
   const config = readConfig(app.node, { BUDGET_EMAIL: email });
-  const env = { account: config.account, region: config.regions.site };
-  // Both stacks go on the tree before the first synth: a template after a synth is a modified tree.
-  const site = new SiteStack(app, "Site", { config, env });
-  const ci = new CiStack(app, "Ci", { config, env });
-  return { site: Template.fromStack(site), ci: Template.fromStack(ci) };
+  const stacks = buildStacks(app, config);
+  // Every stack is on the tree before the first synth: a template after a synth is a modified tree.
+  return { dns: Template.fromStack(stacks.dns), site: Template.fromStack(stacks.site), ci: Template.fromStack(stacks.ci), stacks };
 }
 
-test("config: an account id is required and the budget alert must exceed the monthly line", () => {
-  const app = new cdk.App({ context: { ...CONTEXT, account: undefined } });
-  assert.throws(() => readConfig(app.node, {}), /account id/, "no account anywhere");
-  const bad = new cdk.App({ context: { ...CONTEXT, budget: { monthlyUsd: 30, alertUsd: 20 } } });
-  assert.throws(() => readConfig(bad.node, {}), /alertUsd/, "alert below the line");
+type Resources = Record<string, { Properties: Record<string, unknown> }>;
+
+test("config refuses what would weaken the deploy: no account, an alert below the line, bad DKIM tokens, no budget e-mail unless waived", () => {
+  assert.throws(() => readConfig(new cdk.App({ context: { ...CONTEXT, account: undefined } }).node, { BUDGET_EMAIL: "x@y.z" }), /account id/);
+  assert.throws(() => readConfig(new cdk.App({ context: { ...CONTEXT, budget: { monthlyUsd: 30, alertUsd: 20 } } }).node, { BUDGET_EMAIL: "x@y.z" }), /alertUsd/);
+  assert.throws(() => readConfig(new cdk.App({ context: { ...CONTEXT, mail: { inboundRegion: "us-east-1", dkimTokens: ["short"] } } }).node, { BUDGET_EMAIL: "x@y.z" }), /dkimTokens/);
+  assert.throws(() => readConfig(new cdk.App({ context: CONTEXT }).node, {}), /BUDGET_EMAIL/, "a deploy without a recipient is refused");
+  assert.throws(() => readConfig(new cdk.App({ context: CONTEXT }).node, { BUDGET_EMAIL: "not-an-address" }), /e-mail/);
+  assert.equal(readConfig(new cdk.App({ context: { ...CONTEXT, allowNoBudgetEmail: "true" } }).node, {}).budget.email, "", "the credential-less synth may waive it");
 });
 
-test("sign-in is owner-created only: no self-signup, no recovery, a public PKCE client with openid+email and no admin scope", () => {
+test("the stack ids are the ones the workflow names, and the site depends on the DNS stack's zone", () => {
+  const { stacks } = synth();
+  assert.deepEqual(Object.values(STACK_IDS).sort(), ["ZudocsCi", "ZudocsDns", "ZudocsSite"]);
+  assert.ok(stacks.site.dependencies.includes(stacks.dns), "the site's certificate validates through the zone");
+  assert.ok(!stacks.ci.dependencies.length && !stacks.dns.dependencies.includes(stacks.ci), "CI is deployed alone, by the owner");
+});
+
+test("DNS: the zone is retained and carries the root mailbox's MX and three DKIM CNAMEs; the site's certificate covers apex, www and desk", () => {
+  const { dns, site } = synth();
+  dns.hasResource("AWS::Route53::HostedZone", { DeletionPolicy: "Retain", UpdateReplacePolicy: "Retain" });
+  dns.hasResourceProperties("AWS::Route53::RecordSet", { Type: "MX", ResourceRecords: ["10 inbound-smtp.us-east-1.amazonaws.com"] });
+  assert.equal(Object.keys(dns.findResources("AWS::Route53::RecordSet", { Properties: { Type: "CNAME" } })).length, 3, "three DKIM CNAMEs");
+  dns.hasOutput("NameServers", {});
+  site.hasResourceProperties("AWS::CertificateManager::Certificate", { DomainName: "zudocs.com", SubjectAlternativeNames: ["www.zudocs.com", "desk.zudocs.com"], ValidationMethod: "DNS" });
+});
+
+test("the landing page: every bucket blocks public access, the origin may only GetObject for this distribution, missing keys (403 and 404) reach the 404 page, strict headers", () => {
+  const { site } = synth();
+  const buckets = site.findResources("AWS::S3::Bucket") as Resources;
+  assert.equal(Object.keys(buckets).length, 2, "the site bucket and the trail bucket");
+  for (const [id, bucket] of Object.entries(buckets)) {
+    assert.deepEqual(bucket.Properties.PublicAccessBlockConfiguration, { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }, id);
+  }
+  const policies = JSON.stringify(site.findResources("AWS::S3::BucketPolicy"));
+  assert.ok(policies.includes("cloudfront.amazonaws.com") && policies.includes("AWS:SourceArn"), "the OAC statement is bound to the distribution");
+  assert.ok(!policies.includes("s3:ListBucket"), "no listing: a missing key is a 403 from S3");
+  site.hasResourceProperties("AWS::CloudFront::Distribution", {
+    DistributionConfig: Match.objectLike({
+      Aliases: ["zudocs.com", "www.zudocs.com"],
+      DefaultCacheBehavior: Match.objectLike({ ViewerProtocolPolicy: "redirect-to-https" }),
+      CustomErrorResponses: Match.arrayWith([
+        Match.objectLike({ ErrorCode: 403, ResponseCode: 404, ResponsePagePath: "/404.html" }),
+        Match.objectLike({ ErrorCode: 404, ResponseCode: 404, ResponsePagePath: "/404.html" }),
+      ]),
+    }),
+  });
+  site.hasResourceProperties("AWS::CloudFront::ResponseHeadersPolicy", {
+    ResponseHeadersPolicyConfig: Match.objectLike({
+      SecurityHeadersConfig: Match.objectLike({
+        FrameOptions: { FrameOption: "DENY", Override: true },
+        ContentSecurityPolicy: { ContentSecurityPolicy: Match.stringLikeRegexp("^default-src 'self'; .*frame-ancestors 'none'$"), Override: true },
+      }),
+    }),
+  });
+  assert.ok(!JSON.stringify(site.findResources("AWS::CloudFront::ResponseHeadersPolicy")).includes("unsafe-inline"), "the page has no inline style or script");
+});
+
+test("sign-in is owner-created only: no self-signup, no recovery, hosted UI with a public PKCE client scoped to openid+email, no admin scope, no password flow", () => {
   const { site } = synth();
   site.hasResourceProperties("AWS::Cognito::UserPool", { AdminCreateUserConfig: { AllowAdminCreateUserOnly: true }, AccountRecoverySetting: { RecoveryMechanisms: [{ Name: "admin_only", Priority: 1 }] } });
   site.hasResourceProperties("AWS::Cognito::UserPoolClient", {
@@ -49,49 +100,56 @@ test("sign-in is owner-created only: no self-signup, no recovery, a public PKCE 
     AllowedOAuthScopes: ["openid", "email"],
     CallbackURLs: Match.arrayWith(["https://desk.zudocs.com/callback"]),
   });
-  const clients = site.findResources("AWS::Cognito::UserPoolClient");
-  for (const client of Object.values(clients)) assert.ok(!JSON.stringify(client).includes("aws.cognito.signin.user.admin"), "the admin scope would let a signed-in user delete the login");
+  const clients = JSON.stringify(site.findResources("AWS::Cognito::UserPoolClient"));
+  assert.ok(!clients.includes("aws.cognito.signin.user.admin"), "the admin scope would let a signed-in user delete the login");
+  assert.ok(!clients.includes("ALLOW_USER_SRP_AUTH") && !clients.includes("ALLOW_USER_PASSWORD_AUTH"), "hosted UI only");
+  site.hasResourceProperties("AWS::Cognito::UserPoolDomain", { Domain: cognitoDomainPrefix("111122223333") });
+  assert.match(cognitoDomainPrefix("111122223333"), /^zudocs-[0-9a-f]{8}$/, "a valid, account-derived prefix that is not the account id");
+  assert.notEqual(cognitoDomainPrefix("111122223333"), cognitoDomainPrefix("444455556666"));
 });
 
-test("the landing page is private S3 behind CloudFront with strict headers, and the zone carries the root mailbox's MX and DKIM", () => {
+test("money: a $30 budget with [actual 100 %, actual 166.67 %, forecast 100 %] to the recipient, the Bedrock deny policy ready for the action, an anomaly monitor, a multi-region trail", () => {
   const { site } = synth();
-  site.hasResourceProperties("AWS::S3::Bucket", { PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true } });
-  site.hasResourceProperties("AWS::CloudFront::Distribution", { DistributionConfig: Match.objectLike({ Aliases: ["zudocs.com", "www.zudocs.com"], DefaultCacheBehavior: Match.objectLike({ ViewerProtocolPolicy: "redirect-to-https" }) }) });
-  site.hasResourceProperties("AWS::CloudFront::ResponseHeadersPolicy", { ResponseHeadersPolicyConfig: Match.objectLike({ SecurityHeadersConfig: Match.objectLike({ FrameOptions: { FrameOption: "DENY", Override: true } }) }) });
-  site.hasResourceProperties("AWS::Route53::RecordSet", { Type: "MX", ResourceRecords: ["10 inbound-smtp.us-east-1.amazonaws.com"] });
-  assert.equal(Object.keys(site.findResources("AWS::Route53::RecordSet", { Properties: { Type: "CNAME" } })).length, 3, "three DKIM CNAMEs");
+  const [budget] = Object.values(site.findResources("AWS::Budgets::Budget") as Resources);
+  assert.ok(budget, "one budget");
+  const props = budget.Properties as { Budget: { BudgetLimit: unknown; TimeUnit: string }; NotificationsWithSubscribers: Array<{ Notification: Record<string, unknown>; Subscribers: unknown[] }> };
+  assert.deepEqual(props.Budget.BudgetLimit, { Amount: 30, Unit: "USD" });
+  assert.equal(props.Budget.TimeUnit, "MONTHLY");
+  assert.deepEqual(
+    props.NotificationsWithSubscribers.map((n) => [n.Notification.NotificationType, n.Notification.Threshold]),
+    [["ACTUAL", 100], ["ACTUAL", 166.67], ["FORECASTED", 100]],
+  );
+  for (const n of props.NotificationsWithSubscribers) assert.deepEqual(n.Subscribers, [{ SubscriptionType: "EMAIL", Address: "owner@example.test" }]);
+  site.hasResourceProperties("AWS::IAM::ManagedPolicy", { ManagedPolicyName: "ZudocsBudgetBedrockDeny", PolicyDocument: Match.objectLike({ Statement: [Match.objectLike({ Effect: "Deny", Action: Match.arrayWith(["bedrock:InvokeModel", "bedrock:Converse"]) })] }) });
+  site.hasResourceProperties("AWS::CE::AnomalySubscription", { Frequency: "DAILY", Subscribers: [{ Type: "EMAIL", Address: "owner@example.test" }] });
+  site.hasResourceProperties("AWS::CloudTrail::Trail", { IsMultiRegionTrail: true, EnableLogFileValidation: true, IncludeGlobalServiceEvents: true });
 });
 
-test("money: a monthly budget with actual, alert and forecast notifications, a Bedrock deny policy ready for the action, a multi-region trail", () => {
-  const { site } = synth();
-  site.hasResourceProperties("AWS::Budgets::Budget", { Budget: Match.objectLike({ BudgetLimit: { Amount: 30, Unit: "USD" }, TimeUnit: "MONTHLY" }) });
-  const [budget] = Object.values(site.findResources("AWS::Budgets::Budget"));
-  assert.equal((budget as { Properties: { NotificationsWithSubscribers: unknown[] } }).Properties.NotificationsWithSubscribers.length, 3, "three notifications");
-  site.hasResourceProperties("AWS::IAM::ManagedPolicy", { ManagedPolicyName: "ZudocsBudgetBedrockDeny", PolicyDocument: Match.objectLike({ Statement: [Match.objectLike({ Effect: "Deny", Action: Match.arrayWith(["bedrock:InvokeModel"]) })] }) });
-  site.hasResourceProperties("AWS::CloudTrail::Trail", { IsMultiRegionTrail: true, EnableLogFileValidation: true });
-  site.hasResourceProperties("AWS::CE::AnomalySubscription", { Subscribers: [{ Type: "EMAIL", Address: "owner@example.test" }] });
-});
-
-test("without a budget e-mail the stack still synthesizes (no recipient, no anomaly subscription) so a public checkout can synth", () => {
-  const { site } = synth("");
+test("without a budget e-mail (waived) the stacks still synthesize: no notifications property at all, no anomaly subscription", () => {
+  const { site } = synth("", { allowNoBudgetEmail: "true" });
   assert.equal(Object.keys(site.findResources("AWS::CE::AnomalySubscription")).length, 0);
-  const [budget] = Object.values(site.findResources("AWS::Budgets::Budget"));
-  assert.deepEqual((budget as { Properties: { NotificationsWithSubscribers: unknown[] } }).Properties.NotificationsWithSubscribers, []);
+  const [budget] = Object.values(site.findResources("AWS::Budgets::Budget") as Resources);
+  assert.ok(budget && !("NotificationsWithSubscribers" in budget.Properties), "absent, not an empty list");
 });
 
-test("CI: the deploy role trusts one repository's main branch and may only assume the CDK bootstrap roles in the three regions", () => {
+test("CI: a native OIDC provider; the deploy role trusts one repository's main branch with the sts audience, holds no managed policy, and may only assume the CDK bootstrap roles in the three regions", () => {
   const { ci } = synth();
+  ci.resourceCountIs("AWS::IAM::OIDCProvider", 1);
+  assert.equal(Object.keys(ci.findResources("Custom::AWSCDKOpenIdConnectProvider")).length, 0, "no custom resource, no unverified thumbprint fetch");
   ci.hasResourceProperties("AWS::IAM::Role", {
     RoleName: "zudocs-deploy",
     AssumeRolePolicyDocument: Match.objectLike({
-      Statement: [Match.objectLike({ Condition: { StringEquals: Match.objectLike({ "token.actions.githubusercontent.com:sub": "repo:airprompter/zudocs:ref:refs/heads/main" }) } })],
+      Statement: [Match.objectLike({
+        Action: "sts:AssumeRoleWithWebIdentity",
+        Condition: { StringEquals: { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com", "token.actions.githubusercontent.com:sub": "repo:airprompter/zudocs:ref:refs/heads/main" } },
+      })],
     }),
   });
-  ci.hasResourceProperties("AWS::IAM::Policy", {
-    PolicyDocument: Match.objectLike({
-      Statement: [Match.objectLike({ Action: "sts:AssumeRole", Resource: Match.arrayWith(["arn:aws:iam::111122223333:role/cdk-hnb659fds-*-111122223333-ap-southeast-1"]) })],
-    }),
-  });
-  const policies = JSON.stringify(ci.findResources("AWS::IAM::Policy"));
-  assert.ok(!/"Action":\s*"\*"/.test(policies) && !policies.includes("AdministratorAccess"), "the deploy role is not an administrator");
+  const [role] = Object.values(ci.findResources("AWS::IAM::Role", { Properties: { RoleName: "zudocs-deploy" } }) as Resources);
+  assert.ok(role && !("ManagedPolicyArns" in role.Properties), "no managed policy on the deploy role");
+  const policies = Object.values(ci.findResources("AWS::IAM::Policy") as Resources);
+  assert.equal(policies.length, 1, "one inline policy");
+  const statements = (policies[0]!.Properties.PolicyDocument as { Statement: Array<{ Action: unknown; Resource: string[] }> }).Statement;
+  assert.deepEqual(statements.map((s) => s.Action), ["sts:AssumeRole"], "the only action");
+  assert.deepEqual(statements[0]!.Resource, ["us-east-1", "eu-west-1", "ap-southeast-1"].map((r) => `arn:aws:iam::111122223333:role/cdk-hnb659fds-*-111122223333-${r}`));
 });

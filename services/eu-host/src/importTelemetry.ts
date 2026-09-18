@@ -70,8 +70,8 @@ export function agentKeyFrom(env: NodeJS.ProcessEnv, readFile: (path: string) =>
  */
 export function parseImportReport(stdout: string): ImportReport {
   const last = stdout.trim().split("\n").filter((line) => line.trim()).at(-1) ?? "";
-  const parsed = JSON.parse(last) as Partial<ImportReport> & { ok?: boolean; error?: string };
-  if (parsed.ok === false) throw new Error(`the CLI refused: ${String(parsed.error ?? "no reason").slice(0, 200)}`);
+  const parsed = JSON.parse(last) as Partial<ImportReport> & { ok?: boolean; error?: string; exitCode?: number };
+  if (parsed.ok === false) throw Object.assign(new Error(`the CLI refused: ${String(parsed.error ?? "no reason").slice(0, 200)}`), { exitCode: typeof parsed.exitCode === "number" ? parsed.exitCode : null });
   const n = (value: unknown, name: string): number => {
     if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`import-telemetry --json: ${name} is not a number`);
     return value;
@@ -98,9 +98,13 @@ export type ImportOutcome = "imported" | "held" | "failed";
 export function outcomeOf(run: { status: number | null; error?: Error | undefined }, report: ImportReport | null, attempts: number, unreadable: string | null = null): { outcome: ImportOutcome; why: string; counts: boolean } {
   if (!run.error && run.status === 0 && (report === null || (report.refused === 0 && report.retryAfterSeconds === undefined))) return { outcome: "imported", why: report ? "clean" : `exit 0; the document could not be read${unreadable ? ` (${unreadable})` : ""}`, counts: false };
   if (run.error) return { outcome: "held", why: `the CLI did not run: ${run.error.message}`, counts: false };
+  // Exit 2 is the CLI's usage error — not a telemetry export, or a document for another agent or target: nothing a later pass changes.
+  if (run.status === 2) return { outcome: "failed", why: `usage: ${unreadable ?? "the CLI refused the document"}`, counts: true };
   if (!report) return { outcome: "held", why: `exit ${run.status}, ${unreadable ?? "no document"}`, counts: false };
   if (report.retryAfterSeconds !== undefined) return { outcome: "held", why: `the platform asked to retry in ${report.retryAfterSeconds}s`, counts: false };
-  if (report.refused > 0) return { outcome: attempts + 1 >= IMPORT_MAX_ATTEMPTS ? "failed" : "held", why: `${report.refused} segment(s) refused`, counts: true };
+  // Refused or quarantined segments are the platform's verdict on the bytes (the CLI also folds a segment's network
+  // failure into `refused` — a retry costs one heartbeat); these count, and end as failed.
+  if (report.refused > 0 || report.quarantined > 0) return { outcome: attempts + 1 >= IMPORT_MAX_ATTEMPTS ? "failed" : "held", why: `${report.refused} segment(s) refused, ${report.quarantined} quarantined`, counts: true };
   return { outcome: "held", why: `exit ${run.status}`, counts: false };
 }
 
@@ -112,9 +116,9 @@ export interface ImportPorts {
   listMarkers(): Promise<Set<string>>;
   getObject(key: string): Promise<string>;
   putMarker(name: string, body: string): Promise<void>;
-  /** The attempts so far for a marker name, kept locally between passes (a held import); reset when the marker is written. */
-  attempts(name: string): number;
-  setAttempts(name: string, count: number): void;
+  /** The attempts so far for a marker name and the last reason it was held, kept locally between passes; reset when the marker is written. */
+  attempts(name: string): { count: number; why: string | null };
+  setAttempts(name: string, count: number, why: string | null): void;
   /** Write the inbox file (0600), run the CLI on it with the key in its environment only, remove the file. */
   runCli(file: string, text: string, apiKey: string): { status: number | null; stdout: string; stderr: string; error?: Error | undefined };
   inboxPath(name: string): string;
@@ -143,7 +147,7 @@ export async function importPass(p: ImportPorts): Promise<ImportPassResult> {
   const results: Array<Record<string, unknown>> = [];
   for (const key of pending) {
     const name = markerNameOf(key);
-    const attempts = p.attempts(name);
+    const { count: attempts, why: lastWhy } = p.attempts(name);
     const text = await p.getObject(key);
     let exportedAt: string | null = null;
     let generation: number | null = null;
@@ -172,13 +176,14 @@ export async function importPass(p: ImportPorts): Promise<ImportPassResult> {
     // The CLI's stderr stays in the log: a channel from a binary into the desk's tables is not one to open.
     p.log({ event: `import_${outcome}`, ...result, stderr: stderr || null });
     if (outcome === "held") {
-      if (counts) p.setAttempts(name, attempts + 1);
+      p.setAttempts(name, counts ? attempts + 1 : attempts, why);
     } else {
       await p.putMarker(name, JSON.stringify(result) + "\n");
-      p.setAttempts(name, 0);
+      p.setAttempts(name, 0, null);
       if (outcome === "imported") imported += 1;
     }
-    await p.appendEvent({ kind: "telemetry_imported", host: p.hostId, ...result }).catch((error) => p.log({ event: "event_write_failed", reason: (error as Error).message.slice(0, 200) }));
+    // One timeline row per change of reason while an export is held (an outage is one row, not one per pass), one per settlement.
+    if (outcome !== "held" || why !== lastWhy) await p.appendEvent({ kind: "telemetry_imported", host: p.hostId, ...result }).catch((error) => p.log({ event: "event_write_failed", reason: (error as Error).message.slice(0, 200) }));
     results.push(result);
   }
   const last = results.at(-1) ?? null;
@@ -240,11 +245,19 @@ async function main(): Promise<void> {
     async putMarker(name, body) {
       await s3.send(new PutObjectCommand({ Bucket: env.exchangeBucket, Key: `${IMPORTS_PREFIX}${name}`, Body: body, ContentType: "application/json" }));
     },
-    attempts: (name) => (existsSync(join(attemptsDir, name)) ? Number(readFileSync(join(attemptsDir, name), "utf8")) || 0 : 0),
-    setAttempts: (name, count) => {
-      if (count === 0) {
+    attempts: (name) => {
+      if (!existsSync(join(attemptsDir, name))) return { count: 0, why: null };
+      try {
+        const saved = JSON.parse(readFileSync(join(attemptsDir, name), "utf8")) as { count?: number; why?: string | null };
+        return { count: Number(saved.count) || 0, why: typeof saved.why === "string" ? saved.why : null };
+      } catch {
+        return { count: 0, why: null };
+      }
+    },
+    setAttempts: (name, count, why) => {
+      if (count === 0 && why === null) {
         if (existsSync(join(attemptsDir, name))) unlinkSync(join(attemptsDir, name));
-      } else writeFileSync(join(attemptsDir, name), String(count));
+      } else writeFileSync(join(attemptsDir, name), JSON.stringify({ count, why }));
     },
     runCli(file, text, apiKey) {
       writeFileSync(file, text, { mode: 0o600 });

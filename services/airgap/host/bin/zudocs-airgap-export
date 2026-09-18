@@ -31,6 +31,8 @@ done
 report="$(/usr/local/bin/airprompter export-telemetry --org "$AIRPROMPTER_ORG" --agent "$AIRPROMPTER_AGENT" --environment "$AIRPROMPTER_ENVIRONMENT" --state-dir "$AIRPROMPTER_STATE_DIR" --out "$file" --json)"
 # The CLI's --json document is the last line of its stdout.
 read -r segments bytes instances generation <<< "$(printf '%s' "$report" | /usr/local/bin/node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const line=d.trim().split("\n").filter(Boolean).at(-1)??"{}";const r=JSON.parse(line);if(r.ok===false)throw new Error(r.error);console.log([r.segments??0,r.bytes??0,r.instances??0,r.generation??0].join(" "))})')"
+# A document the CLI wrote but whose report could not be read is kept (its segments are already in exported/), never removed.
+[ -n "${segments:-}" ] || { echo "zudocs-airgap-export: the CLI's report could not be read; ${file} is kept for the next run" >&2; exit 1; }
 object=null
 if [ "$segments" -gt 0 ]; then
   key="telemetry/${instance}/${stamp}.aptelemetry"

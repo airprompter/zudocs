@@ -100,9 +100,9 @@ test("the exchange: a missing object (404) is absent; a refused read (403) is re
   assert.deepEqual(await exchange.readPublicKey(), { key: null, reason: "absent" });
   assert.deepEqual(await exchange.readPublicKey(), { key: null, reason: "denied:AccessDenied" }, "a refused read is a misconfiguration to report, not an absent key");
   assert.equal((await exchange.readPublicKey()).reason, "not a distribution public key file (kind airprompter-distribution-public-key)");
-  assert.equal((await exchange.readStatusDoc())?.hostId, "h");
+  assert.equal((await exchange.readStatusDoc()).doc?.hostId, "h");
   await assert.rejects(() => exchange.readStatusDoc(), /throttled/);
-  await assert.rejects(() => exchange.readStatusDoc(), /the read was refused/);
+  assert.deepEqual(await exchange.readStatusDoc(), { doc: null, denied: "AccessDenied" }, "a refused status read is reported, not thrown");
   await exchange.writeBundle("releases/3-3-plain.apbundle", "{}", { generation: "3" });
   await exchange.writeLatest({ generation: 3, releaseDigest: "d", keyId: null, object: "o", pulledAt: "t", notAfter: "n" });
   const put = client.sent[6] as { input: { Key: string; Metadata: Record<string, string>; ContentType: string } };

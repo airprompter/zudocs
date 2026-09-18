@@ -42,6 +42,9 @@ test("outcomeOf: exit 0 is the CLI's contract and is imported (with or without a
   const refused = outcomeOf({ status: 1 }, { ...clean, uploaded: 1, refused: 1 }, 0);
   assert.deepEqual([refused.outcome, refused.counts], ["held", true], "a refused segment is tried again, and counted");
   assert.equal(outcomeOf({ status: 1 }, { ...clean, uploaded: 1, refused: 1 }, IMPORT_MAX_ATTEMPTS - 1).outcome, "failed", "the last counted attempt is recorded as failed");
+  assert.equal(outcomeOf({ status: 1 }, { ...clean, uploaded: 1, quarantined: 1 }, 0).counts, true, "a quarantined segment is the platform's verdict on the bytes: counted");
+  assert.deepEqual(outcomeOf({ status: 2 }, null, 0, "the CLI refused: x.aptelemetry is for agent_y/dev, not agent_x/dev"), { outcome: "failed", why: "usage: the CLI refused: x.aptelemetry is for agent_y/dev, not agent_x/dev", counts: true }, "a usage error is settled at once: no later pass changes it");
+  assert.throws(() => parseImportReport(JSON.stringify({ ok: false, error: "not a telemetry export", exitCode: 2 })), (error: unknown) => (error as { exitCode?: number }).exitCode === 2);
 });
 
 test("the CLI's document is the last line of stdout (a refusal is `{ ok: false, error }` and is refused as such); the fixture is the shape cli/src/commands/telemetry.ts writes", () => {
@@ -60,7 +63,7 @@ interface Fake {
   ports: ImportPorts;
   exports: Map<string, string>;
   markers: Map<string, string>;
-  attempts: Map<string, number>;
+  attempts: Map<string, { count: number; why: string | null }>;
   runs: Array<{ file: string; apiKey: string }>;
   answers: Array<{ status: number | null; stdout: string; stderr: string; error?: Error }>;
   events: Array<Record<string, unknown>>;
@@ -78,8 +81,8 @@ function fake(over: Partial<Fake> = {}): Fake {
     listMarkers: async () => new Set(f.markers.keys()),
     getObject: async (key) => f.exports.get(key)!,
     putMarker: async (name, body) => { f.markers.set(name, body); },
-    attempts: (name) => f.attempts.get(name) ?? 0,
-    setAttempts: (name, count) => { if (count === 0) f.attempts.delete(name); else f.attempts.set(name, count); },
+    attempts: (name) => f.attempts.get(name) ?? { count: 0, why: null },
+    setAttempts: (name, count, why) => { if (count === 0 && why === null) f.attempts.delete(name); else f.attempts.set(name, { count, why }); },
     runCli: (file, _text, apiKey) => { f.runs.push({ file, apiKey }); return f.answers.shift() ?? { status: 0, stdout: JSON.stringify({ segments: 1, uploaded: 1, refused: 0, quarantined: 0, instances: [{ instanceId: "inst-1", segments: 1, uploaded: 1, grant: "g" }] }), stderr: "" }; },
     inboxPath: (name) => `/inbox/${name}`,
     appendEvent: async (event) => { f.events.push(event); },
@@ -122,20 +125,25 @@ test("a transient failure is held and retried on later passes, then recorded as 
   f.answers.push({ status: 1, stdout: JSON.stringify({ ok: false, error: "heartbeat for inst-1 failed with HTTP 503", exitCode: 3 }), stderr: "" });
   await importPass(f.ports);
   assert.equal(f.markers.size, 0, "not done");
-  assert.equal(f.attempts.get("telemetry_i-1_c.aptelemetry"), undefined, "a transient failure is not an attempt");
+  assert.equal(f.attempts.get("telemetry_i-1_c.aptelemetry")?.count, 0, "a transient failure is not an attempt");
   assert.equal(f.events.at(-1)!.outcome, "held");
   assert.match(String(f.events.at(-1)!.why), /the CLI refused/);
-  assert.equal(f.attempts.size, 0, "a transient failure burns no attempt");
+  assert.equal(f.attempts.get("telemetry_i-1_c.aptelemetry")?.count, 0, "a transient failure burns no attempt");
+  const rows = f.events.length;
+  f.answers.push({ status: 1, stdout: JSON.stringify({ ok: false, error: "heartbeat for inst-1 failed with HTTP 503", exitCode: 3 }), stderr: "" });
+  await importPass(f.ports);
+  assert.equal(f.events.length, rows, "the same reason on the next pass is not another timeline row");
   f.answers.push({ status: 1, stdout: JSON.stringify({ segments: 1, uploaded: 0, refused: 0, quarantined: 0, instances: [{ instanceId: "inst-1", segments: 1, uploaded: 0, grant: null }], retryAfterSeconds: 60 }), stderr: "held: the platform asked to retry in 60s" });
   await importPass(f.ports);
   assert.equal(f.events.at(-1)!.retryAfterSeconds, 60);
   f.answers.push({ status: null, stdout: "", stderr: "", error: new Error("spawnSync ETIMEDOUT") });
   await importPass(f.ports);
-  assert.equal(f.attempts.size, 0);
+  assert.equal(f.attempts.get("telemetry_i-1_c.aptelemetry")?.count, 0, "still no attempt burnt");
   assert.ok(!("stderr" in f.events.at(-1)!), "the CLI's stderr stays in the log, never in a timeline row");
   await importPass(f.ports);
   assert.equal(f.events.at(-1)!.outcome, "imported", "the platform came back: imported on the fourth pass");
   assert.equal(f.markers.size, 1);
+  assert.equal(f.attempts.size, 0, "settled: the attempts file is gone");
   const g = fake();
   g.exports.set("telemetry/i-1/d.aptelemetry", exportDoc(["inst-1"]));
   for (let i = 0; i < IMPORT_MAX_ATTEMPTS; i += 1) {

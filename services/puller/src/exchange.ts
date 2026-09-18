@@ -48,7 +48,8 @@ export function parsePublicKeyFile(document: unknown): { keyId: string; raw: Uin
 
 export interface Exchange {
   readPublicKey(): Promise<PublicKeyRead>;
-  readStatusDoc(): Promise<AirgapStatusDoc | null>;
+  /** The host's document; `denied` names the refusal when the read was refused (a misconfiguration the card reports). */
+  readStatusDoc(): Promise<{ doc: AirgapStatusDoc | null; denied: string | null }>;
   writeBundle(key: string, text: string, metadata: Record<string, string>): Promise<void>;
   writeLatest(pointer: LatestPointer): Promise<void>;
 }
@@ -83,8 +84,8 @@ export function createExchange(s3: Pick<S3Client, "send">, bucket: string): Exch
     },
     async readStatusDoc() {
       const { text, denied } = await read(EXCHANGE_KEYS.status);
-      if (denied) throw new Error(`${EXCHANGE_KEYS.status}: the read was refused (${denied}); the puller's role may read exactly this key — check the bucket policy`);
-      return text === null ? null : parseStatusDoc(text);
+      if (denied) return { doc: null, denied };
+      return { doc: text === null ? null : parseStatusDoc(text), denied: null };
     },
     async writeBundle(key, text, metadata) {
       await send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: text, ContentType: "application/json", Metadata: metadata }));

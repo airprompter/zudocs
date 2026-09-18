@@ -48,6 +48,8 @@ export interface PullerState {
   reads: { hour: string; pointer: number; origin: number };
   lastPull: { at: string; outcome: string; via: string | null; reason: string | null; detail: string | null; generation: number | null; trigger: string } | null;
   nudges: number;
+  /** The last nudge messages counted (the queue may deliver one twice; a run that lost a race runs again): each id counts once. */
+  nudgeIds: string[];
   /** Re-seals that failed for a key: after `RESEAL_MAX_FAILURES` the puller stops trying until the key changes. */
   reseal: { keyId: string; failures: number } | null;
   /** What `latest.json` was last written as, so a failed write is repaired on the next tick. */
@@ -58,8 +60,16 @@ export interface PullerState {
   airgap: { writtenAt: string | null; startedAt: string | null; lastAppliedAt: string | null; lastExportAt: string | null; health: string | null; keyId: string | null };
 }
 
-export const EMPTY_STATE: PullerState = Object.freeze({ edge: null, unchangedStreak: 0, failureStreak: 0, skipTicks: 0, nextPullAt: null, reads: { hour: "", pointer: 0, origin: 0 }, lastPull: null, nudges: 0, reseal: null, latest: null, conflict: null, airgap: { writtenAt: null, startedAt: null, lastAppliedAt: null, lastExportAt: null, health: null, keyId: null } }) as PullerState;
+export const EMPTY_STATE: PullerState = Object.freeze({ edge: null, unchangedStreak: 0, failureStreak: 0, skipTicks: 0, nextPullAt: null, reads: { hour: "", pointer: 0, origin: 0 }, lastPull: null, nudges: 0, nudgeIds: [], reseal: null, latest: null, conflict: null, airgap: { writtenAt: null, startedAt: null, lastAppliedAt: null, lastExportAt: null, health: null, keyId: null } }) as PullerState;
 export const RESEAL_MAX_FAILURES = 3;
+export const NUDGE_IDS_KEPT = 50;
+
+/** The nudge counted once per message id: the state with the ids added, or null when every id was seen already. Pure. */
+export function countNudge(state: PullerState, messageIds: string[]): PullerState | null {
+  const unseen = messageIds.filter((id) => !state.nudgeIds.includes(id));
+  if (unseen.length === 0 && messageIds.length > 0) return null;
+  return { ...state, nudges: state.nudges + 1, nudgeIds: [...state.nudgeIds, ...unseen].slice(-NUDGE_IDS_KEPT) };
+}
 
 export type Trigger = { kind: "tick" } | { kind: "nudge"; by: string; sentAt: string | null; messageIds: string[] };
 
@@ -136,7 +146,7 @@ export function advance(state: PullerState, result: PullBundleResult, input: { n
   // A nudge or a re-seal is a person (or the host) saying "look": whatever it finds, the schedule resumes from the start.
   const asked = input.trigger === "nudge" || input.trigger === "reseal";
   const unchangedStreak = result.status === "unchanged" && !asked ? state.unchangedStreak + 1 : 0;
-  const failureStreak = result.status === "ok" || result.status === "unchanged" ? 0 : state.failureStreak + 1;
+  const failureStreak = result.status === "ok" || result.status === "unchanged" ? 0 : asked ? 1 : state.failureStreak + 1;
   const delay = result.status === "ok" || asked ? input.intervalMs : nextPullDelayMs({ outcome: "unchanged", unchangedStreak: Math.max(unchangedStreak, failureStreak), intervalMs: input.intervalMs, capMs: input.capMs ?? 5 * 60_000 });
   const skipTicks = Math.max(0, Math.round(delay / input.intervalMs) - 1);
   // The pull happens on the tick after the skipped ones.
@@ -164,11 +174,12 @@ export function objectKeyOf(prefix: string, generation: number, releaseDigest: s
 }
 
 /** The health the puller reports for itself: failing when the key is unreadable or the last pull was unavailable, degraded on a refusal, a malformed or unreadable key object, a re-seal given up or a digest conflict still standing. */
-export function pullerHealth(input: { keyReadable: boolean; lastPull: PullerState["lastPull"]; newest: ReleaseRow | null; key: KeyInExchange; reseal: PullerState["reseal"]; conflict?: PullerState["conflict"] }): { ok: boolean; status: "ok" | "degraded" | "failing"; reasons: string[] } {
+export function pullerHealth(input: { keyReadable: boolean; lastPull: PullerState["lastPull"]; newest: ReleaseRow | null; key: KeyInExchange; reseal: PullerState["reseal"]; conflict?: PullerState["conflict"]; airgapStatus?: string | null }): { ok: boolean; status: "ok" | "degraded" | "failing"; reasons: string[] } {
   const reasons: string[] = [];
   if (!input.keyReadable) reasons.push("agent_key_unreadable");
-  if (input.key.malformed) reasons.push(`public_key_malformed:${input.key.malformed.slice(0, 60)}`);
-  if (input.conflict && (!input.newest || input.newest.generation <= input.conflict.generation)) reasons.push(`pull_conflict:${input.conflict.generation}`);
+  if (input.key.malformed) reasons.push(input.key.malformed.startsWith("denied:") ? `public_key_unreadable:${input.key.malformed.slice(7, 60)}` : `public_key_malformed:${input.key.malformed.slice(0, 60)}`);
+  if (input.airgapStatus) reasons.push(`airgap_status_unreadable:${input.airgapStatus.slice(0, 40)}`);
+  if (input.conflict) reasons.push(`pull_conflict:${input.conflict.generation}`);
   if (input.lastPull?.outcome === "unavailable") reasons.push(`pull_unavailable:${input.lastPull.reason ?? "unknown"}`);
   if (input.lastPull?.outcome === "refused") reasons.push(`pull_refused:${input.lastPull.reason ?? "unknown"}`);
   if (input.lastPull?.outcome === "nothing_promoted") reasons.push("nothing_promoted");

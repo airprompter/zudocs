@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PullBundleResult } from "@airprompter/agent-sdk";
-import { EMPTY_STATE, RESEAL_MAX_FAILURES, advance, objectKeyOf, parseTrigger, planPull, pullerHealth, resealNeeded, type PullerState, type ReleaseRow } from "../src/plan.js";
+import { EMPTY_STATE, NUDGE_IDS_KEPT, RESEAL_MAX_FAILURES, advance, countNudge, objectKeyOf, parseTrigger, planPull, pullerHealth, resealNeeded, type PullerState, type ReleaseRow } from "../src/plan.js";
 
 const now = "2026-09-18T20:00:00.000Z";
 const edge = { pointerUrl: "https://edge/g/x/generation.json", pointerEtag: '"p1"', manifestEtag: '"m1"', lastOriginAt: "2026-09-18T19:50:00.000Z" };
@@ -70,6 +70,8 @@ test("advance: unchanged and failures each stretch the interval in ticks to skip
   const nudged = advance(s, unchanged("origin"), { now, intervalMs: interval, trigger: "nudge", keyId: null });
   assert.equal(nudged.skipTicks, 0, "a nudge that found nothing: the schedule resumes from the start (a person said look)");
   assert.equal(nudged.unchangedStreak, 0);
+  const nudgedFail = advance({ ...s, failureStreak: 3 }, { status: "unavailable", reason: "network", edge }, { now, intervalMs: interval, trigger: "nudge", keyId: null });
+  assert.deepEqual([nudgedFail.failureStreak, nudgedFail.skipTicks], [1, 0], "a nudge that failed starts the failure streak over too");
   const ok: PullBundleResult = { status: "ok", bundle: {} as never, manifest: {} as never, generation: 4, releaseDigest: "sha256:4", createdAt: now, notAfter: "2026-12-17T20:00:00.000Z", trustedRoot: {} as never, edge: { ...edge, manifestEtag: '"m2"' } };
   s = advance(s, ok, { now, intervalMs: interval, trigger: "nudge", keyId: null });
   assert.equal(s.unchangedStreak, 0);
@@ -103,6 +105,18 @@ test("advance: unchanged and failures each stretch the interval in ticks to skip
   assert.equal(r.reseal, null, "a re-seal that worked clears the count");
 });
 
+test("countNudge: once per message id, the ids kept bounded; a nudge with no id (a hand-made message) always counts", () => {
+  const s1 = countNudge(state(), ["m1"])!;
+  assert.equal(s1.nudges, 1);
+  assert.equal(countNudge(s1, ["m1"]), null, "seen before");
+  const s2 = countNudge(s1, ["m1", "m2"])!;
+  assert.deepEqual([s2.nudges, s2.nudgeIds], [2, ["m1", "m2"]]);
+  let s = state();
+  for (let i = 0; i < NUDGE_IDS_KEPT + 5; i += 1) s = countNudge(s, [`id${i}`])!;
+  assert.equal(s.nudgeIds.length, NUDGE_IDS_KEPT);
+  assert.equal(countNudge(state(), [])!.nudges, 1, "no id: counted (nothing to compare)");
+});
+
 test("objectKeyOf and pullerHealth", () => {
   assert.equal(objectKeyOf("releases/", 3, "sha256:0123456789abcdef", "abcdefghijklmnop"), "releases/3-01234567-abcdefgh.apbundle");
   assert.equal(objectKeyOf("releases/", 3, "sha256:0123456789abcdef", null), "releases/3-01234567-plain.apbundle");
@@ -116,5 +130,6 @@ test("objectKeyOf and pullerHealth", () => {
   assert.deepEqual(pullerHealth({ keyReadable: true, lastPull: last("unchanged", null), newest: row(3, "old"), key: key("k9abcdef"), reseal: { keyId: "k9abcdef", failures: 3 } }).reasons, ["reseal_failing:k9abcdef"]);
   assert.deepEqual(pullerHealth({ keyReadable: true, lastPull: last("nothing_promoted", "nothing_promoted"), newest: null, key: key(null), reseal: null }).reasons, ["nothing_promoted", "nothing_pulled_yet"]);
   assert.deepEqual(pullerHealth({ keyReadable: true, lastPull: last("unchanged", null), newest: row(3, "k"), key: key("k"), reseal: null, conflict: { generation: 3, releaseDigest: "sha256:other", at: now } }).reasons, ["pull_conflict:3"], "a conflict is said until a newer generation lands");
-  assert.deepEqual(pullerHealth({ keyReadable: true, lastPull: last("unchanged", null), newest: row(4, "k"), key: key("k"), reseal: null, conflict: { generation: 3, releaseDigest: "sha256:other", at: now } }).reasons, []);
+  assert.deepEqual(pullerHealth({ keyReadable: true, lastPull: last("unchanged", null), newest: row(4, "k"), key: key("k"), reseal: null, conflict: null }).reasons, []);
+  assert.deepEqual(pullerHealth({ keyReadable: true, lastPull: last("unchanged", null), newest: row(4, "k"), key: key("k"), reseal: null, airgapStatus: "AccessDenied" }).reasons, ["airgap_status_unreadable:AccessDenied"]);
 });

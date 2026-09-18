@@ -43,10 +43,11 @@ interface World {
   nextResults: PullBundleResult[];
   /** A hook the race test uses: bump the version under the running pass. */
   beforeWrite: (() => void) | null;
+  statusDenied: string | null;
 }
 
 function world(over: Partial<World> = {}): World {
-  const w: World = { rows: [], state: { ...EMPTY_STATE }, version: 0, objects: new Map(), status: new Map(), events: [], pulls: [], publicKey: { key: null, reason: "absent" }, statusDoc: null, keyReadable: true, nextResults: [], beforeWrite: null, deps: null as never, ...over };
+  const w: World = { rows: [], state: { ...EMPTY_STATE }, version: 0, objects: new Map(), status: new Map(), events: [], pulls: [], publicKey: { key: null, reason: "absent" }, statusDoc: null, keyReadable: true, nextResults: [], beforeWrite: null, statusDenied: null, deps: null as never, ...over };
   const env: PullerEnv = readPullerEnv(ENV);
   const checkVersion = (expected: number) => {
     w.beforeWrite?.();
@@ -69,7 +70,7 @@ function world(over: Partial<World> = {}): World {
   };
   const exchange: Exchange = {
     readPublicKey: async () => w.publicKey,
-    readStatusDoc: async () => (w.statusDoc ? (JSON.parse(w.statusDoc) as never) : null),
+    readStatusDoc: async () => ({ doc: w.statusDoc ? (JSON.parse(w.statusDoc) as never) : null, denied: w.statusDenied }),
     writeBundle: async (key, text) => { w.objects.set(key, text); },
     writeLatest: async (pointer) => { w.objects.set("latest.json", JSON.stringify(pointer)); },
   };
@@ -178,6 +179,9 @@ test("a key published after a plaintext pull re-seals the held generation: the o
   assert.deepEqual(stopped, { plan: "key_malformed", outcome: null, generation: null });
   assert.equal(w.pulls.length, 3, "nothing was pulled: a malformed key is not plaintext");
   assert.deepEqual((w.status.get("ap-southeast-1/puller")!.healthz as { reasons: string[] }).reasons, ["public_key_malformed:publicKey is not a 32-byte X25519 key"]);
+  w.publicKey = { key: null, reason: "denied:AccessDenied" };
+  await pass(w.deps, { action: "tick" });
+  assert.deepEqual((w.status.get("ap-southeast-1/puller")!.healthz as { reasons: string[] }).reasons, ["public_key_unreadable:AccessDenied"], "a refused key read has its own name");
 });
 
 test("a re-seal that keeps failing is given up after three tries until the key changes; the health says so", async () => {
@@ -214,6 +218,10 @@ test("the same generation with another digest is kept as it was and reported (it
   await pass(w.deps, { Records: [{ messageId: "n4", body: "{}" }] });
   assert.equal(w.events.filter((e) => e.kind === "pull_failed").length, 2, "the same outage twice is one row (the nudge rows are separate)");
   assert.equal(w.events.length, before + 1, "only the nudge row was added");
+  w.nextResults.push(okResult(4, edge1));
+  w.state = { ...w.state, skipTicks: 0 };
+  await pass(w.deps, { Records: [{ messageId: "n9", body: "{}" }] });
+  assert.equal(w.state.conflict, null, "a newer generation ends the conflict");
 });
 
 test("an unreadable Agent key: a tick pulls nothing and writes a failing row naming the parameter; a nudge throws so the queue retries it, and is neither counted nor announced", async () => {
@@ -248,7 +256,18 @@ test("two invocations at once: a tick that loses the state's version stops clean
   assert.equal(n.rows.length, 1, "the second run wrote the row");
   assert.deepEqual(n.events.map((e) => e.kind), ["nudged", "bundle_pulled"], "the nudge is announced once");
   assert.equal(n.state.nudges, 1, "and counted once");
-  assert.equal(n.pulls.length, 2, "the origin was read twice — the whole cost of the race");
+  assert.equal(n.pulls.length, 1, "the race was lost at the count's write, before the origin was read: one read");
+  // The race lost on a LATER write (the pointer's record), after the count was persisted: the retry sees the id and counts nothing.
+  const later = world({ nextResults: [okResult(3, edge1), okResult(3, edge1), unchanged("pointer")] });
+  let writes = 0;
+  later.beforeWrite = () => { writes += 1; if (writes === 3) later.version += 1; };
+  await runOnce(later.deps, { Records: [{ messageId: "m9", body: "{}" }] });
+  assert.equal(later.state.nudges, 1, "counted once although the first run persisted the count before losing");
+  assert.equal(later.events.filter((e) => e.kind === "nudged").length, 1);
+  // The queue delivering the same message again (a crash after the announce): seen before, not counted, not announced.
+  await runOnce(later.deps, { Records: [{ messageId: "m9", body: "{}" }] });
+  assert.equal(later.state.nudges, 1);
+  assert.equal(later.events.filter((e) => e.kind === "nudged").length, 1);
   const twice = world({ nextResults: [okResult(3, edge1), okResult(3, edge1)] });
   twice.beforeWrite = () => { twice.version += 1; };
   await assert.rejects(() => runOnce(twice.deps, { Records: [{ messageId: "m", body: "{}" }] }), (error: unknown) => error instanceof RaceLost, "a second loss is an error: the queue retries the message");
@@ -266,7 +285,11 @@ test("the air-gapped host's document is mirrored into its own row and the timeli
   assert.equal(w.state.airgap.writtenAt, "2026-09-18T19:59:00.000Z");
   const before = w.events.length;
   w.state = { ...w.state, skipTicks: 0 };
-  w.version += 0;
   await pass(w.deps, { action: "tick" });
   assert.equal(w.events.length, before, "the same document is not mirrored twice");
+  w.statusDenied = "AccessDenied";
+  w.state = { ...w.state, skipTicks: 0 };
+  w.nextResults.push(unchanged("pointer"));
+  await pass(w.deps, { action: "tick" });
+  assert.deepEqual((w.status.get("ap-southeast-1/puller")!.healthz as { reasons: string[] }).reasons, ["airgap_status_unreadable:AccessDenied"], "a refused status read is said on the card, and the row is still written");
 });

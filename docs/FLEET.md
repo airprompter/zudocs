@@ -51,7 +51,9 @@ The puller is the SDK's fleet pattern (`docs/change-notification.md` in the SDK 
    says so until a pull works. Two invocations at once (a nudge during a tick) both pull; the second to write loses
    on the state's version (`state_race_lost`) and its table and timeline writes never happen (its bundle object, an
    idempotent copy, may). A tick that lost stops there — the winner's word stands; a nudge that lost runs once more
-   on the fresh state, so what a person asked for is never dropped and the nudge is announced once.
+   on the fresh state, so what a person asked for is never dropped. A nudge is counted and announced once per
+   message id (the count and the id are written before the pull), whatever brings the message back — a lost race
+   or the queue's redelivery.
 5. Every tick also mirrors `status/airgap.json`, when it changed, into the air-gapped host's row and turns what
    changed into timeline rows (`airgap_started`, `distribution_key_born`, `airgap_applied`, `telemetry_exported`,
    `health_changed`).
@@ -126,9 +128,11 @@ is the CLI's contract for "every segment landed" and writes the marker (the `--j
 stdout — is read for the counts; unreadable, the counts stay null and the log says so). Anything else is held for
 another pass: a transient failure (the CLI did not run, no document, the platform's "retry later") is held for as
 long as it takes — the exports expire from the bucket after thirty days, and holding while the platform is down
-costs nothing; only a deterministic refusal (segments the platform refused) counts toward five attempts and ends as
-failed with a marker (delete `imports/<marker>` in the bucket to try again). The CLI's stderr stays in the host's log
-and never reaches a timeline row. The Agent key
+costs nothing; only a deterministic verdict counts: segments the platform refused or quarantined (the CLI also folds a
+segment's network failure into `refused`; a retry costs one heartbeat) count toward five attempts and end as failed,
+and a usage error (exit 2: not a telemetry export, or one for another agent or target) is failed at once — both with a
+marker (delete `imports/<marker>` in the bucket to try again). While an export is held, one `telemetry_imported` row
+per change of reason, not one per pass. The CLI's stderr stays in the host's log and never reaches a timeline row. The Agent key
 reaches the CLI as a systemd credential: `LoadCredential=` mounts the daemon's root-only env file for this unit
 alone, the script reads the value and puts it in the child's environment only. On AirPrompter's fleet page the
 air-gapped instance appears as an offline resident with its windows — every one of them a refusal.

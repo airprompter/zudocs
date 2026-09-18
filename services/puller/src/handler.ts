@@ -28,7 +28,7 @@ import { SDK_NAME, SDK_VERSION, SyncClient, pullBundle, trustedRootFromPinnedKey
 import { readPullerEnv, type PullerEnv } from "./env.js";
 import { createExchange, EXCHANGE_KEYS, type Exchange } from "./exchange.js";
 import { mirrorAirgap } from "./mirror.js";
-import { advance, objectKeyOf, parseTrigger, planPull, pullerHealth, type KeyInExchange, type PullerState, type ReleaseRow } from "./plan.js";
+import { advance, countNudge, objectKeyOf, parseTrigger, planPull, pullerHealth, type KeyInExchange, type PullerState, type ReleaseRow } from "./plan.js";
 import { createDeskTables, createReleasesTable, RaceLost, type DeskTables, type ReleasesTable } from "./tables.js";
 
 const log = (event: Record<string, unknown>) => console.log(JSON.stringify({ at: new Date().toISOString(), source: "zudocs-puller", ...event }));
@@ -85,11 +85,8 @@ export interface PassResult {
   generation: number | null;
 }
 
-/**
- * One tick or one nudge, over the dependencies: the real ones in production, fakes in a test. `retrying` is the
- * second run of a nudge whose first run lost the state's version race: the nudge is not counted or announced again.
- */
-export async function pass(d: PullerDeps, event: unknown, options: { retrying?: boolean } = {}): Promise<PassResult> {
+/** One tick or one nudge, over the dependencies: the real ones in production, fakes in a test. */
+export async function pass(d: PullerDeps, event: unknown): Promise<PassResult> {
   const { env } = d;
   invocations += 1;
   const now = d.now();
@@ -111,15 +108,21 @@ export async function pass(d: PullerDeps, event: unknown, options: { retrying?: 
   }
   // A nudge the puller cannot honour (no Agent key) is not counted or announced: the queue retries it, and one click is one row.
   if (!keyReadable && trigger.kind === "nudge") {
-    await writePullerRow(d, { state, newest, key, keyReadable, now });
+    await writePullerRow(d, { state, newest, key, keyReadable, now, airgapStatus: null });
     throw new Error(`the Agent key parameter ${env.agentKeyParameter} is unreadable; the nudge was not honoured`);
   }
   if (trigger.kind === "nudge") {
-    // The count travels with the state (a run that lost the race never wrote it, so the retry counts it); the timeline row is written once.
-    state = { ...state, nudges: state.nudges + 1 };
-    if (!options.retrying) {
+    // Counted and announced once per message id, whatever brings the message back — the queue's redelivery, or a run
+    // of this puller that lost the state's version race and runs again on the fresh state.
+    const counted = countNudge(state, trigger.messageIds);
+    if (counted) {
+      // The count and the id are written before the pull, so a run that loses the race later (or a redelivery) finds them.
+      state = counted;
+      version = await d.releases.writeState(state, version);
       await d.desk.appendEvent({ at: now, kind: "nudged", host: env.hostId, by: trigger.by, sentAt: trigger.sentAt, messages: trigger.messageIds.length });
       log({ event: "nudged", by: trigger.by, messages: trigger.messageIds.length });
+    } else {
+      log({ event: "nudge_seen_before", messages: trigger.messageIds.length });
     }
   }
   const plan = planPull({ now, trigger, state, newest, key });
@@ -151,7 +154,8 @@ export async function pass(d: PullerDeps, event: unknown, options: { retrying?: 
       const row: Omit<ReleaseRow, "pk"> = { generation: result.generation, releaseDigest: result.releaseDigest, pulledAt: result.createdAt, keyId: key.keyId, object, bytes: Buffer.byteLength(text), notAfter: result.notAfter, via: trigger2 };
       const written = await d.releases.writeRelease(row, next, version);
       version = written.version;
-      state = next;
+      // A conflict that stood for an older generation is over once a newer one is written.
+      state = next.conflict && result.generation > next.conflict.generation ? { ...next, conflict: null } : next;
       if (written.written) {
         await d.desk.appendEvent({ at: now, kind: "bundle_pulled", host: env.hostId, generation: result.generation, releaseDigest: result.releaseDigest, keyId: key.keyId, object, bytes: row.bytes, trigger: row.via, sealed: key.keyId !== null, previous: newest?.generation ?? null });
         log({ event: "bundle_pulled", generation: result.generation, releaseDigest: result.releaseDigest, keyId: key.keyId, object, bytes: row.bytes, trigger: row.via, pointerKnown: next.edge?.pointerUrl !== null });
@@ -198,7 +202,8 @@ export async function pass(d: PullerDeps, event: unknown, options: { retrying?: 
   }
 
   // --- The air-gapped host's document, mirrored when it changed ------------------------------------------------------
-  const doc = await d.exchange.readStatusDoc();
+  const { doc, denied: airgapStatus } = await d.exchange.readStatusDoc();
+  if (airgapStatus) log({ event: "airgap_status_unreadable", reason: airgapStatus });
   if (doc && doc.writtenAt !== state.airgap.writtenAt) {
     const mirrored = mirrorAirgap({ doc, previous: state.airgap, now, keyIdInExchange: key.keyId });
     await d.desk.updateStatus(env.airgapHostId, mirrored.fields);
@@ -208,16 +213,16 @@ export async function pass(d: PullerDeps, event: unknown, options: { retrying?: 
     version = await d.releases.writeState(state, version);
   }
 
-  await writePullerRow(d, { state, newest: current, key, keyReadable, now });
+  await writePullerRow(d, { state, newest: current, key, keyReadable, now, airgapStatus });
   coldStart = false;
   return { plan: plan.reason, outcome, generation };
 }
 
 /** The puller's own row in the desk's status table. */
-async function writePullerRow(d: PullerDeps, input: { state: PullerState; newest: ReleaseRow | null; key: KeyInExchange; keyReadable: boolean; now: string }): Promise<void> {
+async function writePullerRow(d: PullerDeps, input: { state: PullerState; newest: ReleaseRow | null; key: KeyInExchange; keyReadable: boolean; now: string; airgapStatus: string | null }): Promise<void> {
   const { env } = d;
-  const { state, newest: current, key, keyReadable, now } = input;
-  const healthz = pullerHealth({ keyReadable, lastPull: state.lastPull, newest: current, key, reseal: state.reseal, conflict: state.conflict });
+  const { state, newest: current, key, keyReadable, now, airgapStatus } = input;
+  const healthz = pullerHealth({ keyReadable, lastPull: state.lastPull, newest: current, key, reseal: state.reseal, conflict: state.conflict, airgapStatus });
   await d.desk.updateStatus(env.hostId, {
     region: env.region,
     kind: "puller",
@@ -251,7 +256,7 @@ async function writePullerRow(d: PullerDeps, input: { state: PullerState; newest
 
 export const handler = async (event: unknown, _context?: Context): Promise<PassResult> => runOnce(realDeps(), event);
 
-/** One invocation: a lost race is not an error — a tick stops (the winner's word stands); a nudge runs once more on the fresh state, so what a person asked for is never dropped. */
+/** One invocation: a lost race is not an error — a tick stops (the winner's word stands); a nudge runs once more on the fresh state, so what a person asked for is never dropped (its message id keeps it counted once). */
 export async function runOnce(d: PullerDeps, event: unknown): Promise<PassResult> {
   const isRace = (error: unknown): boolean => error instanceof RaceLost || (error as Error)?.name === "RaceLost";
   try {
@@ -261,7 +266,7 @@ export async function runOnce(d: PullerDeps, event: unknown): Promise<PassResult
       if (parseTrigger(event).kind === "nudge") {
         log({ event: "state_race_lost", message: (error as Error).message, retrying: true });
         try {
-          return await pass(d, event, { retrying: true });
+          return await pass(d, event);
         } catch (again) {
           if (!isRace(again)) throw again;
           log({ event: "state_race_lost", message: (again as Error).message, retrying: false });

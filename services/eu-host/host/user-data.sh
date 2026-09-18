@@ -6,7 +6,7 @@
 #
 #   /usr/local/bin/airprompter           the released CLI, verified against the pinned digest before chmod +x
 #   /opt/zudocs/                          the worker bundle, the Python worker and its venv, the units (from the asset)
-#   /etc/airprompter/{root.jwk.json,zudocs.env}   the pinned root and the identifiers (0644)
+#   /etc/airprompter/{root.jwk.json,root.json,zudocs.env}   the pinned key, the root document it verified, the identifiers (0644)
 #   /etc/airprompter/airprompterd.env     the Agent key, root:root 0600, written by zudocs-agent-key
 #   /var/lib/airprompter                  the daemon's state (0700, the airprompter user)
 #   systemd: airprompterd, zudocs-worker, zudocs-pyworker; the CloudWatch agent shipping /var/log/zudocs/*
@@ -55,11 +55,20 @@ install -m 0644 /opt/zudocs/bundle/worker.mjs /opt/zudocs/worker.mjs
 install -m 0644 /opt/zudocs/bundle/pyworker.py /opt/zudocs/pyworker.py
 install -m 0644 /opt/zudocs/bundle/requirements.txt /opt/zudocs/requirements.txt
 
+# --- the root document the daemon trusts: fetched from the environment's root URL and verified against the pinned key
+#     for the hosted environment before it is installed (the released daemon drops --hosted-environment for a pinned
+#     JWK, so it is handed the verified document instead; docs/EU-WEST.md) ------------------------------------------
+. /etc/airprompter/zudocs.env
+curl -fsSL --retry 20 --retry-all-errors --retry-delay 5 -o /tmp/root.json "$AIRPROMPTER_ROOT_URL"
+/usr/local/bin/node /opt/zudocs/worker.mjs verify-root /tmp/root.json /etc/airprompter/root.jwk.json "$AIRPROMPTER_HOSTED_ENVIRONMENT"
+install -m 0644 /tmp/root.json /etc/airprompter/root.json
+rm -f /tmp/root.json
+
 # --- the Python worker's venv: the SDK's five distributions by commit pin, LiteLLM, boto3 ---------------------------
 python3.12 -m venv /opt/zudocs/venv
 /opt/zudocs/venv/bin/pip install --no-cache-dir --upgrade pip >/dev/null
 /opt/zudocs/venv/bin/pip install --no-cache-dir -r /opt/zudocs/requirements.txt
-/opt/zudocs/venv/bin/python -c 'import airprompter_agent, litellm; print("python sdk", airprompter_agent.__name__, "litellm", litellm.__version__)'
+/opt/zudocs/venv/bin/python -c 'import importlib.metadata as m, airprompter_agent, litellm; print("python sdk", m.version("airprompter-agent"), "litellm", m.version("litellm"))'
 chown -R airprompter:airprompter /opt/zudocs
 
 # --- the CloudWatch agent first, so whatever happens next is in the log group -----------------------------------

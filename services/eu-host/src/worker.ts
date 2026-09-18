@@ -38,7 +38,9 @@ import type { RunHost } from "../../desk-api/src/runtime.js";
 import { createStore, dayOf, type Store, type Ticket } from "../../desk-api/src/store.js";
 import { ApprovalWatcher } from "./approvals.js";
 import { readHostEnv, type HostEnv } from "./hostEnv.js";
+import { readDaemonHealthz } from "./daemonHealthz.js";
 import { statusFields, type DaemonStatusDoc } from "./statusRow.js";
+import { verifyRootCommand } from "./verifyRoot.js";
 
 const WORKER_VERSION = "0.1.0";
 const log = (event: Record<string, unknown>) => process.stdout.write(JSON.stringify({ at: new Date().toISOString(), source: "zudocs-worker", ...event }) + "\n");
@@ -168,7 +170,9 @@ async function main(): Promise<void> {
     }
     return latest;
   };
-  const daemonHealthz = async (): Promise<(Healthz & Record<string, unknown>) | null> => daemon.request("healthz").then((h) => h as unknown as Healthz & Record<string, unknown>).catch(() => null);
+  // Not through the SDK's client: the daemon's healthz reply carries the document's own `ok`, and `ok: false` (a host
+  // with nothing verified) reads as a refused request there (daemonHealthz.ts; filed upstream).
+  const daemonHealthz = (): Promise<(Healthz & Record<string, unknown>) | null> => readDaemonHealthz(socketPath);
   const first = await refresh();
   log({ event: "daemon_found", socketPath, daemon: client.hello.daemon, storeId, generation: first?.generation ?? null, stagedGeneration: first?.stagedGeneration ?? null, storageProtection: first?.storageProtection ?? null, applyPolicy: first?.applyPolicy ?? null });
 
@@ -359,6 +363,8 @@ async function main(): Promise<void> {
 
 // Run as the main module only (compared by real path: the bundle is reached through /opt/zudocs); a test imports the helpers.
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+  // `verify-root`: the boot script's check of the fetched root document against the pinned key (verifyRoot.ts).
+  if (process.argv[2] === "verify-root") process.exit(verifyRootCommand(process.argv.slice(3)));
   main().catch((error: Error & { code?: string }) => {
     log({ event: "worker_failed", name: error.name, code: error.code ?? null, message: error.message.slice(0, 400) });
     process.exit(1);

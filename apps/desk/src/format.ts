@@ -155,15 +155,16 @@ export function segmentRender(text: string, variables: readonly VariableOrigin[]
 export const ORIGIN_LABELS: Record<VariableOrigin["origin"], string> = { call_site: "call site", your_source: "your source", default: "default", unfilled: "unfilled" };
 
 /** The release bar's sentence from the status rows: the newest generation, how many hosts serve it, what is staged and where. */
-export function releaseSummary(hosts: Array<{ hostId?: string; region?: string; status: { generation?: number; stagedGeneration?: number | null; applyState?: string; lastRefusal?: string | null }; healthz: { status?: string } }>): { generation: number | null; activeOn: number; total: number; staged: { generation: number; hosts: string[] } | null; refusal: string | null; failing: number; degraded: number } {
+export function releaseSummary(hosts: Array<{ hostId?: string; region?: string; status?: { generation?: number; stagedGeneration?: number | null; applyState?: string; lastRefusal?: string | null }; healthz?: { status?: string } }>): { generation: number | null; activeOn: number; total: number; staged: { generation: number; hosts: string[] } | null; refusal: string | null; failing: number; degraded: number } {
   if (hosts.length === 0) return { generation: null, activeOn: 0, total: 0, staged: null, refusal: null, failing: 0, degraded: 0 };
-  const generation = Math.max(...hosts.map((h) => Math.max(h.status.generation ?? 0, h.status.stagedGeneration ?? 0)));
-  const activeOn = hosts.filter((h) => (h.status.generation ?? 0) === generation && h.status.applyState === "active").length;
-  const stagedHosts = hosts.filter((h) => (h.status.stagedGeneration ?? null) !== null);
-  const staged = stagedHosts.length > 0 ? { generation: Math.max(...stagedHosts.map((h) => h.status.stagedGeneration!)), hosts: stagedHosts.map((h) => h.region ?? h.hostId ?? "a host") } : null;
-  const refusal = hosts.map((h) => h.status.lastRefusal ?? null).find((r) => r !== null) ?? null;
-  const failing = hosts.filter((h) => h.healthz.status === "failing").length;
-  const degraded = hosts.filter((h) => h.healthz.status === "degraded").length;
+  const statusOf = (h: (typeof hosts)[number]) => h.status ?? {};
+  const generation = Math.max(...hosts.map((h) => Math.max(statusOf(h).generation ?? 0, statusOf(h).stagedGeneration ?? 0)));
+  const activeOn = hosts.filter((h) => (statusOf(h).generation ?? 0) === generation && statusOf(h).applyState === "active").length;
+  const stagedHosts = hosts.filter((h) => (statusOf(h).stagedGeneration ?? null) !== null);
+  const staged = stagedHosts.length > 0 ? { generation: Math.max(...stagedHosts.map((h) => statusOf(h).stagedGeneration!)), hosts: stagedHosts.map((h) => h.region ?? h.hostId ?? "a host") } : null;
+  const refusal = hosts.map((h) => statusOf(h).lastRefusal ?? null).find((r) => r !== null) ?? null;
+  const failing = hosts.filter((h) => h.healthz?.status === "failing").length;
+  const degraded = hosts.filter((h) => h.healthz?.status === "degraded").length;
   return { generation, activeOn, total: hosts.length, staged, refusal, failing, degraded };
 }
 

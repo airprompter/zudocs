@@ -26,7 +26,7 @@ import { join, relative, resolve } from "node:path";
 import { AirPrompterAgent, checksRefusals, evaluateChecks } from "@airprompter/agent-sdk";
 import { readConfig, repoRoot } from "./lib/config.mjs";
 import { parsePromptFile } from "./lib/promptFiles.mjs";
-import { SCENARIOS, SENTINEL_CUSTOMERS, TIER_SENTINELS, VALUE_SENTINEL, customers, describeVariables, substitutionProof } from "./lib/scenarios.mjs";
+import { SCENARIOS, SENTINEL_CUSTOMERS, TIER_SENTINELS, VALUE_SENTINEL, checkNameProblems, customers, describeVariables, substitutionProof } from "./lib/scenarios.mjs";
 
 const promptsDir = resolve(process.argv[2] ?? join(repoRoot, "prompts"));
 const cli = process.env.AIRPROMPTER_CLI ?? (existsSync(join(repoRoot, ".bin", "airprompter")) ? join(repoRoot, ".bin", "airprompter") : "airprompter");
@@ -106,64 +106,69 @@ try {
 
   // ---- 3. every slot: needs, render, fill, fence, checks
   for (const path of files) {
-    const parsed = parsePromptFile(readFileSync(path, "utf8"));
-    const tag = parsed.meta.tag ?? relative(promptsDir, path).replace(/\.(md|txt|prompt)$/i, "").split("/").join(".").toLowerCase();
-    const scenario = SCENARIOS[tag];
-    console.log(`\n${tag}  (${relative(repoRoot, path)})`);
-    if (!scenario) { fail("no smoke scenario for this slot — add one to scripts/lib/scenarios.mjs"); continue; }
-    // The CLI's own reading of the file, from its --json handshake: "<tag> (<model>, <n> vars)".
-    const served = registry.slots.find((line) => line.startsWith(`${tag} (`));
-    const servedVars = served ? Number(/, (\d+) vars\)$/.exec(served)?.[1]) : NaN;
-    if (servedVars === parsed.variables.length) ok(`the CLI reads ${servedVars} declared variable(s) from the file, as this grammar does`);
-    else fail(`the CLI reads ${served ?? "no such slot"}; the file declares ${parsed.variables.length} variables`);
-
-    const handle = ap.prompt(tag, { subject: scenario.subject });
-    const declared = handle.variables();
-    const needs = handle.needs(scenario.values);
-    console.log(`  declared: ${describeVariables(declared)} · needs after the call site's values: ${JSON.stringify(needs)}`);
-    if (needs.length) fail(`the call site would still miss ${needs.join(", ")}`);
-    let rendered;
     try {
-      rendered = await handle.renderAsync(scenario.values);
-    } catch (error) {
-      fail(`render: ${error.name} ${error.message}${status.applyState === "staged" || status.applyState === "awaiting_unlock" ? " (release.json says unlock_required: run airprompter unlock on this state dir, or seed from an environment whose policy is auto)" : ""}`);
-      continue;
-    }
-    ok(`rendered ${rendered.versionId} on ${rendered.model} (arm ${rendered.arm}, generation ${ap.generation}, ${rendered.text.length} chars)`);
-    if (rendered.versionId !== parsed.meta.version) fail(`the daemon serves version ${rendered.versionId}, the file says ${parsed.meta.version}`);
-    if (rendered.model !== parsed.meta.model) fail(`the daemon serves model ${rendered.model}, the file says ${parsed.meta.model}`);
-    if (rendered.text.includes("{{")) fail("a literal {{placeholder}} survived the render");
-    for (const variable of declared) {
-      if (variable.trust === "end_user") {
-        const value = scenario.values[variable.name];
-        if (rendered.text.includes(`<${variable.name}>${value}</${variable.name}>`)) ok(`${variable.name}: the call site's value is in the render fenced as <${variable.name}>…</${variable.name}>`);
-        else fail(`${variable.name} is declared end-user but the render does not carry the value fenced`);
-      }
-      if (variable.source === "runtime") {
-        // Two customers whose tiers are sentinels no prompt contains: the renders are the same text with one swapped.
-        const [a, b] = await Promise.all(SENTINEL_CUSTOMERS.map((who) => ap.prompt(tag, { subject: who }).renderAsync(scenario.values)));
-        const proof = substitutionProof(a.text, TIER_SENTINELS[0], b.text, TIER_SENTINELS[1]);
-        if (proof.ok) ok(`${variable.name}: filled from the customer table at render time (${proof.occurrences} occurrence(s); ${scenario.subject} renders "${customers.get(scenario.subject).tier}")`);
-        else fail(`${variable.name}: two customers' renders are not one substitution apart (${proof.reason}, ${proof.occurrences} occurrence(s))`);
-      }
-      if (variable.default !== undefined && !(variable.name in scenario.values)) {
-        // Passing a sentinel changes exactly the default's occurrences and nothing else.
-        const passed = await handle.renderAsync({ ...scenario.values, [variable.name]: VALUE_SENTINEL });
-        const proof = substitutionProof(passed.text, VALUE_SENTINEL, rendered.text, variable.default);
-        if (proof.ok) ok(`${variable.name}: nobody passed it and the declared default "${variable.default}" rendered (${proof.occurrences} occurrence(s)); a passed value replaces exactly that`);
-        else fail(`${variable.name}: the default "${variable.default}" is not what a passed value replaces (${proof.reason})`);
-      }
-    }
-    if (rendered.text.includes("## Success criteria")) ok("carries a ## Success criteria section for ap.judge(…, \"prompt\")");
-    else if (scenario.criteria) fail("no ## Success criteria section, and this slot's judge rubric is the prompt's own");
-    if (parsed.inference) ok(`version settings in the file (the pin's wire form): ${JSON.stringify(parsed.inference)}${rendered.inference ? ` · on the dev wire as ${JSON.stringify(rendered.inference)}` : " · not on the dev wire (the dev grammar has no inference line)"}`);
+      const parsed = parsePromptFile(readFileSync(path, "utf8"));
+      const tag = parsed.meta.tag ?? relative(promptsDir, path).replace(/\.(md|txt|prompt)$/i, "").split("/").join(".").toLowerCase();
+      const scenario = SCENARIOS[tag];
+      console.log(`\n${tag}  (${relative(repoRoot, path)})`);
+      if (!scenario) { fail("no smoke scenario for this slot — add one to scripts/lib/scenarios.mjs"); continue; }
+      // The CLI's own reading of the file, from its --json handshake: "<tag> (<model>, <n> vars)".
+      const served = registry.slots.find((line) => line.startsWith(`${tag} (`));
+      const servedVars = served ? Number(/, (\d+) vars\)$/.exec(served)?.[1]) : NaN;
+      if (servedVars === parsed.variables.length) ok(`the CLI reads ${servedVars} declared variable(s) from the file, as this grammar does`);
+      else fail(`the CLI reads ${served ?? "no such slot"}; the file declares ${parsed.variables.length} variables`);
 
-    const fromDaemon = ap.checks(rendered, scenario.answer, { record: false });
-    const refusals = checksRefusals(parsed.checks);
-    if (refusals.length) fail(`checks refused by the evaluator: ${JSON.stringify(refusals)}`);
-    const outcome = evaluateChecks(parsed.checks, { text: scenario.answer, outputTokens: null });
-    for (const result of outcome.results) (result.verdict === "pass" ? ok : fail)(`check ${result.name} (${result.kind}): ${result.verdict === "pass" ? "pass" : `fail — ${result.reason}`}`);
-    console.log(`  checks: ${outcome.passed} passed, ${outcome.failed} failed, ${parsed.checks.length} declared in the file · ${fromDaemon.results.length} declared on the dev wire (the dev grammar has no checks line)`);
+      const handle = ap.prompt(tag, { subject: scenario.subject });
+      const declared = handle.variables();
+      const needs = handle.needs(scenario.values);
+      console.log(`  declared: ${describeVariables(declared)} · needs after the call site's values: ${JSON.stringify(needs)}`);
+      if (needs.length) fail(`the call site would still miss ${needs.join(", ")}`);
+      let rendered;
+      try {
+        rendered = await handle.renderAsync(scenario.values);
+      } catch (error) {
+        fail(`render: ${error.name} ${error.message}${status.applyState === "staged" || status.applyState === "awaiting_unlock" ? " (release.json says unlock_required: run airprompter unlock on this state dir, or seed from an environment whose policy is auto)" : ""}`);
+        continue;
+      }
+      ok(`rendered ${rendered.versionId} on ${rendered.model} (arm ${rendered.arm}, generation ${ap.generation}, ${rendered.text.length} chars)`);
+      if (rendered.versionId !== parsed.meta.version) fail(`the daemon serves version ${rendered.versionId}, the file says ${parsed.meta.version}`);
+      if (rendered.model !== parsed.meta.model) fail(`the daemon serves model ${rendered.model}, the file says ${parsed.meta.model}`);
+      if (rendered.text.includes("{{")) fail("a literal {{placeholder}} survived the render");
+      for (const variable of declared) {
+        if (variable.trust === "end_user") {
+          const value = scenario.values[variable.name];
+          if (rendered.text.includes(`<${variable.name}>${value}</${variable.name}>`)) ok(`${variable.name}: the call site's value is in the render fenced as <${variable.name}>…</${variable.name}>`);
+          else fail(`${variable.name} is declared end-user but the render does not carry the value fenced`);
+        }
+        if (variable.source === "runtime") {
+          // Two customers whose tiers are sentinels no prompt contains: the renders are the same text with one swapped.
+          const [a, b] = await Promise.all(SENTINEL_CUSTOMERS.map((who) => ap.prompt(tag, { subject: who }).renderAsync(scenario.values)));
+          const proof = substitutionProof(a.text, TIER_SENTINELS[0], b.text, TIER_SENTINELS[1]);
+          if (proof.ok) ok(`${variable.name}: filled from the customer table at render time (${proof.occurrences} occurrence(s); ${scenario.subject} renders "${customers.get(scenario.subject).tier}")`);
+          else fail(`${variable.name}: two customers' renders are not one substitution apart (${proof.reason}, ${proof.occurrences} occurrence(s))`);
+        }
+        if (variable.default !== undefined && !(variable.name in scenario.values)) {
+          // Passing a sentinel changes exactly the default's occurrences and nothing else.
+          const passed = await handle.renderAsync({ ...scenario.values, [variable.name]: VALUE_SENTINEL });
+          const proof = substitutionProof(passed.text, VALUE_SENTINEL, rendered.text, variable.default);
+          if (proof.ok) ok(`${variable.name}: nobody passed it and the declared default "${variable.default}" rendered (${proof.occurrences} occurrence(s)); a passed value replaces exactly that`);
+          else fail(`${variable.name}: the default "${variable.default}" is not what a passed value replaces (${proof.reason})`);
+        }
+      }
+      if (rendered.text.includes("## Success criteria")) ok("carries a ## Success criteria section for ap.judge(…, \"prompt\")");
+      else if (scenario.criteria) fail("no ## Success criteria section, and this slot's judge rubric is the prompt's own");
+      if (parsed.inference) ok(`version settings in the file (the pin's wire form): ${JSON.stringify(parsed.inference)}${rendered.inference ? ` · on the dev wire as ${JSON.stringify(rendered.inference)}` : " · not on the dev wire (the dev grammar has no inference line)"}`);
+
+      const fromDaemon = ap.checks(rendered, scenario.answer, { record: false });
+      const refusals = checksRefusals(parsed.checks);
+      if (refusals.length) fail(`checks refused by the evaluator: ${JSON.stringify(refusals)}`);
+      const outcome = evaluateChecks(parsed.checks, { text: scenario.answer, outputTokens: null });
+      for (const result of outcome.results) (result.verdict === "pass" ? ok : fail)(`check ${result.name} (${result.kind}): ${result.verdict === "pass" ? "pass" : `fail — ${result.reason}`}`);
+      console.log(`  checks: ${outcome.passed} passed, ${outcome.failed} failed, ${parsed.checks.length} declared in the file · ${fromDaemon.results.length} declared on the dev wire (the dev grammar has no checks line)`);
+      for (const problem of checkNameProblems(parsed.checks.map((c) => c.name), scenario.checks)) fail(`checks in the file: ${problem}`);
+    } catch (error) {
+      fail(`${relative(repoRoot, path)}: ${error.name}: ${error.message}`);
+    }
   }
 
   // ---- 4. golden sets seeded beside the prompts (shape only: a golden run needs the model)

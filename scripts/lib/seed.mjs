@@ -10,8 +10,9 @@
  * not as a corrupt file.
  *
  * The write replaces a registry, never an arbitrary directory: a non-empty target must carry a registry marker
- * (`.gitkeep`, `.airprompter-dev/` or `release.json`) and hold nothing but registry-shaped entries. New files are
- * written before stale ones are removed, so a failure part-way leaves old and new side by side, never neither.
+ * (`.gitkeep`, `.airprompter-dev/`, or a `release.json` of this seed's own shape), hold nothing but registry-shaped
+ * entries at every depth, and contain no symbolic link. New files are written before stale ones are removed, so a
+ * failure part-way leaves old and new side by side, never neither.
  *
  * @example
  * ```js
@@ -19,7 +20,7 @@
  * writeSeed({ outDir: "./prompts", plan });              // refuses a directory that holds anything but a registry
  * ```
  */
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileFor } from "./promptFiles.mjs";
 
@@ -29,7 +30,8 @@ import { fileFor } from "./promptFiles.mjs";
  */
 const REGISTRY_ENTRY = /^(\.gitkeep|\.airprompter-dev|golden|release\.json|[a-z0-9]+(?:[_-][a-z0-9]+)*(?:\.md)?)$/;
 /** Proof that a directory is a registry and not somebody's home: one of these must be present before anything goes. */
-const MARKERS = new Set([".gitkeep", ".airprompter-dev", "release.json"]);
+const MARKERS = new Set([".gitkeep", ".airprompter-dev"]);
+const GOLDEN_ENTRY = /^[a-z0-9]+(?:[._-][a-z0-9]+)*\.json$/;
 const KEPT = new Set([".gitkeep", ".airprompter-dev"]);
 /** Finder and editors leave these; they are deleted with the stale files rather than refused. */
 const NOISE = new Set([".DS_Store", "Thumbs.db"]);
@@ -57,6 +59,11 @@ export async function planSeed({ api, config }) {
   const skipped = pins.filter((pin) => pin.kind !== "prompt").map((pin) => pin.tag);
 
   const files = [];
+  for (const pin of pins) {
+    const kind = field(pin, "kind", `release.pins[${pin.tag ?? "?"}]`);
+    if (kind !== "prompt" && kind !== "workflow") throw new Error(`release.pins[${pin.tag ?? "?"}]: kind ${JSON.stringify(kind)} is not prompt or workflow (the console API changed; update scripts/lib/seed.mjs)`);
+  }
+  if (prompts.length === 0) throw new Error(`${config.environment}: the promoted release names no prompt slot (${pins.length} pins) — nothing to seed`);
   for (const pin of prompts) {
     for (const name of ["tag", "artifactId", "versionId", "model"]) field(pin, name, `release.pins[${pin.tag ?? "?"}]`);
     const version = await api(`/team/prompts/${pin.artifactId}/versions/${pin.versionId}`);
@@ -86,15 +93,49 @@ export async function planSeed({ api, config }) {
   };
 }
 
+/** A `release.json` counts as a marker only when it is this seed's own shape, not any file of that name. */
+function isSeedReleaseJson(path) {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    return (parsed.applyPolicy === "auto" || parsed.applyPolicy === "unlock_required") && Number.isInteger(parsed.leaseSeconds);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Everything under `dir` (the keep file and the dev keys excepted) must look like a registry: tag-shaped
+ * directories and `.md` leaves, `golden/<tag>.json`, `release.json`; no symbolic link anywhere. Returns the
+ * offending relative paths, so the caller can refuse before touching anything.
+ */
+function foreignEntries(dir, prefix = "") {
+  const foreign = [];
+  for (const entry of readdirSync(dir)) {
+    const rel = prefix ? `${prefix}/${entry}` : entry;
+    if (!prefix && (KEPT.has(entry) || NOISE.has(entry))) continue;
+    const path = join(dir, entry);
+    const stat = lstatSync(path);
+    if (stat.isSymbolicLink()) { foreign.push(`${rel} (a symbolic link)`); continue; }
+    const inGolden = prefix === "golden";
+    const shape = inGolden ? GOLDEN_ENTRY.test(entry) && stat.isFile() : REGISTRY_ENTRY.test(entry) && (stat.isDirectory() ? !entry.endsWith(".md") && entry !== "release.json" : entry.endsWith(".md") || (!prefix && entry === "release.json"));
+    if (!shape) { foreign.push(rel); continue; }
+    if (stat.isDirectory() && !inGolden) foreign.push(...foreignEntries(path, rel));
+  }
+  return foreign;
+}
+
 /**
  * Write the plan into `outDir`: refuse anything that is not a registry, write the new files, then remove what the
  * plan no longer names — everything but the keep file and the dev keys.
  */
 export function writeSeed({ outDir, plan }) {
+  if (plan.files.length === 0) throw new Error("the plan names no files — refusing to write an empty registry");
   if (existsSync(outDir)) {
+    if (lstatSync(outDir).isSymbolicLink()) throw new Error(`${outDir} is a symbolic link — refusing to write through it`);
     const entries = readdirSync(outDir).filter((entry) => !NOISE.has(entry));
-    if (entries.length && !entries.some((entry) => MARKERS.has(entry))) throw new Error(`${outDir} is not empty and carries no registry marker (.gitkeep, .airprompter-dev or release.json) — refusing to replace it`);
-    const foreign = entries.filter((entry) => !REGISTRY_ENTRY.test(entry));
+    const marked = entries.some((entry) => MARKERS.has(entry) || (entry === "release.json" && isSeedReleaseJson(join(outDir, entry))));
+    if (entries.length && !marked) throw new Error(`${outDir} is not empty and carries no registry marker (.gitkeep, .airprompter-dev, or a release.json this seed wrote) — refusing to replace it`);
+    const foreign = foreignEntries(outDir);
     if (foreign.length) throw new Error(`${outDir} holds ${foreign.slice(0, 5).join(", ")}${foreign.length > 5 ? ", …" : ""} — not a prompt registry, refusing to replace it (a README.md there would be served as a slot; keep docs outside the directory)`);
   }
   mkdirSync(outDir, { recursive: true });
@@ -116,7 +157,7 @@ function removeStale(root, prefix, written) {
     const rel = prefix ? `${prefix}/${entry}` : entry;
     if (!prefix && KEPT.has(entry)) continue;
     const path = join(root, rel);
-    if (statSync(path).isDirectory()) {
+    if (lstatSync(path).isDirectory()) {
       removeStale(root, rel, written);
       if (readdirSync(path).length === 0) rmSync(path, { recursive: true });
     } else if (!written.has(rel)) {

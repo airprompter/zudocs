@@ -97,11 +97,14 @@ two lines the CLI ignores but the smoke reads, `checks:` (the pin's enabled chec
 settings in the wire's integers, `temperatureMilli` and so on) as JSON — then the version's text; `release.json`
 with the environment's apply policy and lease; `golden/<tag>.json` for each golden set, refused when the slot's set
 is no longer the one the release pinned. It writes only after every read succeeded, only into a directory that is
-a registry — empty, or carrying `.gitkeep`, `.airprompter-dev/` or `release.json` and nothing foreign — writing
+a registry — empty, or carrying `.gitkeep`, `.airprompter-dev/` or a `release.json` of its own shape, nothing
+foreign at any depth and no symbolic link — writing
 the new files first and then removing what the release no longer names, except `.gitkeep` and `.airprompter-dev/`
 (the dev keys and the generation counter, so a client that holds generation N never sees a fresh N). The four routes it reads are
 the console's own workspace API — what the app's pages call, with no compatibility promise — so every field it
-depends on is checked by name and a rename fails as an error, never as a corrupt file.
+depends on is checked by name and a rename fails as an error, never as a corrupt file (the optional ones —
+variables, checks, settings, the golden reference — are cross-checked by the smoke against what each slot is
+known to declare).
 
 The CLI is installed by hand, not by npm: download `airprompter-darwin-arm64` (or your platform) and its `.sha256`
 from the `cli/v0.1.0` release of `airprompter/airprompter-agent-sdk`, compare digests, `chmod +x`, and put it at
@@ -110,7 +113,7 @@ from the `cli/v0.1.0` release of `airprompter/airprompter-agent-sdk`, compare di
 `npm run dev:proof` is the same render against AirPrompter itself: the SDK syncs the promoted release with the
 Agent key from the environment, verifies it against `keys/dev.root.jwk.json`, renders `support.reply` (or the slot
 named on the command line) for a customer whose tier its own table supplies, runs the checks on the wire against a
-canned answer without recording them, and sends one heartbeat. It invents nothing: no observation of a model call
+canned answer without recording them, and sends a heartbeat. It invents nothing: no observation of a model call
 that did not happen.
 
 Both scripts prove what they claim without showing a render (`scripts/lib/scenarios.mjs`): two customers whose

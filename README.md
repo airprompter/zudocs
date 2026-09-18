@@ -40,7 +40,7 @@ eval "$(.bin/airprompter login --email you@zudocs.com --base-url https://api-dev
 npm run prompts:seed            # ./prompts from the release promoted to dev (prompt text stays out of git)
 npm run dev:smoke               # airprompter dev --daemon + the SDK: every slot renders, fills, fences, passes its checks (no model)
 set -a; . ~/.config/zudocs/dev.env; set +a        # the Agent key, from a 0600 file, into the environment
-npm run dev:proof               # the same render against AirPrompter dev: two customers, two tiers, one heartbeat
+npm run dev:proof               # the same render against AirPrompter dev: two customers, two tiers, a heartbeat
 ```
 
 ## Run the checks

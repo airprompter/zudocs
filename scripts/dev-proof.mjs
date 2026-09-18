@@ -3,7 +3,7 @@
  * The desk's runtime path against AirPrompter itself: the public SDK syncs the release promoted to the configured
  * environment (`airprompter.config.json`; the Agent key from `AIRPROMPTER_AGENT_KEY` in the environment), verifies
  * it against the pinned root under `keys/`, and renders a slot — `support.reply` by default — for a customer whose
- * plan tier comes from this script's own customer table, the `customer_tier` variable the prompt declares as filled
+ * plan tier comes from the desk's miniature customer table, the `customer_tier` variable the prompt declares as filled
  * by the runtime. Every claim is proved without showing the render (two sentinel tiers, one substitution apart; a
  * passed sentinel against the default; the fenced value found whole — `scripts/lib/scenarios.mjs`). It prints
  * generation, version, model, arm, what the runtime fills and what it still needs, and no prompt text — never the
@@ -21,10 +21,17 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AirPrompterAgent } from "@airprompter/agent-sdk";
 import { readConfig, repoRoot, secretFromEnv } from "./lib/config.mjs";
-import { SCENARIOS, SENTINEL_CUSTOMERS, TIER_SENTINELS, VALUE_SENTINEL, customers, describeVariables, substitutionProof } from "./lib/scenarios.mjs";
+import { SCENARIOS, SENTINEL_CUSTOMERS, TIER_SENTINELS, VALUE_SENTINEL, checkNameProblems, customers, describeVariables, substitutionProof } from "./lib/scenarios.mjs";
 
-const config = readConfig();
-const apiKey = secretFromEnv("AIRPROMPTER_AGENT_KEY", "an Agent key from the app's Settings › Keys");
+let config;
+let apiKey;
+try {
+  config = readConfig();
+  apiKey = secretFromEnv("AIRPROMPTER_AGENT_KEY", "an Agent key from the app's Settings › Keys");
+} catch (error) {
+  console.log(error.message);
+  process.exit(2);
+}
 const tag = process.argv[2] ?? "support.reply";
 const scenario = SCENARIOS[tag];
 if (!scenario) {
@@ -42,7 +49,9 @@ const fail = (message) => { failures += 1; console.log(`  ✗ ${message}`); };
 const ok = (message) => console.log(`  ✓ ${message}`);
 
 const events = [];
-const ap = await AirPrompterAgent.start({
+let ap;
+try {
+  ap = await AirPrompterAgent.start({
   organizationId: config.organizationId,
   agentId: config.agentId,
   target: config.environment,
@@ -55,7 +64,11 @@ const ap = await AirPrompterAgent.start({
   telemetry: { upload: false },
   variables: { customer_tier: { resolve: async ({ subject }) => customers.get(subject)?.tier, trust: "operator", timeoutMs: 500 } },
   logger: (event) => events.push(event),
-});
+  });
+} catch (error) {
+  console.log(`start failed: ${error.name}: ${error.message}`);
+  process.exit(1);
+}
 try {
   const status = ap.status();
   console.log(`${config.environment} · generation ${ap.generation} · ${status.applyState} · release from ${status.source} · ${status.storageProtection} · lease until ${status.leaseExpiresAt ?? "n/a"} · policy ${status.applyPolicy.effective} (${status.applyPolicy.source})`);
@@ -91,12 +104,12 @@ try {
   else if (scenario.criteria) fail("no ## Success criteria section, and this slot's judge rubric is the prompt's own");
   const checks = ap.checks(rendered, scenario.answer, { record: false });
   for (const result of checks.results) (result.verdict === "pass" ? ok : fail)(`check ${result.name} (${result.kind}) on the wire, run on a canned answer and not recorded: ${result.verdict}${result.reason ? ` — ${result.reason}` : ""}`);
-  if (checks.results.length === 0) console.log("  no checks declared on the wire for this slot");
+  for (const problem of checkNameProblems(checks.results.map((r) => r.name), scenario.checks)) fail(`checks on the wire: ${problem}`);
   await ap.heartbeatNow();
   const after = ap.status();
   if (after.heartbeat.lastAt) ok(`heartbeat sent at ${after.heartbeat.lastAt} (this instance reports models ${JSON.stringify(config.models)} and variables ${JSON.stringify(after.variables.sources)})`);
   else fail(`heartbeat refused: ${after.heartbeat.lastRefusal ?? "no reason recorded"}`);
-  for (const event of events.filter((e) => ["variable_source_failed", "variable_source_trust_stricter", "refused", "sync_failed", "heartbeat_refused"].includes(String(e.event)))) console.log("log:", JSON.stringify(event));
+  for (const event of events.filter((e) => /_refused$|_failed$|_stricter$/.test(String(e.event)))) console.log("log:", JSON.stringify(event));
 } catch (error) {
   fail(`${error.name}: ${error.message}`);
 } finally {

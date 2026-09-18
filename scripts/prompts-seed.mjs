@@ -25,19 +25,27 @@ import { readConfig, repoRoot, secretFromEnv } from "./lib/config.mjs";
 import { planSeed, writeSeed } from "./lib/seed.mjs";
 
 const argv = process.argv.slice(2);
-const outArg = argv.indexOf("--out");
-if (outArg !== -1 && (argv[outArg + 1] === undefined || argv[outArg + 1].startsWith("--"))) {
-  console.log("--out takes a directory");
+let outDir = join(repoRoot, "prompts");
+for (let i = 0; i < argv.length; i += 1) {
+  if (argv[i] === "--out" && i + 1 < argv.length && !argv[i + 1].startsWith("-") && argv[i + 1].trim()) {
+    if (argv.indexOf("--out") !== i) usage("--out was given twice");
+    outDir = resolve(argv[i + 1]);
+    i += 1;
+  } else usage(`unknown argument ${JSON.stringify(argv[i])} — the only option is --out <directory>`);
+}
+function usage(message) {
+  console.log(message);
   process.exit(2);
 }
-const unknown = argv.filter((arg, index) => !(index === outArg || index === outArg + 1));
-if (unknown.length) {
-  console.log(`unknown argument ${unknown[0]} — the only option is --out <directory>`);
+let config;
+let token;
+try {
+  config = readConfig();
+  token = secretFromEnv("AIRPROMPTER_SESSION_TOKEN", "the session token `airprompter login` prints");
+} catch (error) {
+  console.log(error.message);
   process.exit(2);
 }
-const outDir = resolve(outArg === -1 ? join(repoRoot, "prompts") : argv[outArg + 1]);
-const config = readConfig();
-const token = secretFromEnv("AIRPROMPTER_SESSION_TOKEN", "the session token `airprompter login` prints");
 
 const api = async (path) => {
   const response = await fetch(`${config.baseUrl}${path}`, { headers: { authorization: `Bearer ${token}`, accept: "application/json" } });

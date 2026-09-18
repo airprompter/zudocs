@@ -92,8 +92,13 @@ the demo beat, not a thing to hide; the SDK gap (`airprompterd --key-provider`) 
 
 Generations are monotonic. `airprompter rollback` on the host is a forced downgrade: the fleet page reports it,
 the daemon holds that generation and older back, and the desk shows *forced downgrade* on the card until the console
-promotes something newer — which then arrives staged, for the owner to approve. A tightened policy pin is loosened
-only by `zudocs-cli policy set auto` on the host. Nothing here restores an old state; every reset is a promotion.
+promotes something newer — which then arrives staged, for the owner to approve (or for `zudocs-cli unlock` on the
+host). Two things the drill taught: a release is content-addressed, so sealing the same pins again is the same
+digest and "already what runs here" — advancing needs a real change (a version, a setting); and the SDK never
+clears the `forcedDowngrade` flag once the host has moved past the rollback (`heldBackBelow` lifts, the flag stays),
+so the card keeps saying *forced downgrade* until the store is replaced — filed upstream (#45). A tightened policy
+pin is loosened only by `zudocs-cli policy set auto` on the host. Nothing here restores an old state; every reset
+is a promotion.
 
 ## The wire-cut drill
 

@@ -25,6 +25,10 @@ import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 
 export const CUT_TAG = "zudocs:wire-cut-at";
 export type WireState = "connected" | "cut";
+/** EC2 accepts rule descriptions from this set only (no apostrophe — the first real restore learned that). */
+export const RULE_DESCRIPTION = /^[a-zA-Z0-9. _\-:/()#,@\[\]+=&;{}!$*]{1,255}$/;
+export const OPEN_DESCRIPTION = "zudocs: outbound to AirPrompter, Bedrock and the desk tables";
+export const CUT_DESCRIPTION = "zudocs wire cut: DynamoDB only";
 
 export interface WireEvent {
   action?: "cut" | "restore" | "tick" | "status";
@@ -67,7 +71,7 @@ export function dynamoCidrsOf(ipRanges: { prefixes: Array<{ ip_prefix: string; r
 }
 
 const isOpenAll = (p: IpPermission): boolean => p.IpProtocol === "-1" && (p.IpRanges ?? []).some((r) => r.CidrIp === "0.0.0.0/0");
-const isDynamoHttps = (p: IpPermission): boolean => p.IpProtocol === "tcp" && p.FromPort === 443 && p.ToPort === 443 && (p.IpRanges ?? []).some((r) => r.Description === "zudocs wire cut: DynamoDB only");
+const isDynamoHttps = (p: IpPermission): boolean => p.IpProtocol === "tcp" && p.FromPort === 443 && p.ToPort === 443 && (p.IpRanges ?? []).some((r) => r.Description === CUT_DESCRIPTION);
 
 /** What the group's egress says: connected when the open rule is present, cut otherwise. Pure. */
 export function stateOf(group: Pick<SecurityGroup, "IpPermissionsEgress" | "Tags">): { state: WireState; cutAt: string | null; egress: string[] } {
@@ -115,7 +119,7 @@ export async function wire(event: WireEvent, ports: WirePorts): Promise<WireAnsw
     const current = stateOf(group);
     let changed = false;
     if (current.state === "cut") {
-      await ec2.send(new AuthorizeSecurityGroupEgressCommand({ GroupId: env.securityGroupId, IpPermissions: [{ IpProtocol: "-1", IpRanges: [{ CidrIp: "0.0.0.0/0", Description: "zudocs: outbound to AirPrompter, Bedrock and the desk's tables" }] }] }));
+      await ec2.send(new AuthorizeSecurityGroupEgressCommand({ GroupId: env.securityGroupId, IpPermissions: [{ IpProtocol: "-1", IpRanges: [{ CidrIp: "0.0.0.0/0", Description: OPEN_DESCRIPTION }] }] }));
       changed = true;
     }
     const dynamoRules = (group.IpPermissionsEgress ?? []).filter(isDynamoHttps);
@@ -149,7 +153,7 @@ export async function wire(event: WireEvent, ports: WirePorts): Promise<WireAnsw
       if (cidrs.length === 0 || cidrs.length > 20) throw new Error(`wire: ${cidrs.length} DynamoDB CIDRs for ${env.dynamoRegion}; expected a handful (a group holds 60 rules)`);
       const cutAt = new Date(now()).toISOString();
       // Order: the narrow rules first, then the open one goes — the status writer never loses the tables.
-      await ec2.send(new AuthorizeSecurityGroupEgressCommand({ GroupId: env.securityGroupId, IpPermissions: [{ IpProtocol: "tcp", FromPort: 443, ToPort: 443, IpRanges: cidrs.map((CidrIp) => ({ CidrIp, Description: "zudocs wire cut: DynamoDB only" })) }] }));
+      await ec2.send(new AuthorizeSecurityGroupEgressCommand({ GroupId: env.securityGroupId, IpPermissions: [{ IpProtocol: "tcp", FromPort: 443, ToPort: 443, IpRanges: cidrs.map((CidrIp) => ({ CidrIp, Description: CUT_DESCRIPTION })) }] }));
       await ec2.send(new CreateTagsCommand({ Resources: [env.securityGroupId], Tags: [{ Key: CUT_TAG, Value: cutAt }] }));
       const open = (group.IpPermissionsEgress ?? []).filter(isOpenAll);
       await ec2.send(new RevokeSecurityGroupEgressCommand({ GroupId: env.securityGroupId, IpPermissions: open.map((p) => ({ IpProtocol: "-1", IpRanges: p.IpRanges?.filter((r) => r.CidrIp === "0.0.0.0/0").map((r) => ({ CidrIp: r.CidrIp })) })) }));

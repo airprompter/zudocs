@@ -122,9 +122,11 @@ if (run.status !== 200 && run.status !== 502) {
   }
   const reply = record.steps.find((s) => s.step === "reply");
   const triage = record.steps.find((s) => s.step === "triage");
-  (reply?.versionId === "rev-2" && reply.generation >= 1 ? ok : fail)(`the reply rendered prompt version ${reply?.versionId} at release #${reply?.generation}`);
-  (reply?.model === "openai.gpt-5-6-luna" ? ok : fail)(`the reply's model is the release's (${reply?.model})`);
-  (reply?.output && reply.observation?.status === "ok" ? ok : fail)(`Luna answered through Bedrock: ${reply?.observation?.status ?? "no observation"}${reply?.error ? ` — ${reply.error.message}` : ""}`);
+  const expectedGeneration = process.env.ZUDOCS_EXPECT_GENERATION ? Number(process.env.ZUDOCS_EXPECT_GENERATION) : null;
+  (reply?.versionId && /^rev-\d+$/.test(reply.versionId) && reply.generation >= 1 && (expectedGeneration === null || reply.generation === expectedGeneration) ? ok : fail)(`the reply rendered prompt version ${reply?.versionId} at release #${reply?.generation}${expectedGeneration !== null ? ` (expected #${expectedGeneration})` : ""}`);
+  // The release's model is the catalogue's: Luna is the intended one, Nova 2 Lite the one pinned while the account's gate is up (docs/PROMPTS.md).
+  (reply?.model && ["openai.gpt-5-6-luna", "amazon.nova-2-lite"].includes(reply.model) ? ok : fail)(`the reply's model is the release's (${reply?.model})`);
+  (reply?.output && reply.observation?.status === "ok" ? ok : fail)(`${reply?.model ?? "the model"} answered through Bedrock: ${reply?.observation?.status ?? "no observation"}${reply?.error ? ` — ${reply.error.message}` : ""}`);
   (triage?.output && triage.observation?.status === "ok" ? ok : fail)(`Nova Micro answered through Bedrock: ${triage?.observation?.status ?? "no observation"}${triage?.error ? ` — ${triage.error.message}` : ""}`);
   (record.triage?.category ? ok : fail)(`triage read as ${JSON.stringify(record.triage)}`);
   (reply?.observation?.usageSource === "reported" ? ok : fail)(`usage reported by the provider (${reply?.observation?.usageSource})`);
@@ -139,7 +141,8 @@ if (run.status !== 200 && run.status !== 502) {
 
 const after = await api("GET", "/state");
 const row = after.json.hosts.find((h) => h.hostId === host.hostId);
-(row && row.status.generation === host.status.generation ? ok : fail)(`the status table holds this host's row (written ${row?.writtenAt}, healthz ${row?.healthz?.status}, heartbeat ${row?.status?.heartbeat?.lastAt ?? "none"})`);
+// The row is written after the run; a promotion that landed on this very invocation moves it past what /state said before.
+(row && row.status.generation >= host.status.generation ? ok : fail)(`the status table holds this host's row (generation ${row?.status?.generation}, written ${row?.writtenAt}, healthz ${row?.healthz?.status}, heartbeat ${row?.status?.heartbeat?.lastAt ?? "none"})`);
 const events = (await api("GET", "/events")).json.events;
 const kinds = events.reduce((acc, e) => ({ ...acc, [e.kind]: (acc[e.kind] ?? 0) + 1 }), {});
 (events.some((e) => e.kind === "ticket_run") && events.some((e) => e.kind === "host_started") ? ok : fail)(`the events table fills: ${JSON.stringify(kinds)}`);

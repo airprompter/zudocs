@@ -87,7 +87,7 @@ export class SharedHostStack extends cdk.Stack {
     const cfnSubnet = new ec2.CfnSubnet(this, "PublicSubnet", { vpcId: cfnVpc.ref, cidrBlock: "10.42.0.0/24", availabilityZone: zone, mapPublicIpOnLaunch: true, tags: [{ key: "Name", value: "zudocs-eu-host/public" }] });
     const routeTable = new ec2.CfnRouteTable(this, "PublicRouteTable", { vpcId: cfnVpc.ref });
     const route = new ec2.CfnRoute(this, "PublicRoute", { routeTableId: routeTable.ref, destinationCidrBlock: "0.0.0.0/0", gatewayId: igw.ref });
-    route.addDependency(attached);
+    route.addResourceDependency(attached);
     const association = new ec2.CfnSubnetRouteTableAssociation(this, "PublicRouteAssociation", { subnetId: cfnSubnet.ref, routeTableId: routeTable.ref });
     const vpc = ec2.Vpc.fromVpcAttributes(this, "VpcRef", { vpcId: cfnVpc.ref, availabilityZones: [zone], publicSubnetIds: [cfnSubnet.ref], publicSubnetRouteTableIds: [routeTable.ref] });
     this.securityGroup = new ec2.SecurityGroup(this, "HostGroup", { vpc, description: "Zudocs eu-west host: no inbound; egress replaced by the wire function for the drill", allowAllOutbound: true });

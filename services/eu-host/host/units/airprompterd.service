@@ -19,8 +19,8 @@ Type=simple
 User=airprompter
 Group=airprompter
 # The key file first, as root (the + prefix): a rotated parameter is picked up at the next restart. The file is
-# optional to systemd (the leading -) so a start can run ExecStartPre before it exists; the daemon then refuses to
-# serve without the key (it logs `offline`), and the next restart tries the parameter again.
+# optional to systemd (the leading -) so the start can reach ExecStartPre before it exists; when the parameter is
+# not readable ExecStartPre fails, the daemon does not start, and Restart=always tries again in five seconds.
 ExecStartPre=+/usr/local/sbin/zudocs-agent-key
 EnvironmentFile=/etc/airprompter/zudocs.env
 EnvironmentFile=-/etc/airprompter/airprompterd.env

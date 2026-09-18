@@ -113,9 +113,10 @@ old one and restores it on its next pass, so neither strands the host.
 
 `npm run eu:proof` (with `ZUDOCS_PROOF_PASSWORD` in the environment) reads the stack outputs in both regions,
 signs in through the proof client, checks the host's row (daemon host, `file_key`, `unlock_required`, both workers
-attached, the stack's instance id, fresh), runs `airprompter status --json` and `doctor --json` on the host
-through Run Command (the CLI's own output is printed; `doctor` must warn `key_protection: file_key` and fail
-nothing), and with flags: `--approve` (approve what is staged, prove the second approve is not a decision, wait
+attached once the host serves, the stack's instance id, fresh), runs `airprompter status --json` and `doctor
+--json` on the host through Run Command (the CLI's own output is printed; `doctor` must warn `key_protection:
+file_key` and fail nothing — on a host with nothing active yet it also reports `active_release` and `daemon` as
+failing, which the proof expects), and with flags — on a fresh or replaced host, `--approve` first: `--approve` (approve what is staged, prove the second approve is not a decision, wait
 for the activation and the card), `--enqueue T-1041` (run one ticket on eu-west now, read the record), `--cli
 unlock` / `--cli rollback` / `--cli "policy show"` (the operator's commands on the host's shell), `--wire` (cut,
 watch `sync_failing`, restore, watch it recover).

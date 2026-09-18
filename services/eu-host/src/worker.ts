@@ -99,16 +99,25 @@ export function unlockResultOf(answer: Record<string, unknown>): { generation: n
  */
 class Daemon {
   private client: DaemonClient | null = null;
+  private connecting: Promise<DaemonClient | null> | null = null;
   constructor(private readonly socketPath: string, private readonly scope: { agentId: string; target: "dev" | "staging" | "prod" }) {}
-  async get(): Promise<DaemonClient | null> {
-    if (this.client) return this.client;
-    const client = await DaemonClient.connect({ socketPath: this.socketPath, agentId: this.scope.agentId, target: this.scope.target, sdk: `zudocs-worker/${WORKER_VERSION}` });
-    if (!client) return null;
-    client.onClose(() => {
-      if (this.client === client) this.client = null;
-    });
-    this.client = client;
-    return client;
+  /** One connection: two callers in the same moment share one connect, so a restart never leaves an orphaned socket. */
+  get(): Promise<DaemonClient | null> {
+    if (this.client) return Promise.resolve(this.client);
+    if (this.connecting) return this.connecting;
+    this.connecting = DaemonClient.connect({ socketPath: this.socketPath, agentId: this.scope.agentId, target: this.scope.target, sdk: `zudocs-worker/${WORKER_VERSION}` })
+      .then((client) => {
+        if (!client) return null;
+        client.onClose(() => {
+          if (this.client === client) this.client = null;
+        });
+        this.client = client;
+        return client;
+      })
+      .finally(() => {
+        this.connecting = null;
+      });
+    return this.connecting;
   }
   get hello(): DaemonClient["hello"] | null {
     return this.client?.hello ?? null;
@@ -143,7 +152,9 @@ async function main(): Promise<void> {
     log({ event: "daemon_absent", socketPath });
     process.exit(3);
   }
-  const storeId = client.hello.storeId ?? client.hello.instanceId;
+  /** The store the daemon serves from, as of the current connection: a wiped store under a restarted daemon is a new id. */
+  const storeIdNow = (): string => daemon.hello?.storeId ?? daemon.hello?.instanceId ?? client!.hello.storeId ?? client!.hello.instanceId;
+  const storeId = storeIdNow();
   const sdk = `${SDK_NAME}/${SDK_VERSION}`;
   const ec2 = await readEc2Identity();
   let latest: DaemonStatusDoc | null = null;
@@ -193,8 +204,9 @@ async function main(): Promise<void> {
       });
       ap = agent;
       host = { env: { hostId: env.hostId }, ap: agent, store, callers: createCallers(agent, env.bedrockRegion), observed: collectObservations };
-      await store.appendEvent({ at: new Date().toISOString(), kind: "host_started", host: env.hostId, generation: agent.generation, stagedGeneration: agent.status().stagedGeneration, storageProtection: latest?.storageProtection ?? "daemon", source: "daemon", applyPolicy: latest?.applyPolicy?.effective ?? agent.status().applyPolicy.effective, sdk: `${sdk} via ${client!.hello.daemon}`, instanceId: agent.instanceId, daemonInstanceId: latest?.instanceId ?? null, ec2: ec2?.instanceId ?? null });
       log({ event: "sdk_attached", instanceId: agent.instanceId, generation: agent.generation });
+      const d = latest as DaemonStatusDoc | null;
+      await store.appendEvent({ at: new Date().toISOString(), kind: "host_started", host: env.hostId, generation: agent.generation, stagedGeneration: agent.status().stagedGeneration, storageProtection: d?.storageProtection ?? "daemon", source: "daemon", applyPolicy: d?.applyPolicy?.effective ?? agent.status().applyPolicy.effective, sdk: `${sdk} via ${client!.hello.daemon}`, instanceId: agent.instanceId, daemonInstanceId: d?.instanceId ?? null, ec2: ec2?.instanceId ?? null }).catch((error) => log({ event: "event_write_failed", reason: (error as Error).message }));
     } catch (error) {
       log({ event: "attach_failed", reason: (error as Error).message.slice(0, 300) });
     } finally {
@@ -206,17 +218,19 @@ async function main(): Promise<void> {
   let tickets = 0;
   let lastHealth: string | null = null;
   const writeStatus = async (): Promise<void> => {
-    const [d, h] = await Promise.all([refresh(), daemonHealthz()]);
+    const d = await refresh();
+    const h = d ? await daemonHealthz() : null;
+    // The host's health, as the daemon judges it — or its silence: a transition is a timeline row (the wire-cut beat reads here).
+    const verdict = h ?? { status: "failing" as const, reasons: ["daemon_unreachable"], generation: null, consecutiveSyncFailures: null, leaseExpiresAt: null };
     if (!d || !h) {
-      await store.updateStatus(env.hostId, { region: env.region, kind: "daemon", sdk, writtenAt: new Date().toISOString(), healthz: { ok: false, status: "failing", reasons: ["daemon_status_unavailable"], generation: 0 }, worker: { instanceId: ap?.instanceId ?? null, sdk, startedAt, tickets, source: ap ? "daemon" : null, attached: ap?.status().daemon?.attached ?? false, healthz: "unknown", reasons: ["daemon_status_unavailable"] }, ec2 });
-      return;
+      // The daemon is restarting: the last status block stands, the health says why, and the worker's part says whether it is attached.
+      await store.updateStatus(env.hostId, { region: env.region, kind: "daemon", sdk, writtenAt: new Date().toISOString(), healthz: { ok: false, status: "failing", reasons: ["daemon_unreachable"] }, worker: { instanceId: ap?.instanceId ?? null, sdk, startedAt, tickets, source: ap ? "daemon" : null, attached: ap?.status().daemon?.attached ?? false, healthz: ap?.healthz().status ?? "unknown", reasons: ap?.healthz().reasons ?? [] }, ec2 });
+    } else {
+      await store.updateStatus(env.hostId, statusFields({ hostId: env.hostId, region: env.region, daemon: d, healthz: h, worker: ap?.status() ?? null, workerHealthz: ap?.healthz() ?? null, sdk, tickets, startedAt, now: new Date().toISOString(), ec2 }));
     }
-    const worker = ap?.status() ?? null;
-    await store.updateStatus(env.hostId, statusFields({ hostId: env.hostId, region: env.region, daemon: d, healthz: h, worker, workerHealthz: ap?.healthz() ?? null, sdk, tickets, startedAt, now: new Date().toISOString(), ec2 }));
-    // The host's health, as the daemon judges it: a transition is a timeline row (the wire-cut beat reads here).
-    const health = `${h.status}:${h.reasons.join(",")}`;
+    const health = `${verdict.status}:${verdict.reasons.join(",")}`;
     if (lastHealth !== null && health !== lastHealth) {
-      await store.appendEvent({ at: new Date().toISOString(), kind: "health_changed", host: env.hostId, status: h.status, reasons: h.reasons, generation: h.generation, consecutiveSyncFailures: h.consecutiveSyncFailures, leaseExpiresAt: h.leaseExpiresAt });
+      await store.appendEvent({ at: new Date().toISOString(), kind: "health_changed", host: env.hostId, status: verdict.status, reasons: verdict.reasons, generation: verdict.generation, consecutiveSyncFailures: verdict.consecutiveSyncFailures, leaseExpiresAt: verdict.leaseExpiresAt });
     }
     lastHealth = health;
   };
@@ -224,15 +238,16 @@ async function main(): Promise<void> {
   // --- Approvals, over the daemon's socket ------------------------------------------------------------------------
   const watcher = new ApprovalWatcher({
     hostId: env.hostId,
-    storeId,
+    storeId: storeIdNow,
     store,
-    status: () => ({ generation: latest?.generation ?? 0, stagedGeneration: latest?.stagedGeneration ?? null, unlockRequests: ap?.status().unlockRequests ?? [] }),
+    // Null while the daemon does not answer: the watcher then touches nothing.
+    status: () => { const d = latest as DaemonStatusDoc | null; return d ? { generation: d.generation, stagedGeneration: d.stagedGeneration, unlockRequests: ap?.status().unlockRequests ?? [] } : null; },
     unlock: async () => unlockResultOf(await daemon.request("unlock")),
     isRefusal: (error) => isDaemonError(error) && error.code === "refused",
     now: () => new Date().toISOString(),
     log,
   });
-  let settled = 0;
+  let settled = -1;
   try {
     settled = await watcher.reconcile();
   } catch (error) {
@@ -252,13 +267,14 @@ async function main(): Promise<void> {
     if (running) return;
     running = true;
     try {
-      const ticket = from === "queue" ? await nextQueuedTicket(store, env.hostId) : await nextInboxTicket(store, cursor);
-      if (!ticket) return;
       if (!ap || !host || ap.generation === 0) {
-        // Nothing verified to serve (a fresh host under unlock_required waiting for the desk's approval): say so, run nothing.
-        log({ event: "ticket_skipped", reason: ap ? "no_verified_release" : "sdk_not_attached", ticketId: ticket.ticketId, from });
+        // Nothing verified to serve (a fresh host under unlock_required waiting for the desk's approval): say so, run
+        // nothing — and take nothing off the presenter's queue, so a queued ticket runs once the host serves.
+        if (from === "timer") log({ event: "ticket_skipped", reason: ap ? "no_verified_release" : "sdk_not_attached", from });
         return;
       }
+      const ticket = from === "queue" ? await nextQueuedTicket(store, env.hostId) : await nextInboxTicket(store, cursor);
+      if (!ticket) return;
       const day = dayOf(new Date().toISOString());
       const slot = await store.takeRunSlot(day, env.dailyRunCap);
       if (!slot.ok) {
@@ -285,8 +301,15 @@ async function main(): Promise<void> {
   };
 
   const timers = [
-    // The daemon's word every five seconds, then the watcher on it, then the SDK once there is something to attach to.
-    setInterval(() => void (async () => { await refresh(); await watcher.tick(); await attach(); })(), 5_000),
+    // The daemon's word every five seconds, then the watcher on it, then the SDK once there is something to attach
+    // to — and right after an activation, the row, so the card flips with the decision rather than at the next timer.
+    setInterval(() => void (async () => {
+      await refresh();
+      const action = await watcher.tick();
+      if (action === "activated") await refresh();
+      await attach();
+      if (action === "activated") await writeStatus().catch((error) => log({ event: "status_write_failed", reason: (error as Error).message }));
+    })(), 5_000),
     setInterval(() => void writeStatus().catch((error) => log({ event: "status_write_failed", reason: (error as Error).message })), env.statusIntervalSeconds * 1000),
     setInterval(() => void runOne("timer"), env.ticketIntervalSeconds * 1000),
     // The presenter's queue is looked at every ten seconds: "run this ticket on eu-west now" runs within that.
@@ -296,6 +319,8 @@ async function main(): Promise<void> {
   const stop = async (signal: string) => {
     for (const t of timers) clearInterval(t);
     log({ event: "stopping", signal, tickets });
+    // An unlock in flight settles its row before the process goes; the daemon keeps the release either way.
+    await watcher.inFlight?.catch(() => undefined);
     await store.appendEvent({ at: new Date().toISOString(), kind: "worker_stopped", host: env.hostId, signal, tickets }).catch(() => undefined);
     daemon.close();
     if (ap) await ap.stop();

@@ -5,14 +5,16 @@
  * operator's CLI on the host answers through Session Manager's Run Command (`status`, and `doctor` warning about
  * `file_key`), and — with the flags — a queued ticket runs there through the daemon, a staged release is approved
  * from the desk and activates, an `unlock` or a `rollback` runs from the host's shell, and the wire is cut and
- * comes back. Prints ids, counts and verdicts; never a key (the CLI's output is printed as the CLI printed it, and
- * the CLI never prints one). Exit 1 when a claim fails.
+ * comes back. A fresh (or replaced) host serves nothing until its first release is approved, so its workers are not
+ * attached and `doctor` reports no active release: the proof says so and expects it, and `--approve` is the way to
+ * a serving host. Prints ids, counts and verdicts; never a key (the CLI's output is printed as the CLI printed it,
+ * and the CLI never prints one). Exit 1 when a claim fails.
  *
  * @example
  * ```sh
  * export AWS_PROFILE=zudocs ZUDOCS_PROOF_PASSWORD='…'         # the proof user's password, from the owner's store
- * npm run eu:proof                                            # the row, status and doctor on the host
- * npm run eu:proof -- --approve                               # approve what is staged and wait for the activation
+ * npm run eu:proof -- --approve                               # a fresh host: approve its first release, watch it serve
+ * npm run eu:proof                                            # the row, status and doctor on a serving host
  * npm run eu:proof -- --enqueue T-1041                        # run one ticket on eu-west now and read the record
  * npm run eu:proof -- --cli unlock                            # or --cli rollback, --cli "policy show"
  * npm run eu:proof -- --wire                                  # cut, watch sync_failing, restore, watch it recover
@@ -79,8 +81,16 @@ console.log(`     sdk ${row.sdk} · node worker ${row.worker ? `${row.worker.sdk
 (row.kind === "daemon" ? ok : fail)(`the host reports as a daemon host (${row.kind})`);
 (row.status.storageProtection === "file_key" ? ok : fail)(`the store key protection is shown honestly: ${row.status.storageProtection}`);
 (row.status.applyPolicy?.effective === "unlock_required" ? ok : fail)(`the apply policy is unlock_required on the host (${row.status.applyPolicy?.effective}, ${row.status.applyPolicy?.source})`);
-(row.worker?.attached && row.worker.source === "daemon" ? ok : fail)("the Node worker is attached to the daemon");
-(row.python?.attached ? ok : fail)(`the Python worker is attached to the same daemon (${row.python?.sdk ?? "not reporting"})`);
+// A fresh host (or a replaced one) serves nothing until the desk approves its first release: the SDKs are not attached
+// yet and doctor reports no active release. Those checks wait for a serving host; `--approve` is the way there.
+const serving = Number(row.status.generation) > 0;
+if (serving) {
+  (row.worker?.attached && row.worker.source === "daemon" ? ok : fail)("the Node worker is attached to the daemon");
+  (row.python?.attached ? ok : fail)(`the Python worker is attached to the same daemon (${row.python?.sdk ?? "not reporting"})`);
+} else {
+  console.log(`  · the host serves nothing yet (generation 0${row.status.stagedGeneration ? `, staged #${row.status.stagedGeneration}` : ""}): the workers attach after the first approval — run with --approve`);
+  (row.worker && !row.worker.attached ? ok : fail)(`the Node worker reports itself waiting (${row.worker?.reasons?.join(",") ?? "no worker part"})`);
+}
 (row.ec2?.instanceId === host.InstanceId ? ok : fail)(`the row names the stack's instance (${row.ec2?.instanceId})`);
 (Date.now() - Date.parse(row.writtenAt) < 120_000 ? ok : fail)(`the row is fresh (written ${Math.round((Date.now() - Date.parse(row.writtenAt)) / 1000)} s ago)`);
 
@@ -118,7 +128,9 @@ try { doctorDoc = JSON.parse(doctor.stdout); } catch { /* shown above */ }
 const checks = doctorDoc?.checks ?? [];
 const keyCheck = checks.find((c) => c.name === "key_protection");
 (keyCheck?.level === "warn" && /file_key/.test(keyCheck.detail) ? ok : fail)(`doctor warns about the key protection: ${keyCheck ? `${keyCheck.level} — ${keyCheck.detail}` : "no key_protection check in the output"}`);
-(checks.length >= 10 && !checks.some((c) => c.level === "fail") ? ok : fail)(`doctor ran ${checks.length} checks with no failure (${checks.map((c) => `${c.name}:${c.level}`).join(" ")})`);
+const expectedFails = serving ? [] : ["active_release", "daemon"];
+const unexpected = checks.filter((c) => c.level === "fail" && !expectedFails.includes(c.name));
+(checks.length >= 10 && unexpected.length === 0 ? ok : fail)(`doctor ran ${checks.length} checks with no failure${serving ? "" : " beyond the two a host with nothing active reports"} (${checks.map((c) => `${c.name}:${c.level}`).join(" ")})`);
 
 // --- Optional drills --------------------------------------------------------------------------------------------------
 if (flag("--approve")) {
@@ -138,8 +150,19 @@ if (flag("--approve")) {
       if (current && current.decision !== "approved") settled = current;
     }
     (settled?.decision === "activated" ? ok : fail)(`the host activated it: ${settled ? `${settled.decision} at ${settled.activatedAt ?? "?"} — ${settled.outcome}` : "no settlement within 90 s"}`);
-    const after = await hostRow();
+    let after = null;
+    for (let i = 0; i < 14 && !(after && after.status.generation === a.generation && after.status.applyState === "active"); i += 1) {
+      if (i > 0) await sleep(3000);
+      after = await hostRow();
+    }
     (after && after.status.generation === a.generation && after.status.applyState === "active" ? ok : fail)(`the host card flipped: ${after ? describeRow(after) : "no row"}`);
+    let attached = after?.worker?.attached ? after : null;
+    for (let i = 0; i < 12 && !attached; i += 1) {
+      await sleep(5000);
+      const current = await hostRow();
+      if (current?.worker?.attached) attached = current;
+    }
+    (attached ? ok : fail)(`the Node worker attached once the host served (${attached?.worker?.sdk ?? "not within a minute"})`);
     const events = (await api("GET", "/events")).json.events.filter((e) => e.approvalId === a.approvalId);
     console.log(`  timeline for ${a.approvalId}: ${events.map((e) => `${e.at.slice(11, 19)} ${e.host} ${e.kind}`).join(" · ")}`);
   }

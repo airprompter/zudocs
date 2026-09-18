@@ -37,7 +37,7 @@ test("the stack is in eu-west-1 with the fixed ids; the network is one public su
   assert.equal(Object.keys(sharedHost.findResources("AWS::EC2::KeyPair")).length, 0, "no key pair: Session Manager only");
 });
 
-test("the instance: t4g.micro, AL2023 arm64 from the public parameter, IMDSv2 required, 8 GiB gp3 encrypted, a public address, the fixed role; user data replaces the instance when it changes", () => {
+test("the instance: t4g.micro, the pinned AL2023 arm64 image, IMDSv2 required, 8 GiB gp3 encrypted, a public address, the fixed role; user data replaces the instance when it changes", () => {
   const { sharedHost } = synthAll();
   sharedHost.hasResourceProperties("AWS::EC2::Instance", { InstanceType: "t4g.micro", Monitoring: false, BlockDeviceMappings: [{ DeviceName: "/dev/xvda", Ebs: { VolumeSize: 8, VolumeType: "gp3", Encrypted: true, DeleteOnTermination: true } }] });
   const [instance] = Object.values(sharedHost.findResources("AWS::EC2::Instance") as Resources);

@@ -26,7 +26,7 @@ function harness(options: { unlock?: () => Promise<{ generation: number } | null
   const rows = new Map<string, ApprovalRow>();
   const events: TimelineEvent[] = [];
   const logs: Record<string, unknown>[] = [];
-  const daemon = { generation: 1, staged: null as number | null };
+  const daemon = { generation: 1, staged: null as number | null, reachable: true, storeId: options.storeId ?? "i-store1" };
   let clock = 0;
   const now = () => `2026-09-18T15:00:${String(clock++).padStart(2, "0")}.000Z`;
   const store: WatcherPorts["store"] = {
@@ -49,9 +49,9 @@ function harness(options: { unlock?: () => Promise<{ generation: number } | null
   const unlocks: number[] = [];
   const ports = (storeId: string, unlock: WatcherPorts["unlock"], log: WatcherPorts["log"] = (event) => void logs.push(event)): WatcherPorts => ({
     hostId: "eu-west-1/ec2",
-    storeId,
+    storeId: () => (storeId === "i-store1" ? daemon.storeId : storeId),
     store,
-    status: () => ({ generation: daemon.generation, stagedGeneration: daemon.staged, unlockRequests: [] }),
+    status: () => (daemon.reachable ? { generation: daemon.generation, stagedGeneration: daemon.staged, unlockRequests: [] } : null),
     unlock,
     isRefusal: (error) => error instanceof Refusal,
     now,
@@ -84,7 +84,46 @@ test("a staged generation opens one pending row (host, generation, store) and on
   assert.equal(await h.watcher.tick(), "waiting");
   assert.equal(await h.watcher.tick(), "waiting");
   assert.equal(h.events.length, 1, "no event per tick");
-  assert.deepEqual(h.watcher.current, { approvalId: ID, generation: 2 });
+  assert.deepEqual(h.watcher.current, { approvalId: ID, generation: 2, storeId: "i-store1" });
+});
+
+test("a daemon that does not answer (a restart) is not a staged release that went away: nothing is settled, opened or lost, and the tick says unreachable", async () => {
+  const h = harness();
+  h.daemon.staged = 2;
+  await h.watcher.tick();
+  Object.assign(h.rows.get(ID)!, { decision: "approved", decidedBy: "seth@zudocs.com" });
+  h.daemon.reachable = false;
+  assert.equal(await h.watcher.tick(), "unreachable");
+  assert.equal(await h.watcher.tick(), "unreachable");
+  assert.equal(h.rows.get(ID)!.decision, "approved", "the owner's decision stands through the restart");
+  assert.equal(h.events.length, 1, "no release_unstaged, no second release_staged");
+  assert.deepEqual(h.watcher.current, { approvalId: ID, generation: 2, storeId: "i-store1" });
+  h.daemon.reachable = true;
+  assert.equal(await h.watcher.tick(), "activated", "back, and the decision is acted on");
+  const r = harness();
+  r.daemon.reachable = false;
+  r.rows.set("x", { approvalId: "x", hostId: "eu-west-1/ec2", storeId: "i-store1", generation: 5, releaseDigest: null, stagedAt: "x", unlockRequest: null, decision: "pending", decidedBy: null, decidedAt: null, activatedAt: null, outcome: null, updatedAt: "x" });
+  assert.equal(await r.watcher.reconcile(), -1, "reconcile with no daemon settles nothing");
+  assert.equal(r.rows.get("x")!.decision, "pending");
+});
+
+test("a store wiped under a live watcher (the daemon restarted on a fresh store) settles the old store's row and opens a fresh one for the generation staged again", async () => {
+  const h = harness();
+  h.daemon.staged = 2;
+  await h.watcher.tick();
+  Object.assign(h.rows.get(ID)!, { decision: "approved", decidedBy: "seth@zudocs.com" });
+  await h.watcher.tick();
+  assert.equal(h.rows.get(ID)!.decision, "activated");
+  h.daemon.staged = 3;
+  await h.watcher.tick();
+  assert.equal(h.rows.get("eu-west-1-ec2-g3-i-store1")!.decision, "pending");
+  // The operator wipes the store and restarts the daemon: generation 0 active, 3 staged again, a new store id.
+  h.daemon.storeId = "i-store2";
+  h.daemon.generation = 0;
+  assert.equal(await h.watcher.tick(), "opened");
+  assert.equal(h.rows.get("eu-west-1-ec2-g3-i-store1")!.decision, "superseded", "the old store's row is settled, not minded forever");
+  assert.equal(h.rows.get("eu-west-1-ec2-g3-i-store2")!.decision, "pending", "a fresh row the desk can approve");
+  assert.ok(h.logs.some((l) => l.event === "approval_store_replaced"));
 });
 
 test("the owner's approval makes the watcher unlock through the daemon, settle the row activated and write release_activated with the decider", async () => {

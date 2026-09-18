@@ -12,7 +12,7 @@
  * - The **nudge queue** (`zudocs-nudge`, with a dead-letter queue after three failed receipts): the placeholder for
  *   the SDK's change-notification proposal. The desk's presenter posts one message; the puller consumes it and
  *   pulls with `skipPointer` — the origin is read once, conditionally. Pull-and-verify stays the only source of truth.
- * - The **puller** (Node 22, arm64, one at a time): every `PULL_MINUTES` (one minute with `--context demo=true`) the
+ * - The **puller** (Node 22, arm64): every `PULL_MINUTES` (one minute with `--context demo=true`) the
  *   pointer-first `pullBundle` against AirPrompter with the Agent key read from the region's SSM SecureString at cold
  *   start, sealed to the air-gapped host's public key when the bucket holds one (plaintext otherwise — allowed on the
  *   dev target only, and the SDK refuses it anywhere else); the desk's status and events tables written across
@@ -74,6 +74,7 @@ export class FleetStack extends cdk.Stack {
       lifecycleRules: [
         { id: "noncurrent-30d", noncurrentVersionExpiration: cdk.Duration.days(30) },
         { id: "telemetry-30d", prefix: EXCHANGE.telemetryPrefix, expiration: cdk.Duration.days(30) },
+        { id: "imports-60d", prefix: EXCHANGE.importsPrefix, expiration: cdk.Duration.days(60) },
         { id: "abort-multipart", abortIncompleteMultipartUploadAfter: cdk.Duration.days(1) },
       ],
     });
@@ -84,7 +85,8 @@ export class FleetStack extends cdk.Stack {
       partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "generation", type: dynamodb.AttributeType.NUMBER },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      // The AWS-owned key: no KMS request charge on a table written every minute (the desk's tables carry no more).
+      encryption: dynamodb.TableEncryption.DEFAULT,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
@@ -114,8 +116,8 @@ export class FleetStack extends cdk.Stack {
       code: lambda.Code.fromAsset(props.assets.puller),
       memorySize: 512,
       timeout,
-      // One puller at a time: the schedule and the queue never race on the table's state row.
-      reservedConcurrentExecutions: 1,
+      // No reserved concurrency of one: with an SQS source that throttles the poller and sends nudges to the dead-letter
+      // queue. Two invocations at once (a nudge during a tick) are allowed and settled by the state row's version.
       logGroup,
       environment: {
         NODE_OPTIONS: "--enable-source-maps",
@@ -143,6 +145,8 @@ export class FleetStack extends cdk.Stack {
     // The exchange: the puller writes releases and the pointer, and reads exactly the two objects the host writes for it.
     this.puller.addToRolePolicy(new iam.PolicyStatement({ actions: ["s3:PutObject"], resources: [this.bucket.arnForObjects(`${EXCHANGE.releasesPrefix}*`), this.bucket.arnForObjects(EXCHANGE.latest)] }));
     this.puller.addToRolePolicy(new iam.PolicyStatement({ actions: ["s3:GetObject"], resources: [this.bucket.arnForObjects(EXCHANGE.publicKey), this.bucket.arnForObjects(EXCHANGE.status)] }));
+    // A listing of exactly those two keys: with it S3 answers 404 (not 403) for the object the host has not written yet.
+    this.puller.addToRolePolicy(new iam.PolicyStatement({ actions: ["s3:ListBucket"], resources: [this.bucket.bucketArn], conditions: { StringEquals: { "s3:prefix": [EXCHANGE.publicKey, EXCHANGE.status] } } }));
     this.puller.addToRolePolicy(new iam.PolicyStatement({ actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"], resources: [this.table.tableArn] }));
     // The desk's status and events tables, across regions by ARN (`desk-stack.ts` fixes the names).
     const deskTable = (name: "status" | "events"): string => `arn:${this.partition}:dynamodb:${tablesRegion}:${this.account}:table/${tableNameOf(name)}`;

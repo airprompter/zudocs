@@ -106,8 +106,10 @@ test("the instance role: the exchange's exact keys (read releases/tools, write t
   const table = statements.find((st) => st.Sid === "ReleasesRead")!;
   assert.deepEqual(actionsOf(table), ["dynamodb:Query"]);
   assert.equal(table.Resource, "arn:aws:dynamodb:ap-southeast-1:111122223333:table/zudocs-agent-releases");
-  const asset = statements.filter((st) => actionsOf(st).includes("s3:GetObject*") || actionsOf(st).includes("s3:GetBucket*"));
-  assert.equal(asset.length, 1, "the bundle from the asset bucket");
+  const asset = statements.find((st) => st.Sid === "BundleRead")!;
+  assert.deepEqual(actionsOf(asset), ["s3:GetObject"]);
+  assert.match(String(asset.Resource), /^arn:aws:s3:::cdk-hnb659fds-assets-111122223333-ap-southeast-1\/[0-9a-f]{64}\.zip$/, "exactly the bundle object, no listing");
+  assert.ok(!statements.some((st) => actionsOf(st).some((a) => a === "s3:List*" || a === "s3:GetBucket*")), "no listing of the asset bucket");
 });
 
 test("user data rendering with the committed template and pins; the outputs the owner's script reads", () => {

@@ -18,7 +18,6 @@
  * ```
  */
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
-import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyResultV2, Context } from "aws-lambda";
 import { normalizeFeedback } from "@airprompter/agent-sdk";
 import { MODELS } from "./modelCatalogue.js";
@@ -293,11 +292,10 @@ async function presenter(host: Host, action: string, body: Record<string, unknow
       // The change-notification placeholder: one message on the fleet's queue; the puller consumes it and reads the
       // origin now (`skipPointer`). Pull-and-verify stays the only source of truth — a nudge can only say "look".
       if (!env.nudgeQueueUrl) return { statusCode: 501, body: { error: "no_nudge_queue", message: "the fleet stack (ZudocsFleet) is not deployed: nothing to nudge" } };
-      const region = /sqs\.([a-z0-9-]+)\.amazonaws\.com/.exec(env.nudgeQueueUrl)?.[1] ?? env.region;
       const sentAt = at();
-      const out = await new SQSClient({ region }).send(new SendMessageCommand({ QueueUrl: env.nudgeQueueUrl, MessageBody: JSON.stringify({ kind: "nudge", by, at: sentAt, from: env.hostId }) }));
-      await store.appendEvent({ at: sentAt, kind: "presenter", host: env.hostId, action, by, messageId: out.MessageId ?? null });
-      return { statusCode: 202, body: { action, messageId: out.MessageId ?? null, sentAt, message: "the fleet was nudged: the puller reads the origin on its next invocation (within seconds) and the timeline shows the pull" } };
+      const { messageId } = await host.nudge({ kind: "nudge", by, at: sentAt, from: env.hostId });
+      await store.appendEvent({ at: sentAt, kind: "presenter", host: env.hostId, action, by, messageId });
+      return { statusCode: 202, body: { action, messageId, sentAt, message: "the fleet was nudged: the puller reads the origin on its next invocation (within seconds) and the timeline shows the pull" } };
     }
     default:
       return { statusCode: 404, body: { error: "no_such_action", actions: ["heartbeat", "upload", "sync", "seed", "replay", "enqueue", "cut_wire", "restore_wire", "nudge"] } };

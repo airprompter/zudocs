@@ -12,34 +12,41 @@ never had a wire. The desk shows both as host cards, and the presenter can nudge
 
 | Piece | What it is | Where |
 |---|---|---|
-| Exchange bucket | `zudocs-exchange-<account>`: versioned, private, TLS only, retained. `releases/<gen>-<key>.apbundle` and `latest.json` (the puller writes), `keys/airgap.distribution.pub.json` (the host writes — its role can put exactly that one key object), `status/airgap.json` and `telemetry/<instance>/<time>.aptelemetry` (the host writes), `tools/` (what `airgap:up` stages for the first boot) | `infra/lib/fleet-stack.ts`, `fleet-names.ts` |
-| Releases table | `zudocs-agent-releases`: one row per generation pulled (digest, when, the key it is sealed to, the object) and the puller's own state row — the edge pointer's ETags, the backoff, what it mirrored last — written in the same transaction as the release row, so a saved ETag never outruns its row | `services/puller/src/tables.ts` |
-| Puller | `zudocs-puller` (Node 22 arm64, one at a time): every five minutes (one in `--context demo=true`) the SDK's `pullBundle` against AirPrompter, pointer-first; sealed to the host's public key when the exchange holds one, plaintext otherwise (dev only — the SDK refuses plaintext on any other target); the nudge queue's consumer; the mirror of the host's status document into the desk's tables | `services/puller/src/handler.ts`, `plan.ts` |
+| Exchange bucket | `zudocs-exchange-<account>`: versioned, private, TLS only, retained. `releases/<gen>-<digest>-<key>.apbundle` and `latest.json` (the puller writes), `keys/airgap.distribution.pub.json` (the host writes — its role can put exactly that one key object), `status/airgap.json` and `telemetry/<instance>/<time>.aptelemetry` (the host writes), `imports/<marker>` (the eu-west import timer's ledger), `tools/` (what `airgap:up` stages for the first boot) | `infra/lib/fleet-stack.ts`, `fleet-names.ts` |
+| Releases table | `zudocs-agent-releases`: one row per generation pulled (digest, when, the key it is sealed to, the object) and the puller's own state row — the edge pointer's ETags, the backoff, what it mirrored last — written in the same transaction as the release row, so a saved ETag never outruns its row, and conditioned on the version that was read, so two invocations at once (a nudge during a tick) cannot both win | `services/puller/src/tables.ts` |
+| Puller | `zudocs-puller` (Node 22 arm64): every five minutes (one in `--context demo=true`) the SDK's `pullBundle` against AirPrompter, pointer-first; sealed to the host's public key when the exchange holds one, plaintext otherwise (dev only — the SDK refuses plaintext on any other target); the nudge queue's consumer; the mirror of the host's status document into the desk's tables | `services/puller/src/handler.ts`, `plan.ts` |
 | Nudge queue | `zudocs-nudge` (+ a dead-letter queue after three receipts): the change-notification placeholder. The desk's presenter posts one message; the puller pulls with `skipPointer`. A nudge can only say "look" | `fleet-stack.ts`, `services/desk-api/src/handler.ts` › `nudge` |
 | Air-gapped host | `ZudocsAirgap`, on demand: one private subnet, no route out, S3 and DynamoDB gateway endpoints (their policies name the exchange, the deployment's asset bucket and the table), an Instance Connect Endpoint for the shell, IMDSv2, no public address, no key pair; a role that reads `releases/` and `tools/`, writes exactly the public key, the status and the exports, queries the table — no SSM, no logs, no Bedrock | `infra/lib/airgap-stack.ts` |
 | The runtime | `AirPrompterAgent.start` with `sync: "offline"`, no Agent key, no base URL, the distribution private key from a 0600 file, the vendored bundle as the floor; every newer row in the table fetched from the exchange and handed to `applyBundle()`; a render probe every two minutes filed as a **refused** observation; the status document every minute | `services/airgap/src/runtime.ts`, `status.ts` |
 | Export | `zudocs-airgap-export.timer`: every five minutes `airprompter export-telemetry` over the runtime's spool, the document to `telemetry/<instance>/…` | `services/airgap/host/bin/zudocs-airgap-export` |
-| Import | `zudocs-import.timer` on the eu-west host: every five minutes, each export not yet imported (a ledger of markers) through `airprompter import-telemetry` with the Agent key as a systemd credential; a `telemetry_imported` timeline row per file and an `imports` part on the eu-west row | `services/eu-host/src/importTelemetry.ts` |
+| Import | `zudocs-import.timer` on the eu-west host: every five minutes, each export not yet imported (the ledger is a marker per export under `imports/` in the bucket, so a replaced instance imports nothing twice) through `airprompter import-telemetry` with the Agent key as a systemd credential; a `telemetry_imported` timeline row per file and an `imports` part on the eu-west row | `services/eu-host/src/importTelemetry.ts` |
 
 ## The pull, exactly
 
 The puller is the SDK's fleet pattern (`docs/change-notification.md` in the SDK repository) on a schedule:
 
 1. Read the state row (the edge pointer URL the control plane named, the pointer's ETag, the manifest's ETag, when
-   the origin last answered; the backoff), the table's newest row, and the host's public key from the exchange.
-2. Decide (`plan.ts`): a **tick** inside the backoff window does nothing; a **nudge** pulls now and skips the
-   pointer; a **re-seal** (the host published a key the held generation is not sealed to) reads the origin with the
-   manifest ETag dropped, so a 304 cannot stand in for the bundle; otherwise a tick pulls pointer-first.
+   the origin last answered; the backoff; its version), the table's newest row, and the host's public key from the
+   exchange (a missing key is "absent"; an object that is not a key stops the puller with `public_key_malformed` on
+   its card — never a quiet downgrade to plaintext).
+2. Decide (`plan.ts`): a **tick** with ticks left to skip does nothing; a **nudge** pulls now and skips the pointer;
+   a **re-seal** (the host published a key the held generation is not sealed to) reads the origin with the manifest
+   ETag dropped, so a 304 cannot stand in for the bundle — given up after three failures on that key, said on the
+   card, until the key changes; otherwise a tick pulls pointer-first.
 3. `pullBundle`: the pointer (a few hundred bytes behind the CDN) first — a 304, or a generation already held, ends
    the pull with no API call. Only a moved pointer, a nudge, a re-seal, or a pointer that has said "nothing moved"
    for over an hour (the stuck-pointer bound) reaches the origin, and that read is conditional too. On `ok` the whole
    chain is verified (the root document against the pinned key, the manifest's signature and scope, every payload's
    hash) before the bundle is built.
-4. On `ok`: the bundle object, then the row and the state in one transaction, then `latest.json`, then a
-   `bundle_pulled` timeline row. The same generation with another digest never happens on an honest control plane; if
-   it did, the row stands and `pull_conflict` says so. On `unchanged`: the SDK's `nextPullDelayMs` stretches the
-   interval (1 → 2 → 4 → 5 minutes in demo; at the five-minute schedule the cap equals the tick and nothing is ever
-   skipped). On a refusal or an outage: a `pull_failed` row, the health says so, the next tick pulls.
+4. On `ok`: the bundle object (its key carries the generation, the digest and the recipient), then the row and the
+   state in one transaction, then `latest.json`, then a `bundle_pulled` timeline row. The same generation with another
+   digest never happens on an honest control plane; if it did, the row and its object stand and `pull_conflict` says
+   so. On `unchanged`, and on a refusal, an outage or nothing promoted: the SDK's `nextPullDelayMs` stretches the
+   interval, kept as ticks to skip — 1 → 2 → 4 → 5 minutes in demo; at the five-minute schedule the cap equals the
+   tick and nothing is ever skipped — and a change snaps it back. A failure is one `pull_failed` timeline row per
+   change of reason, not one per tick; the health says so until a pull works. Two invocations at once (a nudge during
+   a tick) both pull, and the second to write loses cleanly on the state's version (`state_race_lost`), writing
+   nothing.
 5. Every tick also mirrors `status/airgap.json`, when it changed, into the air-gapped host's row and turns what
    changed into timeline rows (`airgap_started`, `distribution_key_born`, `airgap_applied`, `telemetry_exported`,
    `health_changed`).
@@ -80,9 +87,11 @@ The runtime waits for the table's newest row to be sealed to its key (`waiting_f
 `awaiting_bundle` on the card until then), fetches the bundle from the exchange, writes it as the vendored file
 (0600) and starts the SDK on it: `sync: "offline"`, `apply.policy: "auto"`, a `file_key` store, no `models`
 declared — this host can call none, and a declared empty catalogue would refuse every release over a model, so it
-declares nothing and renders only. Every later row above what it handed over goes to `applyBundle()`; the outcome is
-the SDK's (`activated`, `unchanged`, `held_back`, `refused` with its reason) and is recorded and mirrored; an
-activation also refreshes the vendored file, so a restart boots on the newest and the floor is never stale.
+declares nothing and renders only. A bundle the SDK cannot start on is recorded (`startFailure` in the document, on
+the card) and tried again after ten minutes, or the moment a newer row appears — never silently given up. Every later
+row above what it handed over goes to `applyBundle()`; the outcome is the SDK's (`activated`, `unchanged`,
+`held_back`, `refused` with its reason) and is recorded and mirrored; an activation also refreshes the vendored file,
+so a restart boots on the newest and the floor is never stale.
 
 Every two minutes the runtime renders `support.triage` for one seeded customer id with a fixed probe sentence as the
 ticket — the release resolves (version, arm, model) exactly as on every other host, the sticky arm included — and
@@ -101,13 +110,15 @@ segment into one document (the segments verbatim, the store's generation beside 
 `spool/telemetry/exported/`; the document goes to `telemetry/<instance>/<time>.aptelemetry` when it carries a
 segment, and `last.json` records the result for the status document either way.
 
-On eu-west: the import timer lists `telemetry/` (its role may read that prefix and list that prefix only),
-downloads each object it has no marker for, and runs `airprompter import-telemetry` on it. The CLI heartbeats as
-each instance the document carries — `syncMode: offline`, the exporting store's generation, `file_key` — for an
-upload grant to that instance's prefix and posts the segments through it. The platform is idempotent by key
-(importing the same file twice changes nothing); the ledger keeps the host from paying the heartbeat twice. A held
-import (the platform said retry later) is retried on the next pass, five times, then recorded as failed. The Agent
-key reaches the CLI as a systemd credential: `LoadCredential=` mounts the daemon's root-only env file for this unit
+On eu-west: the import timer lists `telemetry/` and `imports/` (its role may read the first, write the second,
+and list those two prefixes only), downloads each export it has no marker for, and runs `airprompter
+import-telemetry` on it. The CLI heartbeats as each instance the document carries — `syncMode: offline`, the
+exporting store's generation, `file_key` — for an upload grant to that instance's prefix and posts the segments
+through it. The platform is idempotent by key (importing the same file twice changes nothing); the ledger — a marker
+object per export in the bucket, so it outlives the instance — keeps the host from paying the heartbeat twice. Only a
+clean import writes the marker at once: the platform's "retry later", a refused segment, a network failure or a CLI
+that did not answer is retried on the next pass, five times, then recorded as failed with a marker. The Agent key
+reaches the CLI as a systemd credential: `LoadCredential=` mounts the daemon's root-only env file for this unit
 alone, the script reads the value and puts it in the child's environment only. On AirPrompter's fleet page the
 air-gapped instance appears as an offline resident with its windows — every one of them a refusal.
 
@@ -145,9 +156,14 @@ The airgap stack is never in CI's deploy list (`infra/test/airgap-stack.test.ts`
   a boundary, exactly as there.
 - The render probe's ticket is a fixed sentence; the window rows carry no text either way. The observation status
   `refused` is the protocol's own word for a call the runtime would not make.
-- The puller's backoff is the SDK's `nextPullDelayMs` under a fixed schedule: at the plan's five-minute tick it never
-  skips (the cap equals the tick); at the demo's one-minute tick an idle puller stretches to five minutes and a
-  nudge snaps it back. The proof's "one origin read per hour" is the SDK's stuck-pointer bound, visible in the log.
+- The puller's backoff is the SDK's `nextPullDelayMs` under a fixed schedule, counted in ticks so the schedule's
+  jitter can never skip a tick by accident: at the plan's five-minute tick it never skips (the cap equals the tick);
+  at the demo's one-minute tick an idle puller stretches to five minutes and a nudge snaps it back. The proof's "one
+  origin read per hour" is the SDK's stuck-pointer bound, visible in the log.
+- The host's Instance Connect Endpoint is the only way in; the OS route table shows a default route from DHCP (every
+  EC2 instance's does) — the VPC route table, which decides, has none, and the proof reads that one.
+- `npm run airgap:up` deploys `ZudocsAirgap --exclusively`: the fleet stack is CI's, and a deploy from a checkout
+  must never redeploy it as a dependency.
 - A replacement of the eu-west instance (this phase changed its bundle) resets the sticky `forced_downgrade` flag
   the phase-4 rollback drill left on its store, and lands the current release staged for the desk to approve.
 - Costs: the puller's ticks (8,640 a month at five minutes — free tier), the table and the queue (free tier), the

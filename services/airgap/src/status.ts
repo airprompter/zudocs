@@ -18,7 +18,7 @@ export const AIRGAP_STATUS_KIND = "airprompter-airgap-status" as const;
 export const STATUS_APPLIES_KEPT = 20;
 export const STATUS_LOG_KEPT = 30;
 
-export type AirgapPhase = "awaiting_key" | "awaiting_bundle" | "serving";
+export type AirgapPhase = "awaiting_bundle" | "serving";
 
 export interface ApplyRecord {
   at: string;
@@ -54,6 +54,15 @@ export interface ProbeInfo {
   dns: { name: string; resolved: boolean; detail: string };
 }
 
+/** Why the SDK could not start on a bundle, kept until it does (the ring buffer of log lines is too short to be the record). */
+export interface StartFailure {
+  at: string;
+  generation: number;
+  releaseDigest: string;
+  code: string | null;
+  message: string;
+}
+
 export interface AirgapStatusDoc {
   kind: typeof AIRGAP_STATUS_KIND;
   v: 1;
@@ -73,6 +82,7 @@ export interface AirgapStatusDoc {
   status: AgentStatus | null;
   healthz: Healthz | null;
   applies: ApplyRecord[];
+  startFailure: StartFailure | null;
   renders: RenderInfo;
   export: ExportInfo | null;
   probe: ProbeInfo | null;

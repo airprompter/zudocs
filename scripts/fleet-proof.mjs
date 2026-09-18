@@ -26,6 +26,7 @@ import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-clo
 import { CloudWatchLogsClient, FilterLogEventsCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { AdminInitiateAuthCommand, CognitoIdentityProviderClient } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DescribeRouteTablesCommand, EC2Client } from "@aws-sdk/client-ec2";
 import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { repoRoot, secretFromEnv } from "./lib/config.mjs";
@@ -188,13 +189,19 @@ if (flag("--airgap")) {
     check(row.healthz?.status === "ok", `healthz ${row.healthz?.status}${row.healthz?.reasons?.length ? ` (${row.healthz.reasons.join(", ")})` : ""}`);
   }
   if (airgapStack) {
+    const tables = await new EC2Client({ region: fleetRegion }).send(new DescribeRouteTablesCommand({ RouteTableIds: [airgapStack.RouteTableId] }));
+    const routes = tables.RouteTables?.[0]?.Routes ?? [];
+    const describe = (r) => `${r.DestinationCidrBlock ?? r.DestinationPrefixListId ?? "?"} → ${r.GatewayId ?? r.NatGatewayId ?? r.InstanceId ?? "?"}`;
+    console.log(`  VPC route table ${airgapStack.RouteTableId}: ${routes.map(describe).join(" · ")}`);
+    check(!routes.some((r) => r.DestinationCidrBlock === "0.0.0.0/0" || r.DestinationIpv6CidrBlock === "::/0" || r.NatGatewayId), "the VPC route table has no default route and no NAT");
+    check(routes.filter((r) => r.DestinationPrefixListId && /^vpce-/.test(String(r.GatewayId))).length === 2, "two gateway-endpoint prefix-list routes (S3, DynamoDB) beside the local route");
     console.log("  through the Instance Connect Endpoint (a session key, pushed for sixty seconds):");
     const run = (remote) => spawnSync("node", [join(repoRoot, "scripts", "airgap.mjs"), "run", remote], { encoding: "utf8", env: process.env, timeout: 180_000 });
-    const probe = run("curl -sS -m 8 -o /dev/null https://api-dev.airprompter.com/ 2>&1; echo curl_exit=$?; ip route | sed 's/^/route: /'; getent hosts api-dev.airprompter.com | sed 's/^/dns: /'; sudo stat -c 'key: %a %U %n' /var/lib/airprompter/keys/airgap.key.json; sudo stat -c 'pub: %a %U %n' /var/lib/airprompter/keys/airgap.pub.json; systemctl is-active zudocs-airgap zudocs-airgap-export.timer | tr '\\n' ' '; echo; /usr/local/bin/airprompter --version; /usr/local/bin/node --version");
-    const out = (run.stdout ?? "") + (probe.stdout ?? "");
+    const probe = run("curl -sS -m 8 -o /dev/null https://api-dev.airprompter.com/ 2>&1; echo curl_exit=$?; getent hosts api-dev.airprompter.com | sed 's/^/dns: /'; sudo stat -c 'key: %a %U %n' /var/lib/airprompter/keys/airgap.key.json; sudo stat -c 'pub: %a %U %n' /var/lib/airprompter/keys/airgap.pub.json; systemctl is-active zudocs-airgap zudocs-airgap-export.timer | tr '\\n' ' '; echo; /usr/local/bin/airprompter --version; /usr/local/bin/node --version");
+    const out = probe.stdout ?? "";
     for (const line of out.trim().split("\n")) console.log(`    ${line}`);
+    // curl 28 is a connect timeout: the VPC router black-holes the SYN (the OS has a default route from DHCP, the VPC has none).
     check(/curl_exit=(28|7|6)/.test(out), "a live curl from the host to the API host fails (no route out)");
-    check(/route: /.test(out) && !/route: default/.test(out), "the route table has no default route");
     check(/key: 600 airprompter/.test(out), "the private key is 0600, the runtime user's");
     check(/pub: 644 airprompter/.test(out), "the public half is world-readable (it is public)");
     if (probe.status !== 0 && !out.includes("curl_exit")) fail(`the shell probe did not run: ${(probe.stderr ?? "").trim().slice(0, 300)}`);

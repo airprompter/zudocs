@@ -127,6 +127,7 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
     coldStart: true,
     observed: async (fn) => ({ result: await fn(), error: undefined, observations: [{ tag: "support.reply", versionId: "rev-2", arm: "none", model: "openai.gpt-5-6-luna", status: "ok", latencyMs: 1234, tokens: { input: 200, output: 40 }, usageSource: "reported" }] }),
     writeStatus: async () => store.putStatus({ hostId: "us-east-1/lambda", region: "us-east-1", kind: "lambda", sdk: "x", writtenAt: "", status: ap.status(), healthz: ap.healthz(), container: { instanceId: "i-fake", coldStart: false, startedAt: "", invocations: 1 } }),
+    nudge: async (body) => { calls.push(`nudge:${String(body.by)}`); return { messageId: "msg-1" }; },
   };
   return host;
 }
@@ -294,6 +295,12 @@ test("state, events, healthz and unknown routes; a failed start answers 503 with
   const nudge = await handler(event("POST", "/presenter/nudge"));
   assert.equal((nudge as { statusCode: number }).statusCode, 501, "without the fleet stack there is nothing to nudge, and it says so");
   assert.equal(parse(nudge).error, "no_nudge_queue");
+  (host.env as { nudgeQueueUrl: string }).nudgeQueueUrl = "https://sqs.ap-southeast-1.amazonaws.com/111122223333/zudocs-nudge";
+  const nudged = parse(await handler(event("POST", "/presenter/nudge")));
+  assert.equal(nudged.messageId, "msg-1");
+  assert.ok(host.calls.includes("nudge:seth@zudocs.com"), "one message on the queue, signed by the presenter");
+  assert.equal(host.store.events.at(-1)!.kind, "presenter");
+  assert.equal(host.store.events.at(-1)!.action, "nudge");
   assert.equal((await handler(event("GET", "/healthz")) as { statusCode: number }).statusCode, 200);
   assert.equal((await handler(event("GET", "/nope")) as { statusCode: number }).statusCode, 404);
   assert.equal((await handler(event("POST", "/presenter/dance")) as { statusCode: number }).statusCode, 404);

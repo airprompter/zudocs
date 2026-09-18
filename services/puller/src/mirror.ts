@@ -53,7 +53,8 @@ export function mirrorAirgap(input: { doc: AirgapStatusDoc; previous: PullerStat
     mirroredAt: now,
     status: doc.status,
     healthz: doc.healthz ?? { ok: false, status: doc.phase === "serving" ? "ok" : "degraded", reasons: [doc.phase] },
-    container: { instanceId: doc.status?.instanceId ?? doc.ec2?.instanceId ?? "airgap", coldStart: false, startedAt: doc.startedAt, invocations: doc.renders.count },
+    // `invocations` on this host is its own count of status writes (`seq`), the one number that is a count of anything the host did on its own.
+    container: { instanceId: doc.status?.instanceId ?? doc.ec2?.instanceId ?? "airgap", coldStart: false, startedAt: doc.startedAt, invocations: doc.seq },
     ec2: doc.ec2,
     airgap: {
       keyId: doc.keyId,
@@ -64,6 +65,7 @@ export function mirrorAirgap(input: { doc: AirgapStatusDoc; previous: PullerStat
       renders: doc.renders,
       export: doc.export,
       probe: doc.probe,
+      startFailure: doc.startFailure ?? null,
       seq: doc.seq,
     },
   };

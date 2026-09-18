@@ -22,11 +22,13 @@ echo "zudocs airgap boot: $(date -u +%FT%TZ)"
 export AWS_DEFAULT_REGION=__REGION__ AWS_REGION=__REGION__
 EXCHANGE="s3://__EXCHANGE_BUCKET__"
 
-# --- swap: a t4g.micro has 1 GiB; one Node process and the CLI's single-executable want a little headroom ---------------
+# --- swap: a t4g.micro has 1 GiB; one Node process and the CLI's single-executable want a little headroom (best effort) ---
 if [ ! -f /swapfile ]; then
-  fallocate -l 512M /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
-  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  { fallocate -l 512M /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab; } || echo "swap: not added"
 fi
+
+# --- the SSM agent has nowhere to go (no endpoint, no route): stop it retrying on a 1 GiB host --------------------------
+systemctl disable --now amazon-ssm-agent 2>/dev/null || true
 
 # --- the user and the directories -----------------------------------------------------------------------------------
 id airprompter >/dev/null 2>&1 || useradd --system --home-dir /var/lib/airprompter --no-create-home --shell /sbin/nologin airprompter

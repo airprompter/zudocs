@@ -120,10 +120,11 @@ export class SharedHostStack extends cdk.Stack {
     }
     this.role.addToPolicy(new iam.PolicyStatement({ actions: ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"], resources: [logGroup.logGroupArn, `${logGroup.logGroupArn}:*`] }));
     // The air-gapped host's telemetry exports in the exchange bucket (ap-southeast-1), read by the import timer: the
-    // telemetry/ prefix, and a listing of that prefix only.
+    // telemetry/ prefix, its ledger of markers under imports/ (written once per export), and a listing of those two prefixes only.
     const exchangeArn = `arn:${this.partition}:s3:::${exchangeBucketName(this.account)}`;
     this.role.addToPolicy(new iam.PolicyStatement({ sid: "ExchangeTelemetryRead", actions: ["s3:GetObject"], resources: [`${exchangeArn}/${EXCHANGE.telemetryPrefix}*`] }));
-    this.role.addToPolicy(new iam.PolicyStatement({ sid: "ExchangeTelemetryList", actions: ["s3:ListBucket"], resources: [exchangeArn], conditions: { StringLike: { "s3:prefix": [`${EXCHANGE.telemetryPrefix}*`] } } }));
+    this.role.addToPolicy(new iam.PolicyStatement({ sid: "ExchangeImportsWrite", actions: ["s3:PutObject"], resources: [`${exchangeArn}/${EXCHANGE.importsPrefix}*`] }));
+    this.role.addToPolicy(new iam.PolicyStatement({ sid: "ExchangeTelemetryList", actions: ["s3:ListBucket"], resources: [exchangeArn], conditions: { StringLike: { "s3:prefix": [`${EXCHANGE.telemetryPrefix}*`, `${EXCHANGE.importsPrefix}*`] } } }));
     this.role.addToPolicy(new iam.PolicyStatement({ actions: ["logs:DescribeLogGroups"], resources: ["*"] }));
 
     // --- The boot bundle and the script ----------------------------------------------------------------------------

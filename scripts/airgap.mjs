@@ -130,7 +130,8 @@ async function up() {
   const build = spawnSync("npm", ["run", "build"], { cwd: repoRoot, stdio: "inherit" });
   if (build.status !== 0) throw new Error("the build failed");
   console.log("deploying ZudocsAirgap (the owner's profile; never CI)");
-  cdk(["deploy", "ZudocsAirgap", "--require-approval", "never"]);
+  // --exclusively: the fleet stack is CI's; a deploy from a checkout must never redeploy it as a dependency.
+  cdk(["deploy", "ZudocsAirgap", "--exclusively", "--require-approval", "never"]);
   const stack = await outputsOf("ZudocsAirgap");
   console.log(`instance ${stack.outputs.InstanceId} · endpoint ${stack.outputs.InstanceConnectEndpointId} · route table ${stack.outputs.RouteTableId} (no route out)`);
   console.log(`shell: ${stack.outputs.ShellCommand}`);
@@ -158,7 +159,7 @@ async function down() {
   if (!stack) {
     console.log("ZudocsAirgap is not deployed");
   } else {
-    cdk(["destroy", "ZudocsAirgap", "--force"]);
+    cdk(["destroy", "ZudocsAirgap", "--exclusively", "--force"]);
   }
   // The private half died with the host; the public half would make the puller seal to a key nobody holds.
   await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: "keys/airgap.distribution.pub.json" }));

@@ -14,7 +14,6 @@
     "@airprompter/agent-sdk": "0.2.14",
     "@aws-sdk/client-dynamodb": "3.1135.0",
     "@aws-sdk/client-s3": "3.1135.0",
-    "@aws-sdk/credential-provider-node": "3.972.83",
     "@aws-sdk/lib-dynamodb": "3.1135.0"
   },
   "devDependencies": {

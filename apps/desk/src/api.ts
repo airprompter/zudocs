@@ -58,12 +58,13 @@ export interface HostStatus {
   airgap?: {
     keyId: string | null;
     keyPublished: boolean;
-    phase: "awaiting_key" | "awaiting_bundle" | "serving";
+    phase: "awaiting_bundle" | "serving";
     waitingFor: { newest: { generation: number; keyId: string | null } | null } | null;
     applies: Array<{ at: string; generation: number | null; outcome: string; reason: string | null; detail: string | null; source: "vendored" | "exchange"; object: string | null }>;
     renders: { count: number; lastAt: string | null; last: { tag: string; versionId: string; arm: string; model: string; subject: string } | null; observation: "refused" };
     export: { at: string; segments: number; bytes: number; instances: number; object: string | null; generation: number } | null;
     probe: { at: string; curl: { url: string; exit: number; seconds: number; meaning: string }; dns: { name: string; resolved: boolean; detail: string } } | null;
+    startFailure: { at: string; generation: number; releaseDigest: string; code: string | null; message: string } | null;
     seq: number;
   } | null;
   /** The eu-west host's import timer: the air-gapped host's exports carried to AirPrompter. */

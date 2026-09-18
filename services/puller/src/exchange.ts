@@ -55,13 +55,16 @@ export interface Exchange {
 
 export function createExchange(s3: Pick<S3Client, "send">, bucket: string): Exchange {
   const send = s3.send.bind(s3) as (command: unknown) => Promise<any>;
+  // A missing object is a 404 when the caller may list the key (the puller's role may, for these two keys) and a
+  // 403 otherwise; both mean "not there" for an object the host writes when it exists. Anything else is an error.
   const read = async (key: string): Promise<string | null> => {
     try {
       const out = await send(new GetObjectCommand({ Bucket: bucket, Key: key }));
       return out.Body ? await out.Body.transformToString("utf8") : null;
     } catch (error) {
       const name = (error as { name?: string }).name;
-      if (name === "NoSuchKey" || name === "NotFound") return null;
+      const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+      if (name === "NoSuchKey" || name === "NotFound" || status === 404 || name === "AccessDenied" || status === 403) return null;
       throw error;
     }
   };

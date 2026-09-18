@@ -22,6 +22,7 @@ const doc = (over: Partial<Parameters<typeof buildStatusDoc>[0]> = {}): AirgapSt
     status: { instanceId: "inst-1", generation: 3, stagedGeneration: null, applyState: "active", leaseExpiresAt: null } as never,
     healthz: { ok: true, status: "ok", reasons: [] } as never,
     applies: [{ at: "2026-09-18T20:01:00.000Z", generation: 3, outcome: "activated", reason: null, detail: null, source: "vendored", object: null }],
+    startFailure: null,
     renders: { count: 4, lastAt: "2026-09-18T20:09:00.000Z", last: { tag: "support.triage", versionId: "rev-2", arm: "none", model: "amazon.nova-micro", subject: "cust-1001" }, observation: "refused" },
     export: { at: "2026-09-18T20:06:00.000Z", segments: 1, bytes: 400, instances: 1, object: "telemetry/i-abc/x.aptelemetry", generation: 3 },
     probe: { at: "2026-09-18T20:00:10.000Z", curl: { url: "https://api-dev.airprompter.com/", exit: 28, seconds: 8, meaning: "connect timed out — no route out" }, dns: { name: "api-dev.airprompter.com", resolved: true, detail: "resolved by the VPC resolver (a name is not a route)" } },
@@ -37,7 +38,7 @@ test("the first mirror of a fresh host: started, key born, every apply, the expo
   assert.equal(fields.kind, "airgapped");
   assert.equal(fields.writtenAt, "2026-09-18T20:09:30.000Z", "the host's instant, so a torn-down host fades");
   assert.equal(fields.mirroredAt, now);
-  assert.deepEqual((fields.container as { invocations: number }).invocations, 4, "renders stand in for invocations");
+  assert.deepEqual((fields.container as { invocations: number }).invocations, 9, "the host's own count of status writes stands in for invocations");
   assert.deepEqual((fields.airgap as { keyPublished: boolean }).keyPublished, true);
   assert.deepEqual(next, { writtenAt: "2026-09-18T20:09:30.000Z", startedAt: "2026-09-18T20:00:00.000Z", lastAppliedAt: "2026-09-18T20:01:00.000Z", lastExportAt: "2026-09-18T20:06:00.000Z", health: "ok:", keyId: "k1" });
 });

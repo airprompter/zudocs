@@ -51,6 +51,8 @@ export const EXCHANGE = Object.freeze({
   publicKey: "keys/airgap.distribution.pub.json",
   status: "status/airgap.json",
   telemetryPrefix: "telemetry/",
+  /** The eu-west import timer's ledger: one marker per export it imported (or gave up on), so a replaced instance never imports twice. */
+  importsPrefix: "imports/",
   toolsPrefix: "tools/",
 });
 

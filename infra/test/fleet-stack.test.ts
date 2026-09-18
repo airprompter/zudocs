@@ -40,6 +40,8 @@ test("the stack is in ap-southeast-1; the exchange bucket is fixed-name, version
 test("the releases table: pk + generation, on demand; the queue has a dead-letter queue after three receipts, TLS only, a one-hour retention", () => {
   const { fleet } = synthAll();
   fleet.hasResourceProperties("AWS::DynamoDB::Table", { TableName: RELEASES_TABLE_NAME, BillingMode: "PAY_PER_REQUEST", KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }, { AttributeName: "generation", KeyType: "RANGE" }], AttributeDefinitions: Match.arrayWith([{ AttributeName: "generation", AttributeType: "N" }]) });
+  const [table] = Object.values(fleet.findResources("AWS::DynamoDB::Table") as Resources);
+  assert.deepEqual(table!.Properties.SSESpecification, { SSEEnabled: false }, "the AWS-owned key (SSE by DynamoDB, not KMS): no KMS request charge");
   fleet.hasResourceProperties("AWS::SQS::Queue", { QueueName: NUDGE_QUEUE_NAME, MessageRetentionPeriod: 3600, VisibilityTimeout: 540, RedrivePolicy: Match.objectLike({ maxReceiveCount: 3 }) });
   fleet.hasResourceProperties("AWS::SQS::Queue", { QueueName: NUDGE_DLQ_NAME });
   const policies = Object.values(fleet.findResources("AWS::SQS::QueuePolicy") as Resources);
@@ -47,13 +49,13 @@ test("the releases table: pk + generation, on demand; the queue has a dead-lette
   fleet.hasResourceProperties("AWS::Lambda::EventSourceMapping", { BatchSize: 1, ScalingConfig: { MaximumConcurrency: 2 } });
 });
 
-test("the puller: Node 22 arm64, one at a time, a 90 s timeout, a five-minute tick (one minute with demo=true); its environment names the parameter and the pinned root, never a key", () => {
+test("the puller: Node 22 arm64, a 90 s timeout, a five-minute tick (one minute with demo=true); its environment names the parameter and the pinned root, never a key", () => {
   const { fleet } = synthAll();
   const [fn] = Object.values(fleet.findResources("AWS::Lambda::Function", { Properties: { FunctionName: PULLER_FUNCTION_NAME } }) as Resources);
   assert.ok(fn, "the puller function");
   assert.equal(fn!.Properties.Runtime, "nodejs22.x");
   assert.deepEqual(fn!.Properties.Architectures, ["arm64"]);
-  assert.equal(fn!.Properties.ReservedConcurrentExecutions, 1, "the schedule and the queue never race on the state row");
+  assert.equal(fn!.Properties.ReservedConcurrentExecutions, undefined, "no reserved concurrency of one (it would throttle the SQS poller); the state row's version settles a race");
   assert.equal(fn!.Properties.Timeout, 90);
   const env = fn!.Properties.Environment.Variables as Record<string, unknown>;
   assert.equal(env.AGENT_KEY_PARAMETER, "/zudocs/dev/agent-key");
@@ -91,6 +93,8 @@ test("the puller's policy: one parameter by ARN in its region; PutObject on rele
   const getResources = JSON.stringify(s3Get.Resource);
   assert.ok(getResources.includes(`/${EXCHANGE.publicKey}`) && getResources.includes(`/${EXCHANGE.status}`), "reads the public key and the status document");
   assert.ok(!getResources.includes("/telemetry/") && !getResources.includes("/releases/"), "reads nothing else");
+  const list = statements.find((st) => actionsOf(st).includes("s3:ListBucket"))!;
+  assert.deepEqual(list.Condition, { StringEquals: { "s3:prefix": [EXCHANGE.publicKey, EXCHANGE.status] } }, "a listing of exactly the two keys the host writes, so a missing one is a 404");
   const dynamo = statements.filter((st) => actionsOf(st).some((a) => a.startsWith("dynamodb:")));
   assert.equal(dynamo.length, 2, "its own table, and the desk's two");
   const own = dynamo.find((st) => actionsOf(st).includes("dynamodb:Query"))!;

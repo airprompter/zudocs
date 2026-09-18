@@ -106,7 +106,8 @@ export class AirgapStack extends cdk.Stack {
     // Exactly the public half of the key, the status document and the exports: the private key's path is not writable by this role.
     this.role.addToPolicy(new iam.PolicyStatement({ sid: "ExchangeWrite", actions: ["s3:PutObject"], resources: [exchange.arnForObjects(EXCHANGE.publicKey), exchange.arnForObjects(EXCHANGE.status), exchange.arnForObjects(`${EXCHANGE.telemetryPrefix}*`)] }));
     this.role.addToPolicy(new iam.PolicyStatement({ sid: "ReleasesRead", actions: ["dynamodb:Query"], resources: [releases.tableArn] }));
-    bundle.grantRead(this.role);
+    // The bundle: exactly this object in the deployment's asset bucket (not `grantRead`, which lists the whole bucket).
+    this.role.addToPolicy(new iam.PolicyStatement({ sid: "BundleRead", actions: ["s3:GetObject"], resources: [`${assetBucketArn}/${bundle.s3ObjectKey}`] }));
 
     // --- The boot script ------------------------------------------------------------------------------------------------
     const userData = renderUserData(readFileSync(AIRGAP_USER_DATA_TEMPLATE, "utf8"), {

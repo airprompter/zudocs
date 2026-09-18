@@ -18,7 +18,8 @@ dir="$(dirname "$prefix")"
 if [ -e "${dir}/.git" ]; then echo "zudocs-airgap-keygen: ${dir} is a git directory; refusing" >&2; exit 2; fi
 install -d -o airprompter -g airprompter -m 0700 "$dir"
 if [ ! -f "$ZUDOCS_DISTRIBUTION_KEY_PATH" ]; then
-  runuser -u airprompter -- /usr/local/bin/airprompter keygen --purpose distribution --out "$prefix" --json
+  # The CLI's plain output (paths and the key id), not --json: its JSON names a field "privateKey" (a path), which reads as a secret in a log.
+  runuser -u airprompter -- /usr/local/bin/airprompter keygen --purpose distribution --out "$prefix"
 else
   echo "zudocs-airgap-keygen: ${ZUDOCS_DISTRIBUTION_KEY_PATH} exists; keeping it (a key is never regenerated in place)"
 fi

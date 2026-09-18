@@ -39,6 +39,7 @@ import { createStore, dayOf, type Store, type Ticket } from "../../desk-api/src/
 import { ApprovalWatcher } from "./approvals.js";
 import { readHostEnv, type HostEnv } from "./hostEnv.js";
 import { statusFields, type DaemonStatusDoc } from "./statusRow.js";
+import { verifyRootCommand } from "./verifyRoot.js";
 
 const WORKER_VERSION = "0.1.0";
 const log = (event: Record<string, unknown>) => process.stdout.write(JSON.stringify({ at: new Date().toISOString(), source: "zudocs-worker", ...event }) + "\n");
@@ -359,6 +360,8 @@ async function main(): Promise<void> {
 
 // Run as the main module only (compared by real path: the bundle is reached through /opt/zudocs); a test imports the helpers.
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+  // `verify-root`: the boot script's check of the fetched root document against the pinned key (verifyRoot.ts).
+  if (process.argv[2] === "verify-root") process.exit(verifyRootCommand(process.argv.slice(3)));
   main().catch((error: Error & { code?: string }) => {
     log({ event: "worker_failed", name: error.name, code: error.code ?? null, message: error.message.slice(0, 400) });
     process.exit(1);

@@ -20,7 +20,10 @@ import { CATALOGUE, MODELS } from "../../desk-api/src/modelCatalogue.js";
 import { renderHostEnv, renderRequirements } from "../render.mjs";
 import { readHostEnv } from "../src/hostEnv.js";
 import { statusFields } from "../src/statusRow.js";
+import { verifyRootDocument } from "../src/verifyRoot.js";
 import { feedbackFromChecks, nextInboxTicket, nextQueuedTicket } from "../src/worker.js";
+import { generateKeyPairSync } from "node:crypto";
+import { canonicalBytes, keyThumbprint, signBytes } from "@airprompter/agent-sdk";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const host = join(here, "..", "host");
@@ -138,6 +141,26 @@ test("the Python worker's model map is the catalogue's (Converse ids and list pr
   assert.deepEqual(models.sort(), [...MODELS].sort(), "the same list the Node hosts report on the heartbeat");
   const prices = Object.fromEntries([...py.match(/USD_PER_MILLION = \{([^}]*)\}/)![1]!.matchAll(/"([^"]+)": \(([0-9.]+), ([0-9.]+)\)/g)].map((m) => [m[1], [Number(m[2]), Number(m[3])]]));
   for (const [name, entry] of Object.entries(CATALOGUE)) if (entry.path === "converse") assert.deepEqual(prices[name], [entry.usdPerMillion.input, entry.usdPerMillion.output], `${name} price`);
+});
+
+test("the root document the boot hands the daemon is verified against the pinned key for the hosted environment: a signed dev root passes; prod's scope, a tampered body or a private pinned key are refused", () => {
+  const pair = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const priv = pair.privateKey.export({ format: "jwk" }) as { kty: string; crv: string; x: string; y: string; d: string };
+  const pinned = { kty: "EC", crv: "P-256", x: priv.x, y: priv.y };
+  const keyId = keyThumbprint(pinned as never);
+  const signed = { type: "root", protocol: "0.3.4", purpose: "platform", environment: "dev", version: 3, expires: "2030-01-01T00:00:00Z", keys: { [keyId]: { keyType: "ecdsa-p256", scheme: "ES256", publicKey: pinned } }, roles: { root: { keyIds: [keyId], threshold: 1 }, targets: { keyIds: [keyId], threshold: 1 } } };
+  const doc = { signed, signatures: [{ keyId, sig: signBytes(canonicalBytes(signed), priv as never) }] };
+  assert.deepEqual(verifyRootDocument(doc, pinned, "dev", "2026-09-18T18:00:00Z"), { ok: true, version: 3, keyIds: [keyId], expires: "2030-01-01T00:00:00Z" });
+  assert.deepEqual(verifyRootDocument(doc, pinned, "prod", "2026-09-18T18:00:00Z"), { ok: false, reason: "root_scope_mismatch" }, "the released daemon's mistake, caught here instead");
+  assert.deepEqual(verifyRootDocument({ ...doc, signed: { ...signed, version: 4 } }, pinned, "dev", "2026-09-18T18:00:00Z"), { ok: false, reason: "root_signature_invalid" });
+  assert.deepEqual(verifyRootDocument(doc, pinned, "dev", "2031-01-01T00:00:00Z"), { ok: false, reason: "root_expired" });
+  assert.deepEqual(verifyRootDocument(doc, priv, "dev"), { ok: false, reason: "pinned_key_private" });
+  assert.deepEqual(verifyRootDocument({ signed }, pinned, "dev"), { ok: false, reason: "root_document_malformed" });
+  assert.deepEqual(verifyRootDocument(doc, { kty: "RSA" }, "dev"), { ok: false, reason: "pinned_key_malformed" });
+  const script = read("user-data.sh");
+  assert.ok(script.includes("worker.mjs verify-root /tmp/root.json /etc/airprompter/root.jwk.json"), "the boot verifies the fetched document before installing it");
+  assert.ok(script.indexOf("verify-root") < script.indexOf("install -m 0644 /tmp/root.json /etc/airprompter/root.json"), "verified first, installed second");
+  assert.ok(read("units/airprompterd.service").includes("--root /etc/airprompter/root.json"), "the daemon trusts the verified document");
 });
 
 test("the worker's helpers: the inbox round-robin by id survives a re-seed, the queue takes existing tickets only, feedback comes from the checks alone", async () => {

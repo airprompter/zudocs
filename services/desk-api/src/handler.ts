@@ -127,14 +127,16 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       const target = steps.find((s) => s.step === step) ?? steps.find((s) => s.runRef);
       if (!target?.runRef) return { statusCode: 409, body: { error: "no_run_reference", message: "that run has no run reference to file feedback against (its render never happened)" } };
       const normalized = normalizeFeedback(signals);
-      if (!normalized.accepted) return { statusCode: 422, body: { filed: false, signals, rejected: normalized.rejected, message: "the SDK refuses these signals: thumbs up/down, accepted, edited, or a number" } };
-      const outcome = await ap.invoke(async () => fileFeedback(host, run, target, signals));
+      if (!normalized.accepted) return { statusCode: 422, body: { error: "signals_refused", filed: false, signals, rejected: normalized.rejected, message: "the SDK refuses these signals: thumbs up/down, accepted, edited, or a number" } };
+      // Only the signals the SDK accepts are filed, stored and shown; a refused name never reaches a log line or a chip.
+      const accepted = Object.fromEntries(Object.entries(signals).filter(([name]) => !(name in normalized.rejected)));
+      const outcome = await ap.invoke(async () => fileFeedback(host, run, target, accepted));
       const at = new Date().toISOString();
-      await store.putFeedback({ runId: run.runId, at, signals, by, filed: outcome.filed });
-      await store.appendEvent({ at, kind: "feedback", host: env.hostId, runId: run.runId, ticketId: run.ticketId, step: target.step, signals: Object.keys(signals), filed: outcome.filed, container: outcome.container, by });
+      await store.putFeedback({ runId: run.runId, at, signals: accepted, by, filed: outcome.filed });
+      await store.appendEvent({ at, kind: "feedback", host: env.hostId, runId: run.runId, ticketId: run.ticketId, step: target.step, signals: Object.keys(accepted), filed: outcome.filed, container: outcome.container, by });
       await host.writeStatus();
-      if (!outcome.filed) return { statusCode: 409, body: { filed: false, signals, error: "run_reference_foreign", message: outcome.reason } };
-      return { statusCode: 200, body: { filed: true, signals, container: outcome.container, message: outcome.container === "same" ? "filed on the run's window; it leaves with the next upload" : "filed on this container against the same prompt version and arm (the run was served by another container of this host); it leaves with the next upload" } };
+      if (!outcome.filed) return { statusCode: 409, body: { filed: false, signals: accepted, error: "run_reference_foreign", message: outcome.reason } };
+      return { statusCode: 200, body: { filed: true, signals: accepted, container: outcome.container, message: outcome.container === "same" ? "filed on the run's window; it leaves with the next upload" : "filed on this container against the same prompt version and arm (the run was served by another container of this host); it leaves with the next upload" } };
     }
     case "state": {
       const day = dayOf(new Date().toISOString());
@@ -169,9 +171,10 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
  * A run reference is minted with a key derived from the STORE's id, and every Lambda container creates its own store
  * under /tmp — so a reference minted by the container that served the run does not parse on another (an SDK gap:
  * references are not portable across a fleet's serverless containers). When the local SDK refuses the reference,
- * the desk renders the same slot for the same customer on this container (no model call; the arm is sticky on the
- * customer id) and files against that reference, only when the version, arm and release agree with the run's
- * record — feedback rides on the (tag, version, arm) window either way. Otherwise it refuses and says why.
+ * the desk renders the same slot for the same customer on this container (no model call — though a render that
+ * itself fails files the SDK's error observation; the arm is sticky on the customer id) and files against that
+ * reference, only when the version, arm and model agree with the step's record — the facts feedback lands under on
+ * the window, which is also all `ap.feedback` reads from a reference. Otherwise it refuses and says why.
  */
 async function fileFeedback(host: Host, run: Record<string, unknown> & { runId: string; ticketId: string }, target: { step: string; runRef: string | null }, signals: Record<string, unknown>): Promise<{ filed: boolean; container: "same" | "re-rendered" | "none"; reason: string }> {
   const { ap } = host;
@@ -181,8 +184,8 @@ async function fileFeedback(host: Host, run: Record<string, unknown> & { runId: 
   if (!step?.tag || !step.rendered) return { filed: false, container: "none", reason: "the run reference was minted by another container of this host and the record carries no render to re-derive it from" };
   try {
     const rendered = await ap.prompt(step.tag, { subject: String(run.customerId) }).renderAsync(values);
-    if (rendered.versionId !== step.versionId || rendered.arm !== step.arm || rendered.generation !== run.generation) {
-      return { filed: false, container: "none", reason: `the run reference was minted by another container and this one now serves ${rendered.versionId} on release #${rendered.generation} (the run was ${step.versionId} on #${String(run.generation)}); feedback would land on the wrong version, so it is refused` };
+    if (rendered.versionId !== step.versionId || rendered.arm !== step.arm || rendered.model !== step.model) {
+      return { filed: false, container: "none", reason: `the run reference was minted by another container and this one now serves ${rendered.versionId} (arm ${rendered.arm}, ${rendered.model}) where the run was ${step.versionId} (arm ${step.arm}, ${step.model}); feedback would land on the wrong version, so it is refused` };
     }
     if (!ap.feedback(rendered.runRef, signals)) return { filed: false, container: "none", reason: "the SDK refused the re-derived run reference" };
     return { filed: true, container: "re-rendered", reason: "" };

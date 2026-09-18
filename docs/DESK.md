@@ -53,13 +53,14 @@ Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack
 - Bedrock in a fresh account: a per-model agreement (created by API) and an account verification AWS runs; until
   both are done a run shows the provider's refusal on the step and the record says `ok: false`.
 - Model-invocation logging stays off (it would write prompt text to CloudWatch). The function logs the SDK's own
-  events (content-free by design; the one that echoes rejected feedback values is reduced to names) and the tee's
-  metric lines; never a render, a ticket or an answer.
+  events (content-free by design; the one that would echo a rejected feedback name is reduced to the SDK's reason
+  codes, and the API files accepted signals only) and the tee's metric lines; never a render, a ticket or an answer.
 - A run reference is minted with a key derived from the store's id, and every Lambda container creates its own
   store under `/tmp` — so a reference from the container that served a run does not parse on another (an SDK gap:
   references are not portable across serverless containers). Feedback that lands on another container is filed
-  against a fresh render of the same slot for the same customer on that container — no model call, the arm is
-  sticky — and only when the version, arm and release agree with the run's record; otherwise the API answers
+  against a fresh render of the same slot for the same customer on that container — no model call (a render that
+  itself fails files the SDK's error observation), the arm is sticky — and only when the prompt version, arm and
+  model agree with the step's record, the facts feedback lands under on the window; otherwise the API answers
   `409 run_reference_foreign` and says why. The response's `container` field says which path filed it.
 - The Budgets deny policy covers `bedrock-mantle:*` as well as `bedrock:*` invocation actions: the OpenAI-compatible
   endpoint authorises its own action (`bedrock-mantle:CreateInference` on the account's default project), which the

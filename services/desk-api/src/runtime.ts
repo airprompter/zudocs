@@ -108,9 +108,10 @@ async function startHost(): Promise<Host> {
   const encryptionContext = { application: "zudocs-desk", environment: env.airprompter.environment };
   const store = createStore(DynamoDBDocumentClient.from(new DynamoDBClient({ region: env.region }), { marshallOptions: { removeUndefinedValues: true } }), env.tables);
   const apiKey = await readAgentKey(env);
-  // The SDK's events are content-free by design; the one that echoes caller input (the rejected feedback values) is
-  // reduced to the signal names, so a log line never carries text a person typed.
-  const log = (event: Record<string, unknown>) => console.log(JSON.stringify({ source: "airprompter-sdk", ...event, ...(event.event === "feedback_rejected" && typeof event.rejected === "object" && event.rejected !== null ? { rejected: Object.keys(event.rejected as object) } : {}) }));
+  // The SDK's events are content-free by design; the one that echoes caller input (`feedback_rejected` maps each
+  // rejected NAME a caller typed to a reason code) is reduced to the reason codes, so a log line never carries text
+  // a person typed. (The handler files accepted signals only, so this line is rare.)
+  const log = (event: Record<string, unknown>) => console.log(JSON.stringify({ source: "airprompter-sdk", ...event, ...(event.event === "feedback_rejected" && typeof event.rejected === "object" && event.rejected !== null ? { rejected: Object.values(event.rejected as Record<string, unknown>) } : {}) }));
   const ap = await AirPrompterAgent.start({
     organizationId: env.airprompter.organizationId,
     agentId: env.airprompter.agentId,

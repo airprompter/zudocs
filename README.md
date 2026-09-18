@@ -66,7 +66,9 @@ The app talks to the deployed API (the SDK runs on the host, not in the browser)
 `apps/desk/public/config.json` (ignored; the same shape the desk stack writes at deploy time — `apiUrl`, `region`,
 `userPoolId`, `clientId`, `hostedUi`, `deskUrl`, `environment`, `agentId`, all from the `ZudocsSite` and
 `ZudocsDesk` stack outputs), then `npm run dev --workspace apps/desk` and sign in at http://localhost:5173 — the
-Cognito client names that callback on purpose.
+Cognito client names that callback on purpose. When another server already holds `localhost:5173` (the API's CORS
+names that origin only), set `ZUDOCS_API_PROXY=<the API URL>` for the dev server and `"apiUrl": "/api"` in the
+config: the dev server forwards same-origin.
 
 ## First deploy (owner's session, once)
 

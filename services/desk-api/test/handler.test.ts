@@ -48,7 +48,7 @@ function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[];
 
 /** Enough of the SDK: renders with the desk's source consulted, observes what the callers do, judges, files feedback. */
 function fakeAp(store: Store, calls: string[]) {
-  const state = { generation: 1, foreign: new Set<string>(), minted: 0 };
+  const state = { generation: 1, foreign: new Set<string>(), minted: 0, versionId: "rev-2", arm: "none", renders: [] as Array<{ tag: string; subject: string | undefined; values: Record<string, string> }> };
   const status = () => ({ generation: state.generation, applyState: "active", variables: { sources: ["customer_tier"], unsourced: [] }, heartbeat: { lastAt: null, nextAt: null, intervalSeconds: 60, lastRefusal: null }, storageProtection: "kms", source: "store", applyPolicy: { effective: "auto", source: "local", manifestSaid: "auto" }, lastSyncOutcome: "unchanged", stagedGeneration: null });
   const declared: Record<string, any[]> = {
     "support.triage": [{ name: "ticket", required: true, trust: "end_user" }],
@@ -62,10 +62,11 @@ function fakeAp(store: Store, calls: string[]) {
     prompt: (tag: string, { subject }: { subject?: string }) => ({
       variables: () => declared[tag] ?? [],
       renderAsync: async (values: Record<string, string>) => {
+        state.renders.push({ tag, subject, values });
         const tier = subject ? (await store.getCustomer(subject))?.tier : undefined;
         const text = `${tag}: tone=${values.tone ?? "friendly"} tier=${tier} <ticket>${values.ticket}</ticket>`;
         state.minted += 1;
-        return { text, model: tag === "support.triage" ? "amazon.nova-micro" : "openai.gpt-5-6-luna", versionId: "rev-2", arm: "none", generation: state.generation, runRef: `ref-${tag}-${state.minted}`, tag, inference: { maxOutputTokens: 600 } };
+        return { text, model: tag === "support.triage" ? "amazon.nova-micro" : "openai.gpt-5-6-luna", versionId: state.versionId, arm: state.arm, generation: state.generation, runRef: `ref-${tag}-${state.minted}`, tag, inference: { maxOutputTokens: 600 } };
       },
     }),
     checks: (_r: unknown, output: string) => ({ passed: 1, failed: 0, results: [{ name: "signed", kind: "must_match", verdict: output.includes("team") ? "pass" : "fail" }] }),
@@ -180,24 +181,56 @@ test("feedback goes through ap.feedback against the reply's run reference; undec
   assert.equal((await handler(event("POST", "/runs/run_nope/feedback", { signals: { thumbs: "up" } })) as { statusCode: number }).statusCode, 404);
 });
 
-test("feedback across containers: a reference this container cannot parse is re-derived by rendering the same slot for the same customer, and refused when the release moved", async () => {
+test("feedback across containers: a reference this container cannot parse is re-derived by rendering the same slot for the same customer with the record's call-site values; refused when the version or the arm moved; mixed signals keep the accepted ones", async () => {
   const host = fakeHost();
   const handler = createHandler(async () => host);
   const { run } = parse(await handler(event("POST", "/tickets/T-1/run")));
   const reply = run.steps.find((s: any) => s.step === "reply");
-  const ap = host.ap as unknown as { state: { generation: number; foreign: Set<string> } };
+  const ap = host.ap as unknown as { state: { generation: number; foreign: Set<string>; versionId: string; arm: string; renders: Array<{ tag: string; subject: string | undefined; values: Record<string, string> }> } };
   ap.state.foreign.add(reply.runRef);
-  const filed = await handler(event("POST", `/runs/${run.runId}/feedback`, { signals: { accepted: true } }));
+  const before = ap.state.renders.length;
+  const filed = await handler(event("POST", `/runs/${run.runId}/feedback`, { signals: { accepted: true, mood: "great" } }));
   assert.equal((filed as { statusCode: number }).statusCode, 200);
   assert.equal(parse(filed).container, "re-rendered");
-  assert.ok(host.calls.includes("feedback:ref-support.reply-3:accepted"), "filed against a reference minted here for the same version and arm");
-  assert.equal(host.store.feedback.at(-1)!.filed, true);
+  assert.deepEqual(parse(filed).signals, { accepted: true }, "the refused name is dropped, the accepted signal filed");
+  assert.deepEqual(ap.state.renders.slice(before), [{ tag: "support.reply", subject: "cust-3003", values: { tone: "formal", ticket: "the ticket text" } }], "the same slot, the same customer, the record's own call-site values (tone: formal for the enterprise customer; the ticket)");
+  assert.ok(host.calls.includes("feedback:ref-support.reply-3:accepted"), "filed against a reference minted here");
+  assert.deepEqual(host.store.feedback.at(-1)!.signals, { accepted: true });
+  assert.deepEqual(host.store.events.at(-1)!.signals, ["accepted"]);
   ap.state.generation = 2;
-  const moved = await handler(event("POST", `/runs/${run.runId}/feedback`, { signals: { thumbs: "down" } }));
-  assert.equal((moved as { statusCode: number }).statusCode, 409, "a newer release here: feedback would land on the wrong version");
-  assert.equal(parse(moved).error, "run_reference_foreign");
-  assert.match(parse(moved).message, /release #2/);
+  const newRelease = await handler(event("POST", `/runs/${run.runId}/feedback`, { signals: { thumbs: "down" } }));
+  assert.equal((newRelease as { statusCode: number }).statusCode, 200, "a newer release with the same version and arm still files: the window's facts are unchanged");
+  ap.state.versionId = "rev-3";
+  const movedVersion = await handler(event("POST", `/runs/${run.runId}/feedback`, { signals: { thumbs: "down" } }));
+  assert.equal((movedVersion as { statusCode: number }).statusCode, 409, "a newer prompt version here: feedback would land on the wrong version");
+  assert.equal(parse(movedVersion).error, "run_reference_foreign");
+  assert.match(parse(movedVersion).message, /rev-3/);
   assert.equal(host.store.feedback.at(-1)!.filed, false, "stored as not filed, so the desk shows it honestly");
+  ap.state.versionId = "rev-2";
+  ap.state.arm = "candidate";
+  const movedArm = await handler(event("POST", `/runs/${run.runId}/feedback`, { signals: { thumbs: "down" } }));
+  assert.equal((movedArm as { statusCode: number }).statusCode, 409, "another arm here: refused");
+  assert.match(parse(movedArm).message, /arm candidate/);
+});
+
+test("feedback across containers: a record with no render, or a render that throws here, is refused with the reason", async () => {
+  const host = fakeHost();
+  const handler = createHandler(async () => host);
+  const { run } = parse(await handler(event("POST", "/tickets/T-1/run")));
+  const stored = await host.store.getRun(run.runId);
+  const reply = (stored!.steps as any[]).find((s: any) => s.step === "reply");
+  const ap = host.ap as unknown as { state: { foreign: Set<string> }; prompt: unknown };
+  ap.state.foreign.add(reply.runRef);
+  const originalPrompt = ap.prompt;
+  ap.prompt = () => { throw Object.assign(new Error("render support.reply: refused (disabled) on generation 1"), { name: "RenderRefusedError" }); };
+  const thrown = await handler(event("POST", `/runs/${run.runId}/feedback`, { signals: { thumbs: "up" } }));
+  assert.equal((thrown as { statusCode: number }).statusCode, 409);
+  assert.match(parse(thrown).message, /could not be re-derived here: render support.reply: refused/);
+  ap.prompt = originalPrompt;
+  reply.rendered = null;
+  const bare = await handler(event("POST", `/runs/${run.runId}/feedback`, { signals: { thumbs: "up" } }));
+  assert.equal((bare as { statusCode: number }).statusCode, 409);
+  assert.match(parse(bare).message, /carries no render/);
 });
 
 test("state, events, healthz and unknown routes; a failed start answers 503 with the code", async () => {

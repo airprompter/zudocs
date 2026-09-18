@@ -113,8 +113,10 @@ test("mantle fetch: the client's bearer is dropped, the body's model is Bedrock'
     return new Response("{}", { status: 200 });
   };
   const fetch = mantleFetch("us-east-1", async () => ({ accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret", sessionToken: "token" }), inner);
-  await fetch("https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer sigv4", "content-type": "application/json", "x-stainless-lang": "js" }, body: JSON.stringify({ model: "openai.gpt-5-6-luna", messages: [] }) });
+  const controller = new AbortController();
+  await fetch("https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions", { method: "POST", headers: { authorization: "Bearer sigv4", "content-type": "application/json", "x-stainless-lang": "js" }, body: JSON.stringify({ model: "openai.gpt-5-6-luna", messages: [] }), signal: controller.signal });
   const headers = captured!.init.headers as Record<string, string>;
+  assert.equal(captured!.init.signal, controller.signal, "the client's abort signal (its timeout) reaches the wire");
   assert.match(headers.authorization!, /^AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE\/\d{8}\/us-east-1\/bedrock-mantle\/aws4_request, SignedHeaders=/);
   assert.equal(headers["x-amz-security-token"], "token");
   assert.equal(headers["x-stainless-lang"], "js", "diagnostic headers ride along");

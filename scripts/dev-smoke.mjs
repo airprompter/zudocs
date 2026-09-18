@@ -6,8 +6,9 @@
  * process does, and for every slot: names what the call site still has to pass (`needs`), renders it —
  * `customer_tier` from a tiny in-script customer table registered as a variable source, `tone` from its declared
  * default, the ticket fenced as end-user text — and runs the slot's declared output checks against a canned answer.
- * Each claim is proved by comparing two renders (two customers, a passed tone against the default) or by finding the
- * exact fenced value; it prints generation, version, model, arm, counts and verdicts, and no prompt text at all.
+ * Each claim is proved without showing the render: two customers with sentinel tiers render texts that are the same
+ * with one value swapped, a passed sentinel value proves the default was what rendered, the fenced value is found
+ * whole. It prints generation, version, model, arm, counts and verdicts — no prompt text, on any path.
  *
  * What the dev registry cannot carry is said, not hidden: the CLI's front matter has no `checks:` line, so the
  * daemon serves the release without them and `ap.checks()` finds none — the checks are read from the seeded file
@@ -25,6 +26,7 @@ import { join, relative, resolve } from "node:path";
 import { AirPrompterAgent, checksRefusals, evaluateChecks } from "@airprompter/agent-sdk";
 import { readConfig, repoRoot } from "./lib/config.mjs";
 import { parsePromptFile } from "./lib/promptFiles.mjs";
+import { SCENARIOS, SENTINEL_CUSTOMERS, TIER_SENTINELS, VALUE_SENTINEL, customers, describeVariables, substitutionProof } from "./lib/scenarios.mjs";
 
 const promptsDir = resolve(process.argv[2] ?? join(repoRoot, "prompts"));
 const cli = process.env.AIRPROMPTER_CLI ?? (existsSync(join(repoRoot, ".bin", "airprompter")) ? join(repoRoot, ".bin", "airprompter") : "airprompter");
@@ -32,43 +34,9 @@ const stateDir = join(promptsDir, ".airprompter-dev", "state");
 const scope = { organizationId: "org_dev", agentId: "agt_dev", target: "dev" };
 const config = readConfig();
 
-/** The application's own record of who is on which plan — the desk's customer table, in miniature. */
-const customers = new Map([
-  ["cust-1001", { name: "Acme Docs", tier: "team" }],
-  ["cust-2002", { name: "Nimbus Labs", tier: "trial" }],
-  ["cust-3003", { name: "Orbital Bank", tier: "enterprise" }],
-]);
-
-/** What each slot is rendered with, a second customer to compare against, and a canned answer of the right shape. */
-const TICKET = "Search still returns a page we deleted last week. Clicking it gives a 404.";
-const SUMMARY = "Symptom: a deleted page still appears in search and 404s when opened.\nWhere: search; page not named.\nSince: last week.\nTried: not stated.\nImpact: the team sees stale results.\nUnknown: the page URL; whether other deleted pages show too.";
-const CASES = {
-  "support.triage": { values: { ticket: TICKET }, subject: "cust-1001", other: "cust-2002", answer: '{"category":"search","priority":"normal","summary":"A deleted page still appears in search results and returns 404."}' },
-  "support.reply": { values: { ticket: TICKET }, subject: "cust-2002", other: "cust-3003", answer: "Thanks for flagging this — a deleted page lingering in search is our index running behind. I have queued a re-index of your space; results usually catch up within the hour. Your trial includes full search, so nothing to change on your side. If it is still there tomorrow, send me the page URL and I will look directly.\n\nThe Zudocs team" },
-  "support.escalate.summary": { values: { ticket: TICKET }, subject: "cust-1001", other: "cust-2002", answer: SUMMARY },
-  "support.escalate.handoff": { values: { summary: SUMMARY }, subject: "cust-3003", other: "cust-1001", answer: "Title: Deleted page still in search (search)\nSeverity: S3 — a defect with a workaround (open the page from the tree)\nPlan: enterprise; copy the account manager, respond within four hours\nFacts:\n- deleted page still listed\n- opening it gives 404\n- since last week\nAsk: check the index for tombstoned pages; ask the customer for the page URL." },
-};
-
 let failures = 0;
 const fail = (message) => { failures += 1; console.log(`  ✗ ${message}`); };
 const ok = (message) => console.log(`  ✓ ${message}`);
-
-/**
- * The one span where two texts differ, widened to whole words so "friendly" against "formal" is not "riendly"
- * against "ormal": [what a has, what b has]; null when they are equal.
- */
-function differingSpan(a, b) {
-  if (a === b) return null;
-  const word = /[A-Za-z0-9_-]/;
-  let start = 0;
-  while (start < a.length && start < b.length && a[start] === b[start]) start += 1;
-  let endA = a.length;
-  let endB = b.length;
-  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA -= 1; endB -= 1; }
-  while (start > 0 && word.test(a[start - 1])) start -= 1;
-  while (endA < a.length && endB < b.length && word.test(a[endA]) && a[endA] === b[endB]) { endA += 1; endB += 1; }
-  return [a.slice(start, endA), b.slice(start, endB)];
-}
 
 const files = [];
 (function walk(dir) {
@@ -140,9 +108,9 @@ try {
   for (const path of files) {
     const parsed = parsePromptFile(readFileSync(path, "utf8"));
     const tag = parsed.meta.tag ?? relative(promptsDir, path).replace(/\.(md|txt|prompt)$/i, "").split("/").join(".").toLowerCase();
-    const scenario = CASES[tag];
+    const scenario = SCENARIOS[tag];
     console.log(`\n${tag}  (${relative(repoRoot, path)})`);
-    if (!scenario) { fail("no smoke scenario for this slot — add one to CASES"); continue; }
+    if (!scenario) { fail("no smoke scenario for this slot — add one to scripts/lib/scenarios.mjs"); continue; }
     // The CLI's own reading of the file, from its --json handshake: "<tag> (<model>, <n> vars)".
     const served = registry.slots.find((line) => line.startsWith(`${tag} (`));
     const servedVars = served ? Number(/, (\d+) vars\)$/.exec(served)?.[1]) : NaN;
@@ -152,13 +120,13 @@ try {
     const handle = ap.prompt(tag, { subject: scenario.subject });
     const declared = handle.variables();
     const needs = handle.needs(scenario.values);
-    console.log(`  declared: ${declared.map((v) => `${v.name}${v.required ? "!" : ""}${v.trust === "end_user" ? "?" : ""}${v.source === "runtime" ? "~" : ""}${v.default ? `=${v.default}` : ""}`).join(", ")} · needs after the call site's values: ${JSON.stringify(needs)}`);
+    console.log(`  declared: ${describeVariables(declared)} · needs after the call site's values: ${JSON.stringify(needs)}`);
     if (needs.length) fail(`the call site would still miss ${needs.join(", ")}`);
     let rendered;
     try {
       rendered = await handle.renderAsync(scenario.values);
     } catch (error) {
-      fail(`render: ${error.name} ${error.message}`);
+      fail(`render: ${error.name} ${error.message}${status.applyState === "staged" || status.applyState === "awaiting_unlock" ? " (release.json says unlock_required: run airprompter unlock on this state dir, or seed from an environment whose policy is auto)" : ""}`);
       continue;
     }
     ok(`rendered ${rendered.versionId} on ${rendered.model} (arm ${rendered.arm}, generation ${ap.generation}, ${rendered.text.length} chars)`);
@@ -172,22 +140,22 @@ try {
         else fail(`${variable.name} is declared end-user but the render does not carry the value fenced`);
       }
       if (variable.source === "runtime") {
-        // Two customers, one prompt: the renders differ in exactly one span, and it is the two tiers.
-        const other = await ap.prompt(tag, { subject: scenario.other }).renderAsync(scenario.values);
-        const span = differingSpan(rendered.text, other.text);
-        const tiers = [customers.get(scenario.subject).tier, customers.get(scenario.other).tier];
-        if (span && span[0] === tiers[0] && span[1] === tiers[1]) ok(`${variable.name}: filled from the customer table — ${scenario.subject} renders "${tiers[0]}", ${scenario.other} renders "${tiers[1]}", nothing else differs`);
-        else fail(`${variable.name}: the renders for ${scenario.subject} and ${scenario.other} differ by ${JSON.stringify(span)}, expected ${JSON.stringify(tiers)}`);
+        // Two customers whose tiers are sentinels no prompt contains: the renders are the same text with one swapped.
+        const [a, b] = await Promise.all(SENTINEL_CUSTOMERS.map((who) => ap.prompt(tag, { subject: who }).renderAsync(scenario.values)));
+        const proof = substitutionProof(a.text, TIER_SENTINELS[0], b.text, TIER_SENTINELS[1]);
+        if (proof.ok) ok(`${variable.name}: filled from the customer table at render time (${proof.occurrences} occurrence(s); ${scenario.subject} renders "${customers.get(scenario.subject).tier}")`);
+        else fail(`${variable.name}: two customers' renders are not one substitution apart (${proof.reason}, ${proof.occurrences} occurrence(s))`);
       }
       if (variable.default !== undefined && !(variable.name in scenario.values)) {
-        // Passing the variable changes exactly one span: the default becomes the value.
-        const passed = await handle.renderAsync({ ...scenario.values, [variable.name]: "formal" });
-        const span = differingSpan(rendered.text, passed.text);
-        if (span && span[0] === variable.default && span[1] === "formal") ok(`${variable.name}: nobody passed it and the declared default "${variable.default}" rendered; passing "formal" replaces exactly that`);
-        else fail(`${variable.name}: expected the default "${variable.default}" to be the one difference, got ${JSON.stringify(span)}`);
+        // Passing a sentinel changes exactly the default's occurrences and nothing else.
+        const passed = await handle.renderAsync({ ...scenario.values, [variable.name]: VALUE_SENTINEL });
+        const proof = substitutionProof(passed.text, VALUE_SENTINEL, rendered.text, variable.default);
+        if (proof.ok) ok(`${variable.name}: nobody passed it and the declared default "${variable.default}" rendered (${proof.occurrences} occurrence(s)); a passed value replaces exactly that`);
+        else fail(`${variable.name}: the default "${variable.default}" is not what a passed value replaces (${proof.reason})`);
       }
     }
     if (rendered.text.includes("## Success criteria")) ok("carries a ## Success criteria section for ap.judge(…, \"prompt\")");
+    else if (scenario.criteria) fail("no ## Success criteria section, and this slot's judge rubric is the prompt's own");
     if (parsed.inference) ok(`version settings in the file (the pin's wire form): ${JSON.stringify(parsed.inference)}${rendered.inference ? ` · on the dev wire as ${JSON.stringify(rendered.inference)}` : " · not on the dev wire (the dev grammar has no inference line)"}`);
 
     const fromDaemon = ap.checks(rendered, scenario.answer, { record: false });

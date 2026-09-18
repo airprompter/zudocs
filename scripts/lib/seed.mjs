@@ -9,13 +9,17 @@
  * compatibility promise of their own — so every field this depends on is checked by name and a rename fails here,
  * not as a corrupt file.
  *
+ * The write replaces a registry, never an arbitrary directory: a non-empty target must carry a registry marker
+ * (`.gitkeep`, `.airprompter-dev/` or `release.json`) and hold nothing but registry-shaped entries. New files are
+ * written before stale ones are removed, so a failure part-way leaves old and new side by side, never neither.
+ *
  * @example
  * ```js
  * const plan = await planSeed({ api, config });          // { files: [{ path, text, summary }], releaseJson, summary }
  * writeSeed({ outDir: "./prompts", plan });              // refuses a directory that holds anything but a registry
  * ```
  */
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileFor } from "./promptFiles.mjs";
 
@@ -24,12 +28,15 @@ import { fileFor } from "./promptFiles.mjs";
  * paths — a directory per tag segment, a `.md` per leaf (dots in a tag are directories, so a name holds none).
  */
 const REGISTRY_ENTRY = /^(\.gitkeep|\.airprompter-dev|golden|release\.json|[a-z0-9]+(?:[_-][a-z0-9]+)*(?:\.md)?)$/;
-const NEVER_A_REGISTRY = new Set(["node_modules", ".git"]);
+/** Proof that a directory is a registry and not somebody's home: one of these must be present before anything goes. */
+const MARKERS = new Set([".gitkeep", ".airprompter-dev", "release.json"]);
 const KEPT = new Set([".gitkeep", ".airprompter-dev"]);
+/** Finder and editors leave these; they are deleted with the stale files rather than refused. */
+const NOISE = new Set([".DS_Store", "Thumbs.db"]);
 
-function field(object, name, where) {
+function field(object, name, where, meaning = "the console API changed; update scripts/lib/seed.mjs") {
   const value = object?.[name];
-  if (value === undefined || value === null) throw new Error(`${where}: the response carried no ${name} (the console API changed; update scripts/lib/seed.mjs)`);
+  if (value === undefined || value === null) throw new Error(`${where}: the response carried no ${name} (${meaning})`);
   return value;
 }
 
@@ -38,7 +45,7 @@ export async function planSeed({ api, config }) {
   const board = field(await api(`${agentPath}/board`), "board", "board");
   const environment = field(field(board, "environments", "board"), config.environment, "board.environments");
   if (!environment.releaseDigest) throw new Error(`${config.environment}: nothing is promoted yet (generation ${environment.generation ?? 0})`);
-  const policy = field(environment, "policy", `board.environments.${config.environment}`);
+  const policy = field(environment, "policy", `board.environments.${config.environment}`, "the environment has no policy record yet: open it in the console once, or promote again");
   const applyPolicy = field(policy, "applyPolicy", "policy");
   const leaseSeconds = field(policy, "leaseSeconds", "policy");
   if (applyPolicy !== "auto" && applyPolicy !== "unlock_required") throw new Error(`policy.applyPolicy is ${JSON.stringify(applyPolicy)}, not auto or unlock_required`);
@@ -61,10 +68,13 @@ export async function planSeed({ api, config }) {
     if (pin.goldenSet) {
       // The slot's current set, checked against what the release pinned: an edit after the seal is not the pin.
       const golden = await api(`${agentPath}/slots/${pin.tag}/golden`);
-      const set = field(golden, "set", `${pin.tag} golden`);
+      const set = field(golden, "set", `${pin.tag} golden`, "the slot's golden set was removed after this release was sealed; seal and promote again");
       const ref = field(golden, "ref", `${pin.tag} golden`);
-      if (ref.contentHash !== pin.goldenSet.contentHash) throw new Error(`${pin.tag}: the slot's golden set (${ref.setId}) is not the one the release pinned (${pin.goldenSet.setId}); seal and promote again, or seed after reverting the edit`);
-      files.push({ path: `golden/${pin.tag}.json`, text: `${JSON.stringify(set, null, 2)}\n`, summary: `golden set ${set.setId}: ${set.cases.length} cases, floor ${set.minPassBps / 100}%` });
+      const pinnedHash = field(pin.goldenSet, "contentHash", `${pin.tag} goldenSet`);
+      if (field(ref, "contentHash", `${pin.tag} golden ref`) !== pinnedHash) throw new Error(`${pin.tag}: the slot's golden set (${ref.setId}) is not the one the release pinned (${pin.goldenSet.setId}); seal and promote again, or seed after reverting the edit`);
+      const cases = field(set, "cases", `${pin.tag} golden set`);
+      const minPassBps = field(set, "minPassBps", `${pin.tag} golden set`);
+      files.push({ path: `golden/${pin.tag}.json`, text: `${JSON.stringify(set, null, 2)}\n`, summary: `golden set ${set.setId}: ${cases.length} cases, floor ${minPassBps / 100}%` });
     }
   }
   const releaseJson = { applyPolicy, leaseSeconds, ...(policy.onLeaseExpiry ? { onLeaseExpiry: policy.onLeaseExpiry } : {}) };
@@ -76,19 +86,41 @@ export async function planSeed({ api, config }) {
   };
 }
 
-/** Everything in `outDir` but the keep file and the dev keys goes; the plan's files and release.json are written. */
+/**
+ * Write the plan into `outDir`: refuse anything that is not a registry, write the new files, then remove what the
+ * plan no longer names — everything but the keep file and the dev keys.
+ */
 export function writeSeed({ outDir, plan }) {
   if (existsSync(outDir)) {
-    const entries = readdirSync(outDir);
-    const foreign = entries.filter((entry) => NEVER_A_REGISTRY.has(entry) || !REGISTRY_ENTRY.test(entry));
+    const entries = readdirSync(outDir).filter((entry) => !NOISE.has(entry));
+    if (entries.length && !entries.some((entry) => MARKERS.has(entry))) throw new Error(`${outDir} is not empty and carries no registry marker (.gitkeep, .airprompter-dev or release.json) — refusing to replace it`);
+    const foreign = entries.filter((entry) => !REGISTRY_ENTRY.test(entry));
     if (foreign.length) throw new Error(`${outDir} holds ${foreign.slice(0, 5).join(", ")}${foreign.length > 5 ? ", …" : ""} — not a prompt registry, refusing to replace it (a README.md there would be served as a slot; keep docs outside the directory)`);
-    for (const entry of entries) if (!KEPT.has(entry)) rmSync(join(outDir, entry), { recursive: true, force: true });
   }
   mkdirSync(outDir, { recursive: true });
+  const written = new Set(["release.json"]);
   for (const file of plan.files) {
     const target = join(outDir, file.path);
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, file.text);
+    written.add(file.path);
   }
   writeFileSync(join(outDir, "release.json"), `${JSON.stringify(plan.releaseJson, null, 2)}\n`);
+  removeStale(outDir, "", written);
+}
+
+/** Every file not written this run goes (the keep file and the dev keys stay); a directory left empty goes with it. */
+function removeStale(root, prefix, written) {
+  const dir = join(root, prefix);
+  for (const entry of readdirSync(dir)) {
+    const rel = prefix ? `${prefix}/${entry}` : entry;
+    if (!prefix && KEPT.has(entry)) continue;
+    const path = join(root, rel);
+    if (statSync(path).isDirectory()) {
+      removeStale(root, rel, written);
+      if (readdirSync(path).length === 0) rmSync(path, { recursive: true });
+    } else if (!written.has(rel)) {
+      rmSync(path, { force: true });
+    }
+  }
 }

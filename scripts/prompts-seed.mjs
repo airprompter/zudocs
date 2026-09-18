@@ -30,6 +30,11 @@ if (outArg !== -1 && (argv[outArg + 1] === undefined || argv[outArg + 1].startsW
   console.log("--out takes a directory");
   process.exit(2);
 }
+const unknown = argv.filter((arg, index) => !(index === outArg || index === outArg + 1));
+if (unknown.length) {
+  console.log(`unknown argument ${unknown[0]} — the only option is --out <directory>`);
+  process.exit(2);
+}
 const outDir = resolve(outArg === -1 ? join(repoRoot, "prompts") : argv[outArg + 1]);
 const config = readConfig();
 const token = secretFromEnv("AIRPROMPTER_SESSION_TOKEN", "the session token `airprompter login` prints");

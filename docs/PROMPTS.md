@@ -96,9 +96,10 @@ The seed writes one file per slot — front matter `tag`, `model`, `version`, `v
 two lines the CLI ignores but the smoke reads, `checks:` (the pin's enabled checks) and `inference:` (the pin's
 settings in the wire's integers, `temperatureMilli` and so on) as JSON — then the version's text; `release.json`
 with the environment's apply policy and lease; `golden/<tag>.json` for each golden set, refused when the slot's set
-is no longer the one the release pinned. It writes only after every read succeeded, only into a directory that
-holds nothing but a registry, and replaces everything there except `.gitkeep` and `.airprompter-dev/` (the dev keys
-and the generation counter, so a client that holds generation N never sees a fresh N). The four routes it reads are
+is no longer the one the release pinned. It writes only after every read succeeded, only into a directory that is
+a registry — empty, or carrying `.gitkeep`, `.airprompter-dev/` or `release.json` and nothing foreign — writing
+the new files first and then removing what the release no longer names, except `.gitkeep` and `.airprompter-dev/`
+(the dev keys and the generation counter, so a client that holds generation N never sees a fresh N). The four routes it reads are
 the console's own workspace API — what the app's pages call, with no compatibility promise — so every field it
 depends on is checked by name and a rename fails as an error, never as a corrupt file.
 
@@ -107,10 +108,15 @@ from the `cli/v0.1.0` release of `airprompter/airprompter-agent-sdk`, compare di
 `.bin/airprompter` (ignored) or on your `PATH` (`AIRPROMPTER_CLI` overrides where the smoke looks).
 
 `npm run dev:proof` is the same render against AirPrompter itself: the SDK syncs the promoted release with the
-Agent key from the environment, verifies it against `keys/dev.root.jwk.json`, renders `support.reply` for two
-customers whose tiers its own table supplies (the renders differ by exactly the tier), runs the checks on the wire
-against a canned answer without recording them, and sends one heartbeat. It invents nothing: no observation of a
-model call that did not happen. Neither script prints prompt text, so their output can go into a pull request.
+Agent key from the environment, verifies it against `keys/dev.root.jwk.json`, renders `support.reply` (or the slot
+named on the command line) for a customer whose tier its own table supplies, runs the checks on the wire against a
+canned answer without recording them, and sends one heartbeat. It invents nothing: no observation of a model call
+that did not happen.
+
+Both scripts prove what they claim without showing a render (`scripts/lib/scenarios.mjs`): two customers whose
+tiers are sentinel words no prompt contains render texts that are the same with one value swapped; passing a
+sentinel for `tone` proves the default was what rendered; the fenced ticket is found whole. Their output is ids,
+counts and verdicts on every path, so it can go into a pull request.
 
 ## Gaps found while building this (recorded, not hidden)
 

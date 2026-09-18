@@ -65,9 +65,13 @@ test("nothing is promoted: refused by name before any other read", async () => {
   assert.equal(calls.length, 1);
 });
 
-test("a golden set edited after the seal is not the pin's: refused", async () => {
+test("a golden set edited or removed after the seal is not the pin's: refused, and a missing hash fails by name", async () => {
   const { api } = fakeApi({ "/workspace/ws1/agents/agent_1/slots/support.triage/golden": { set: { setId: "gs_2", cases: [], minPassBps: 10000 }, ref: { setId: "gs_2", contentHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" } } });
   await assert.rejects(planSeed({ api, config }), /golden set \(gs_2\) is not the one the release pinned \(gs_1\)/);
+  const { api: removed } = fakeApi({ "/workspace/ws1/agents/agent_1/slots/support.triage/golden": { set: null, ref: null } });
+  await assert.rejects(planSeed({ api: removed, config }), /support.triage golden: the response carried no set \(the slot's golden set was removed/);
+  const { api: renamed } = fakeApi({ "/workspace/ws1/agents/agent_1/slots/support.triage/golden": { set: { setId: "gs_1", cases: [], minPassBps: 10000 }, ref: { setId: "gs_1", digest: GOLDEN_HASH } } });
+  await assert.rejects(planSeed({ api: renamed, config }), /golden ref: the response carried no contentHash/, "undefined === undefined must not pass as a match");
 });
 
 test("a renamed response field fails by name, and a missing policy or lease is refused rather than invented", async () => {
@@ -95,13 +99,26 @@ test("writeSeed replaces a registry directory but keeps the keep file and the de
   assert.deepEqual(JSON.parse(readFileSync(join(dir, "release.json"), "utf8")), plan.releaseJson);
   assert.ok(existsSync(join(dir, "golden", "support.triage.json")));
 
+  const home = mkdtempSync(join(tmpdir(), "zudocs-home-"));
+  for (const name of ["zudocs", "prompt-haven", "my-app"]) mkdirSync(join(home, name));
+  writeFileSync(join(home, "notes.md"), "mine\n");
+  assert.throws(() => writeSeed({ outDir: home, plan }), /carries no registry marker/, "lower-case names alone are not a registry");
+  assert.deepEqual(readdirSync(home).sort(), ["my-app", "notes.md", "prompt-haven", "zudocs"], "nothing was deleted");
+  const finder = mkdtempSync(join(tmpdir(), "zudocs-finder-"));
+  writeFileSync(join(finder, ".gitkeep"), "");
+  writeFileSync(join(finder, ".DS_Store"), "");
+  writeSeed({ outDir: finder, plan });
+  assert.ok(!existsSync(join(finder, ".DS_Store")) && existsSync(join(finder, "release.json")), "Finder's droppings are swept, not refused");
   const foreign = mkdtempSync(join(tmpdir(), "zudocs-foreign-"));
+  writeFileSync(join(foreign, ".gitkeep"), "");
   writeFileSync(join(foreign, "README.md"), "# not a registry\n");
   assert.throws(() => writeSeed({ outDir: foreign, plan }), /holds README.md .* refusing/);
   assert.ok(existsSync(join(foreign, "README.md")), "nothing was deleted");
   const project = mkdtempSync(join(tmpdir(), "zudocs-project-"));
   writeFileSync(join(project, "package.json"), "{}\n");
-  assert.throws(() => writeSeed({ outDir: project, plan }), /holds package.json/);
+  writeFileSync(join(project, "release.json"), "{}\n");
+  assert.throws(() => writeSeed({ outDir: project, plan }), /holds package.json/, "a marker does not excuse a foreign entry");
+  assert.ok(existsSync(join(project, "package.json")), "nothing was deleted");
   const fresh = join(mkdtempSync(join(tmpdir(), "zudocs-fresh-")), "prompts");
   writeSeed({ outDir: fresh, plan });
   assert.ok(existsSync(join(fresh, "support", "triage.md")), "a directory that does not exist yet is created");

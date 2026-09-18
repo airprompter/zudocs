@@ -12,58 +12,25 @@
  * ```
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import * as cdk from "aws-cdk-lib";
-import { Match, Template } from "aws-cdk-lib/assertions";
+import { Match } from "aws-cdk-lib/assertions";
 import { CATALOGUE } from "../../services/desk-api/src/modelCatalogue.js";
 import { ROUTES } from "../../services/desk-api/src/router.js";
 import { buildStacks, STACK_IDS } from "../lib/app.js";
 import { readConfig } from "../lib/config.js";
 import { DAILY_RUN_CAP, dailyRunCapOf, readAirPrompterIds } from "../lib/desk-stack.js";
+import { CONTEXT, FLAGS, IDS, PINS, actionsOf, fixtures, statementsOf, synthAll, type Resources } from "./fixtures.js";
 
-const CONTEXT = {
-  account: "111122223333",
-  domain: "zudocs.com",
-  regions: { site: "us-east-1", sharedHost: "eu-west-1", fleet: "ap-southeast-1" },
-  github: { owner: "airprompter", ownerId: 295734781, repo: "zudocs", repoId: 1375253396, branch: "main" },
-  budget: { monthlyUsd: 30, alertUsd: 50 },
-  mail: { inboundRegion: "us-east-1", dkimTokens: ["a".repeat(32), "b".repeat(32), "c".repeat(32)] },
-};
-const here = fileURLToPath(new URL(".", import.meta.url));
-const FLAGS = Object.fromEntries(Object.entries((JSON.parse(readFileSync(join(here, "..", "cdk.json"), "utf8")) as { context: Record<string, unknown> }).context).filter(([k]) => k.startsWith("@aws-cdk/")));
+const synth = synthAll;
 
-/** Stand-ins for the built artefacts: the stack only needs the directories to exist. */
-function fixtures(): { deskApi: string; deskSite: string } {
-  const deskApi = mkdtempSync(join(tmpdir(), "zudocs-desk-api-"));
-  const deskSite = mkdtempSync(join(tmpdir(), "zudocs-desk-site-"));
-  writeFileSync(join(deskApi, "index.mjs"), "export const handler = async () => ({ statusCode: 200 });\n");
-  writeFileSync(join(deskSite, "index.html"), "<!doctype html><title>fixture</title>\n");
-  return { deskApi, deskSite };
-}
-const IDS = { baseUrl: "https://api-dev.airprompter.com", hostedEnvironment: "dev", rootUrl: "https://edge.example/roots/dev/root.json", organizationId: "org-1", agentId: "agent_x", environment: "dev", rootJwk: JSON.stringify({ kty: "EC", crv: "P-256", x: "x", y: "y", kid: "k" }) };
-
-function synth(email = "owner@example.test", context: Record<string, unknown> = {}) {
-  const app = new cdk.App({ context: { ...FLAGS, ...CONTEXT, ...context } });
-  const config = readConfig(app.node, { BUDGET_EMAIL: email });
-  const stacks = buildStacks(app, config, { assets: fixtures(), airprompter: IDS });
-  return { desk: Template.fromStack(stacks.desk), site: Template.fromStack(stacks.site), stacks };
-}
-
-type Resources = Record<string, { Properties: Record<string, any> }>;
-const statementsOf = (template: Template): Array<{ Action: unknown; Resource: unknown; Condition?: Record<string, unknown>; Effect: string }> =>
-  Object.values(template.findResources("AWS::IAM::Policy") as Resources).flatMap((p) => p.Properties.PolicyDocument.Statement);
-const actionsOf = (st: { Action: unknown }): string[] => (Array.isArray(st.Action) ? st.Action : [st.Action]) as string[];
-
-test("the desk stack is on the app, depends on the site (its pool, certificate, deny policy) and the zone, and refuses to synthesize without the built artefacts", () => {
+test("the desk stack is on the app, depends on the site (its pool, certificate, deny policy), the zone and the shared host (the role and function it names), and refuses to synthesize without the built artefacts", () => {
   const { stacks } = synth();
   assert.equal(STACK_IDS.desk, "ZudocsDesk");
   assert.ok(stacks.desk.dependencies.includes(stacks.site) && stacks.desk.dependencies.includes(stacks.dns));
+  assert.ok(stacks.desk.dependencies.includes(stacks.sharedHost), "deployed after the eu-west stack: the Budgets action names its role, the function its wire function");
   const app = new cdk.App({ context: { ...FLAGS, ...CONTEXT } });
-  assert.throws(() => buildStacks(app, readConfig(app.node, { BUDGET_EMAIL: "x@y.z" }), { assets: { deskApi: "/nonexistent/a", deskSite: "/nonexistent/b" }, airprompter: IDS }), /run `npm run build` first/);
+  assert.throws(() => buildStacks(app, readConfig(app.node, { BUDGET_EMAIL: "x@y.z" }), { assets: { ...fixtures(), deskApi: "/nonexistent/a", deskSite: "/nonexistent/b" }, airprompter: IDS, pins: PINS }), /run `npm run build` first/);
 });
 
 test("every route the handler matches is registered, each with the JWT authorizer; the authorizer trusts the pool and both clients; the stage throttles; CORS names the desk only", () => {
@@ -139,23 +106,26 @@ test("IAM: exactly the catalogue's models, one SSM parameter by ARN, KMS under e
   assert.equal(dynamo.length, 1, "the seven tables' grants minimise to one statement");
   assert.deepEqual(actionsOf(dynamo[0]!).sort(), ["dynamodb:BatchWriteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:UpdateItem"]);
   const tableRefs = JSON.stringify(dynamo[0]!.Resource).match(/"[A-Za-z]+Table[A-F0-9]{8}"/g) ?? [];
-  assert.equal(new Set(tableRefs).size, 7, "every table (and its indexes), no wildcard");
+  assert.equal(new Set(tableRefs).size, 8, "every table (and its indexes), no wildcard");
   const self = statements.filter((st) => actionsOf(st).includes("lambda:InvokeFunction"));
   assert.equal(self.length, 1);
   assert.ok(JSON.stringify(self[0]!.Resource).includes(":function:zudocs-desk-api"), "itself, by its fixed name");
+  assert.ok(JSON.stringify(self[0]!.Resource).includes(":lambda:eu-west-1:111122223333:function:zudocs-wire"), "and the eu-west wire function, by its fixed name in the other region");
+  assert.equal((JSON.stringify(self[0]!.Resource).match(/function:/g) ?? []).length, 2, "nothing else");
   const [role] = Object.values(desk.findResources("AWS::IAM::Role", { Properties: { AssumeRolePolicyDocument: Match.objectLike({ Statement: [Match.objectLike({ Principal: { Service: "lambda.amazonaws.com" } })] }) } }) as Resources);
   assert.deepEqual((role!.Properties.ManagedPolicyArns as unknown[]).length, 1, "only the basic execution policy is managed; the deny policy arrives through the budget action");
 });
 
-test("tables: seven, on-demand, encrypted, destroyable (demo data); the runs table has the byTicket index; events expire by TTL", () => {
+test("tables: eight, on-demand, encrypted, destroyable (demo data); the runs table has the byTicket index; events expire by TTL", () => {
   const { desk } = synth();
   const tables = Object.values(desk.findResources("AWS::DynamoDB::Table") as Resources);
-  assert.equal(tables.length, 7);
+  assert.equal(tables.length, 8);
   for (const t of tables) {
     assert.equal(t.Properties.BillingMode, "PAY_PER_REQUEST", t.Properties.TableName);
     assert.deepEqual(t.Properties.SSESpecification, { SSEEnabled: true }, t.Properties.TableName);
   }
-  assert.deepEqual(tables.map((t) => t.Properties.TableName).sort(), ["counters", "customers", "events", "feedback", "runs", "status", "tickets"].map((n) => `zudocs-desk-${n}`));
+  assert.deepEqual(tables.map((t) => t.Properties.TableName).sort(), ["approvals", "counters", "customers", "events", "feedback", "runs", "status", "tickets"].map((n) => `zudocs-desk-${n}`));
+  desk.hasResourceProperties("AWS::DynamoDB::Table", { TableName: "zudocs-desk-approvals", KeySchema: [{ AttributeName: "approvalId", KeyType: "HASH" }] });
   desk.hasResourceProperties("AWS::DynamoDB::Table", { TableName: "zudocs-desk-runs", GlobalSecondaryIndexes: [Match.objectLike({ IndexName: "byTicket" })] });
   desk.hasResourceProperties("AWS::DynamoDB::Table", { TableName: "zudocs-desk-events", TimeToLiveSpecification: { AttributeName: "expiresAt", Enabled: true } });
   desk.hasResourceProperties("AWS::KMS::Key", { EnableKeyRotation: true });
@@ -185,7 +155,7 @@ test("the desk app: a private bucket, GetObject-only origin, SPA fallback to 200
   assert.equal(Object.keys(desk.findResources("AWS::Route53::RecordSet", { Properties: { Name: "desk.zudocs.com." } })).length, 2, "A and AAAA");
 });
 
-test("the Budgets action attaches the site's deny policy to the function's role at 100 % of zudocs-monthly, automatically; it is skipped only when the budget e-mail is waived", () => {
+test("the Budgets action attaches the site's deny policy to the function's role and the eu-west host's role at 100 % of zudocs-monthly, automatically; it is skipped only when the budget e-mail is waived", () => {
   const { desk, site } = synth();
   desk.hasResourceProperties("AWS::Budgets::BudgetsAction", {
     BudgetName: "zudocs-monthly",
@@ -194,7 +164,7 @@ test("the Budgets action attaches the site's deny policy to the function's role 
     NotificationType: "ACTUAL",
     ApprovalModel: "AUTOMATIC",
     Subscribers: [{ Type: "EMAIL", Address: "owner@example.test" }],
-    Definition: { IamActionDefinition: Match.objectLike({ Roles: [Match.anyValue()] }) },
+    Definition: { IamActionDefinition: Match.objectLike({ Roles: [Match.anyValue(), "zudocs-eu-host"] }) },
   });
   const [action] = Object.values(desk.findResources("AWS::Budgets::BudgetsAction") as Resources);
   assert.ok(JSON.stringify(action!.Properties.Definition.IamActionDefinition.PolicyArn).includes("ZudocsSite:ExportsOutput"), "the policy ARN comes from the site stack");
@@ -203,7 +173,9 @@ test("the Budgets action attaches the site's deny policy to the function's role 
   assert.equal(executor.length, 1, "Budgets assumes a role of its own");
   const attach = statementsOf(desk).filter((st) => actionsOf(st).includes("iam:AttachRolePolicy"));
   assert.equal(attach.length, 1);
-  assert.ok(!JSON.stringify(attach[0]!.Resource).includes('"*"'), "attach to the function's role only");
+  const attachTo = JSON.stringify(attach[0]!.Resource);
+  assert.ok(!attachTo.includes('"*"'), "attach to the two model roles only");
+  assert.ok(attachTo.includes(":role/zudocs-eu-host"), "the eu-west host's role by its fixed name (IAM is global)");
   const waived = synth("", { allowNoBudgetEmail: "true" });
   assert.equal(Object.keys(waived.desk.findResources("AWS::Budgets::BudgetsAction")).length, 0);
 });
@@ -221,5 +193,6 @@ test("the entry point reads the identifiers and the pinned public root from the 
   assert.equal(ids.agentId, "agent_1QNnYql4RXq9taZn");
   assert.equal(ids.environment, "dev");
   assert.ok(!("d" in JSON.parse(ids.rootJwk)));
+  assert.match(ids.edgePointerUrl ?? "", /\/g\/[A-Za-z0-9_-]+\/generation\.json$/, "the environment's pointer, an identifier the daemon idles on");
   assert.throws(() => readAirPrompterIds("/nonexistent"), /ENOENT|missing/);
 });

@@ -1,0 +1,20 @@
+{
+  "$comment": "What the eu-west host installs, pinned here so a change is a synth and a review, never a surprise at boot. The CLI is verified against the digest before it is executable; the Python SDK is not on PyPI yet, so its five distributions install by the commit the sdk-python tag names; the AMI is pinned per region because a resolved-at-deploy image replaces the instance on every AL2023 refresh (a replacement rebuilds the store from one sync).",
+  "cli": {
+    "tag": "cli/v0.1.0",
+    "asset": "airprompter-linux-arm64",
+    "sha256": "f12f552b357d42f593546308be9c86aace546b1081815d1225535740da50174c",
+    "url": "https://github.com/airprompter/airprompter-agent-sdk/releases/download/cli/v0.1.0/airprompter-linux-arm64"
+  },
+  "pythonSdk": {
+    "tag": "sdk-python/v0.2.14",
+    "commit": "009ea8b6e3501fc25eb88e23e2ae217384b15a0f",
+    "repo": "https://github.com/airprompter/airprompter-agent-sdk",
+    "packages": ["core", "sync", "telemetry", "runtime", "agent"]
+  },
+  "ami": {
+    "$comment": "aws ssm get-parameter --region eu-west-1 --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64 — bump deliberately",
+    "name": "al2023-ami-2023.12.20260917.1-kernel-6.1-arm64",
+    "eu-west-1": "ami-0535b4996339a5410"
+  }
+}

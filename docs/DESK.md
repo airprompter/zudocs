@@ -20,12 +20,14 @@ the honest notes — what the SDK cannot do on this host yet, and how the desk s
 | Feedback | thumbs / accepted / edited → `ap.feedback(runRef, signals)`; the SDK's verdict (declared signals only) is the API's answer | `src/handler.ts` |
 | Telemetry | The SDK's normal upload to AirPrompter, and the tee: the same segment's rows as CloudWatch EMF lines on stdout, only after AirPrompter accepted the segment; dimensions capped to `tag`, `versionId`, `arm`, `status` | `src/tee.ts` |
 | Cap | 2,000 runs per UTC day (an atomic DynamoDB counter, refused at the line); HTTP 429 `daily_cap` with the count — nothing is simulated | `src/store.ts`, `src/handler.ts` |
-| Status and timeline | Every run and presenter action writes `status()` + `healthz()` to the status table (one row per host); `onChange` and every action append to the events table (partitioned by UTC day) | `src/runtime.ts`, `src/store.ts` |
+| Status and timeline | Every run and presenter action writes `status()` + `healthz()` to the status table (one row per host); `onChange` and every action append to the events table (partitioned by UTC day). The eu-west host writes the same tables across regions (`docs/EU-WEST.md`) | `src/runtime.ts`, `src/store.ts` |
+| Approvals | The eu-west host's staged releases: the host opens the row, `POST /approvals/{id}/approve` flips it `pending → approved` exactly once under the signer's e-mail (a repeat answers `already: true` with the row as it stands), the host activates through its daemon and settles it | `src/store.ts`, `src/handler.ts` |
 
 Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack registers):
 `GET /tickets`, `GET /tickets/{id}`, `POST /tickets/{id}/run`, `POST /tickets/{id}/escalate`,
-`POST /runs/{id}/feedback`, `GET /state`, `GET /events?since=`, `POST /presenter/{heartbeat|upload|sync|seed|replay}`,
-`GET /healthz`.
+`POST /runs/{id}/feedback`, `GET /state`, `GET /events?since=`, `GET /approvals`, `POST /approvals/{id}/approve`
+(phase 4: the owner's decision on a release staged on the eu-west host, recorded once — `docs/EU-WEST.md`),
+`POST /presenter/{heartbeat|upload|sync|seed|replay|enqueue|cut_wire|restore_wire}`, `GET /healthz`.
 
 ### What each number on the run panel is
 
@@ -67,12 +69,20 @@ Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack
   first real run found and the stack now grants and denies alike.
 - The app is a single-page app behind CloudFront: a path the bucket does not hold answers `index.html`. A tab left
   open across a deploy may hold a chunk name the new build pruned — reload it before a session.
+- Two phase-3 follow-ups fixed in phase 4: the `cap_refused` row said "on undefined" because the event's `day` field
+  is also the events table's partition key, which the reader strips — the field is `capDay` now; and the timeline
+  showed rows twice because the first load and the first interval tick both polled with no `since` — one poll of
+  each kind is in flight at a time now, and rows merge by the API's row id (`format.ts` › `mergeEvents`).
 
 ## The app (`apps/desk`)
 
 Sign-in is the hosted UI over PKCE with the `desk` client (no library; `src/auth.ts`). The columns: the inbox;
-the ticket with Run / Escalate and every run's cards; the fleet (host cards from the status table), the presenter
-panel (replay N on this host, heartbeat / upload / sync now, re-seed), and the timeline (the events table, polled).
+the ticket with Run / Escalate and every run's cards (a run the eu-west worker made lands here too, marked with its
+host); the approvals (a release staged on a host, with its Approve button, and the last decisions with their
+instants), the fleet (host cards from the status table — the daemon host shows its store key in amber, its policy
+pin, its lease as a countdown, its sync failures and both attached workers), the presenter panel (replay N on this
+host, "run this ticket on eu-west now", heartbeat / upload / sync now, re-seed, cut / restore the wire), and the
+timeline (the events table, polled; every host's activation with its instant).
 Vocabulary is the customer's — *prompt version*, *release #N* — and *generation*, *manifest*, *slot*, *arm* live in
 tooltips. Everything shown is the API's record.
 

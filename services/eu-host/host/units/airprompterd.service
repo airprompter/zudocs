@@ -1,0 +1,65 @@
+# airprompterd on the Zudocs eu-west host: the SDK's own unit (deploy/systemd/airprompterd.service in
+# airprompter/airprompter-agent-sdk) with four changes — the identifiers come from /etc/airprompter/zudocs.env
+# (the Agent key alone lives in airprompterd.env, root:root 0600, refreshed from SSM by zudocs-agent-key before
+# every start), the daemon talks to AirPrompter dev with the dev root pinned, the apply policy is pinned to
+# unlock_required on this host (the console can request an unlock; the desk's Approvals page grants it), and the
+# JSON log goes to /var/log/zudocs for the CloudWatch agent.
+#
+#   $ systemctl status airprompterd
+#   $ journalctl -u airprompterd -n 50            # the unit's own messages; the daemon's JSON lines are in /var/log/zudocs/airprompterd.log
+
+[Unit]
+Description=AirPrompter agent daemon (airprompterd) for the Zudocs desk, eu-west-1
+Documentation=https://github.com/airprompter/airprompter-agent-sdk/blob/main/protocol/daemon-socket.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=airprompter
+Group=airprompter
+# The key file first, as root (the + prefix): a rotated parameter is picked up at the next restart. The file is
+# optional to systemd (the leading -) so the start can reach ExecStartPre before it exists; when the parameter is
+# not readable ExecStartPre fails, the daemon does not start, and Restart=always tries again in five seconds.
+ExecStartPre=+/usr/local/sbin/zudocs-agent-key
+EnvironmentFile=/etc/airprompter/zudocs.env
+EnvironmentFile=-/etc/airprompter/airprompterd.env
+Environment=XDG_STATE_HOME=/var/lib/airprompter
+ExecStart=/usr/local/bin/airprompter daemon \
+  --org ${AIRPROMPTER_ORG} \
+  --agent ${AIRPROMPTER_AGENT} \
+  --environment ${AIRPROMPTER_ENVIRONMENT} \
+  --hosted-environment ${AIRPROMPTER_HOSTED_ENVIRONMENT} \
+  --base-url ${AIRPROMPTER_BASE_URL} \
+  --root /etc/airprompter/root.jwk.json \
+  --root-url ${AIRPROMPTER_ROOT_URL} \
+  --edge-pointer-url ${AIRPROMPTER_EDGE_POINTER_URL} \
+  --apply-policy unlock_required \
+  --poll-seconds 30 \
+  --upload-interval-seconds 60 \
+  --json
+StandardOutput=append:/var/log/zudocs/airprompterd.log
+StandardError=append:/var/log/zudocs/airprompterd.log
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Hardening: the daemon needs its state directory, its log, outbound HTTPS, and nothing else.
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/airprompter /var/log/zudocs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

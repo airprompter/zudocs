@@ -14,9 +14,9 @@ import { test } from "node:test";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer } from "aws-lambda";
 import { createHandler } from "../src/handler.js";
 import type { Host } from "../src/runtime.js";
-import type { Customer, Store, StatusRow, Ticket, TimelineEvent } from "../src/store.js";
+import type { ApprovalRow, Customer, Store, StatusRow, Ticket, TimelineEvent } from "../src/store.js";
 
-function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[]; status: StatusRow[]; feedback: any[]; used: number } {
+function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[]; status: StatusRow[]; feedback: any[]; used: number; queues: Map<string, string[]>; approvals: Map<string, ApprovalRow> } {
   const customers: Customer[] = [{ customerId: "cust-3003", name: "Orbital Bank", tier: "enterprise", seats: 240, since: "2024-11-20" }];
   const tickets: Ticket[] = [{ ticketId: "T-1", customerId: "cust-3003", subject: "s", body: "the ticket text", receivedAt: "2026-09-18T09:05:00Z", channel: "email", lastRun: null }];
   const self = {
@@ -36,12 +36,22 @@ function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[];
     putFeedback: async (row: any) => void self.feedback.push(row),
     listFeedback: async () => self.feedback,
     putStatus: async (row: StatusRow) => void self.status.push(row),
+    updateStatus: async () => undefined,
     listStatus: async () => self.status,
     appendEvent: async (event: TimelineEvent) => void self.events.push(event),
     listEvents: async () => self.events,
     takeRunSlot: async (_day: string, cap: number) => (self.used < cap ? { ok: true as const, used: ++self.used } : { ok: false as const, used: self.used }),
     readRunSlots: async () => self.used,
     seed: async (c: Customer[], t: Ticket[]) => ({ customers: c.length, tickets: t.length }),
+    enqueueTicket: async (hostId: string, ticketId: string) => { const q = self.queues.get(hostId) ?? []; q.push(ticketId); self.queues.set(hostId, q); return q.length; },
+    dequeueTicket: async (hostId: string) => self.queues.get(hostId)?.shift() ?? null,
+    openApproval: async (row: ApprovalRow) => { if (self.approvals.has(row.approvalId)) return { created: false }; self.approvals.set(row.approvalId, { ...row }); return { created: true }; },
+    getApproval: async (id: string) => self.approvals.get(id) ?? null,
+    listApprovals: async () => [...self.approvals.values()],
+    approve: async (id: string, by: string, at: string) => { const row = self.approvals.get(id); if (!row) return { ok: false, row: null }; if (row.decision !== "pending") return { ok: false, row }; Object.assign(row, { decision: "approved", decidedBy: by, decidedAt: at, updatedAt: at }); return { ok: true, row }; },
+    settleApproval: async (id: string, settle: any) => { const row = self.approvals.get(id); if (!row || !["pending", "approved"].includes(row.decision)) return null; Object.assign(row, { decision: settle.decision, outcome: settle.outcome, activatedAt: settle.activatedAt ?? null, updatedAt: settle.at }); return row; },
+    queues: new Map<string, string[]>(),
+    approvals: new Map<string, ApprovalRow>(),
   };
   return self;
 }
@@ -97,7 +107,7 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
   const store = fakeStore();
   const calls: string[] = [];
   const ap = fakeAp(store, calls) as unknown as Host["ap"];
-  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
+  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "", airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
   const host: Host & { store: ReturnType<typeof fakeStore>; calls: string[] } = {
     env,
     ap,
@@ -163,7 +173,47 @@ test("the cap: the third run of a two-run day is refused with 429 and its reason
   assert.equal(body.used, 2);
   assert.match(body.message, /Nothing was simulated/);
   assert.equal(host.calls.length, before, "no invoke, no model call");
-  assert.equal(host.store.events.at(-1)!.kind, "cap_refused");
+  const refusal = host.store.events.at(-1)!;
+  assert.equal(refusal.kind, "cap_refused");
+  assert.equal(refusal.capDay, body.day, "the day rides as capDay: `day` is the events table's partition key and never comes back to the timeline");
+  assert.ok(!("day" in refusal));
+});
+
+test("approvals: listed with the pending count; approved exactly once by the signed-in owner with an event; a repeat answers 200 with the row as it stands and no second event; unknown ids 404", async () => {
+  const host = fakeHost();
+  const handler = createHandler(async () => host);
+  const row: ApprovalRow = { approvalId: "eu-west-1-ec2-g2", hostId: "eu-west-1/ec2", storeId: "i-store", generation: 2, releaseDigest: null, stagedAt: "2026-09-18T15:00:00.000Z", unlockRequest: null, decision: "pending", decidedBy: null, decidedAt: null, activatedAt: null, outcome: null, updatedAt: "2026-09-18T15:00:00.000Z" };
+  await host.store.openApproval(row);
+  const listed = parse(await handler(event("GET", "/approvals")));
+  assert.equal(listed.pending, 1);
+  assert.equal(listed.approvals[0].approvalId, "eu-west-1-ec2-g2");
+  const first = parse(await handler(event("POST", "/approvals/eu-west-1-ec2-g2/approve")));
+  assert.equal(first.already, false);
+  assert.equal(first.approval.decision, "approved");
+  assert.equal(first.approval.decidedBy, "seth@zudocs.com", "the JWT's e-mail, not a body field");
+  assert.match(first.message, /release #2 approved for eu-west-1\/ec2/);
+  const second = parse(await handler(event("POST", "/approvals/eu-west-1-ec2-g2/approve")));
+  assert.equal(second.already, true);
+  assert.equal(second.approval.decidedBy, "seth@zudocs.com");
+  assert.match(second.message, /already approved/);
+  assert.deepEqual(host.store.events.filter((e) => e.kind === "approval_decided").length, 1, "one decision, one event");
+  assert.equal((await handler(event("POST", "/approvals/nope/approve")) as { statusCode: number }).statusCode, 404);
+  assert.equal(parse(await handler(event("GET", "/approvals"))).pending, 0);
+});
+
+test("the presenter's enqueue puts a ticket on another host's queue (never this host's) and the wire buttons are refused until the eu-west stack exists", async () => {
+  const host = fakeHost();
+  const handler = createHandler(async () => host);
+  const queued = await handler(event("POST", "/presenter/enqueue", { ticketId: "T-1", host: "eu-west-1/ec2" }));
+  assert.equal((queued as { statusCode: number }).statusCode, 202);
+  assert.deepEqual(host.store.queues.get("eu-west-1/ec2"), ["T-1"]);
+  assert.equal(parse(queued).depth, 1);
+  assert.equal((await handler(event("POST", "/presenter/enqueue", { ticketId: "T-1", host: "us-east-1/lambda" })) as { statusCode: number }).statusCode, 400, "this host runs on request, it has no queue");
+  assert.equal((await handler(event("POST", "/presenter/enqueue", { ticketId: "T-9", host: "eu-west-1/ec2" })) as { statusCode: number }).statusCode, 404);
+  const cut = await handler(event("POST", "/presenter/cut_wire"));
+  assert.equal((cut as { statusCode: number }).statusCode, 501);
+  assert.equal(parse(cut).error, "no_wire_function");
+  assert.equal(host.store.events.filter((e) => e.kind === "wire").length, 0, "nothing was cut, nothing is on the timeline");
 });
 
 test("feedback goes through ap.feedback against the reply's run reference; undeclared signals are refused before anything is filed", async () => {
@@ -238,8 +288,9 @@ test("state, events, healthz and unknown routes; a failed start answers 503 with
   const handler = createHandler(async () => host);
   const state = parse(await handler(event("GET", "/state")));
   assert.equal(state.host.status.storageProtection, "kms");
-  assert.deepEqual(state.host.models, ["openai.gpt-5-6-luna", "amazon.nova-micro", "anthropic.claude-haiku-4-5"]);
+  assert.deepEqual(state.host.models, ["openai.gpt-5-6-luna", "amazon.nova-2-lite", "amazon.nova-micro", "anthropic.claude-haiku-4-5"]);
   assert.deepEqual(state.cap, { day: new Date().toISOString().slice(0, 10), used: 0, cap: 2 });
+  assert.deepEqual(state.features, { wire: false }, "no wire function configured on this fake host");
   assert.equal((await handler(event("GET", "/healthz")) as { statusCode: number }).statusCode, 200);
   assert.equal((await handler(event("GET", "/nope")) as { statusCode: number }).statusCode, 404);
   assert.equal((await handler(event("POST", "/presenter/dance")) as { statusCode: number }).statusCode, 404);

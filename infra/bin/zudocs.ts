@@ -2,9 +2,9 @@
 /**
  * The CDK entry point: read the configuration, build the stacks.
  *
- * Phase 1 deploys `ZudocsCi`, `ZudocsDns` and `ZudocsSite` in us-east-1 (see
- * `lib/app.ts` for who deploys which). Later phases add `ZudocsSharedHost`
- * (eu-west-1), `ZudocsFleet` (ap-southeast-1) and the on-demand `ZudocsAirgap`.
+ * Phase 1 deploys `ZudocsCi`, `ZudocsDns` and `ZudocsSite` in us-east-1, phase 3
+ * `ZudocsDesk`, phase 4 `ZudocsSharedHost` in eu-west-1 (see `lib/app.ts` for who
+ * deploys which). Phase 5 adds `ZudocsFleet` (ap-southeast-1) and the on-demand `ZudocsAirgap`.
  *
  * @example
  * ```sh

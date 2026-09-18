@@ -28,6 +28,9 @@ export function readConfig(env = process.env) {
     if (typeof value !== "string" || !value.trim()) throw new Error(`config: ${key} is missing (airprompter.config.json or ${envName})`);
     config[key] = value.trim();
   }
+  // The environment's edge pointer (`…/g/<token>/generation.json`): optional, an identifier — a resident host idles on it.
+  const pointer = env.AIRPROMPTER_EDGE_POINTER_URL ?? file.edgePointerUrl ?? "";
+  config.edgePointerUrl = typeof pointer === "string" && pointer.trim() ? pointer.trim() : null;
   config.models = env.AIRPROMPTER_MODELS ? env.AIRPROMPTER_MODELS.split(",").map((m) => m.trim()).filter(Boolean) : file.models ?? [];
   if (!Array.isArray(config.models) || config.models.length === 0) throw new Error("config: models is empty (the models this application can call, as the provider names them)");
   for (const key of ["environment", "hostedEnvironment"]) if (!["dev", "staging", "prod"].includes(config[key])) throw new Error(`config: ${key} must be dev, staging or prod`);

@@ -59,7 +59,7 @@ try {
   baseUrl: config.baseUrl,
   stateDir: join(repoRoot, "state", "proof"),
   root: { pinned: JSON.parse(readFileSync(rootPath, "utf8")), hostedEnvironment: config.hostedEnvironment },
-  sync: { mode: "resident", pollSeconds: 30, rootUrl: config.rootUrl },
+  sync: { mode: "resident", pollSeconds: 30, rootUrl: config.rootUrl, ...(config.edgePointerUrl ? { edgePointerUrl: config.edgePointerUrl } : {}) },
   models: config.models,
   telemetry: { upload: false },
   variables: { customer_tier: { resolve: async ({ subject }) => customers.get(subject)?.tier, trust: "operator", timeoutMs: 500 } },

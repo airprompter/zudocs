@@ -153,10 +153,22 @@ mark.fence { background: none; color: var(--muted); text-decoration: underline d
 .var-chip.origin-unfilled { color: var(--red); }
 
 /* Side */
-.hosts, .presenter, .timeline { border-bottom: 1px solid var(--rule); padding-bottom: 12px; }
+.hosts, .presenter, .timeline, .approvals { border-bottom: 1px solid var(--rule); padding-bottom: 12px; }
 .hosts p, .timeline p { padding: 0 16px; }
 .host { margin: 0 16px 10px; border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
 .host.stale { opacity: 0.55; }
+.host.degraded { border-color: var(--amber); }
+.host .staged { color: var(--amber); font-weight: 600; }
+.host .refusal { color: var(--red); font-weight: 600; }
+.approval { margin: 0 16px 10px; border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+.approval-pending { border-color: var(--amber); background: var(--amber-soft); }
+.approval-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.approval-head .staged { color: var(--amber); font-weight: 600; }
+.approval .button-row { padding: 4px 0 0; }
+.decision-activated { background: var(--green-soft); color: var(--green); }
+.decision-approved { background: var(--blue-soft); color: var(--blue); }
+.decision-superseded { background: var(--rule-soft); color: var(--muted); }
+.decision-failed { background: var(--red-soft); color: var(--red); }
 .host header { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .host header .chip { margin-left: auto; }
 .kv { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
@@ -170,8 +182,10 @@ mark.fence { background: none; color: var(--muted); text-decoration: underline d
 .event-time { font-family: var(--mono); color: var(--muted); }
 .event-host { color: var(--muted); grid-column: 2; }
 .event-text { grid-column: 2; }
-.kind-release_changed .event-text, .kind-host_started .event-text { color: var(--accent); font-weight: 600; }
-.kind-cap_refused .event-text { color: var(--red); font-weight: 600; }
+.kind-release_changed .event-text, .kind-host_started .event-text, .kind-worker_started .event-text, .kind-release_activated .event-text { color: var(--accent); font-weight: 600; }
+.kind-release_staged .event-text, .kind-approval_decided .event-text, .kind-wire .event-text { color: var(--amber); font-weight: 600; }
+.kind-cap_refused .event-text, .kind-approval_failed .event-text { color: var(--red); font-weight: 600; }
+.kind-health_changed .event-text { font-weight: 600; }
 
 @media (max-width: 1100px) {
   .columns { grid-template-columns: 240px minmax(0, 1fr) 300px; }

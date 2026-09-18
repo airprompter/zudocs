@@ -9,7 +9,8 @@ test("the committed config names the dev deployment and the models the desk can 
   assert.equal(config.hostedEnvironment, "dev");
   assert.equal(config.environment, "dev");
   assert.match(config.agentId, /^agent_/);
-  assert.deepEqual(config.models, ["amazon.nova-micro", "openai.gpt-5-6-luna", "anthropic.claude-haiku-4-5"], "the same three the desk host reports (services/desk-api/src/modelCatalogue.ts)");
+  assert.deepEqual(config.models, ["amazon.nova-micro", "amazon.nova-2-lite", "openai.gpt-5-6-luna", "anthropic.claude-haiku-4-5"], "the same four the desk host reports (services/desk-api/src/modelCatalogue.ts)");
+  assert.match(config.edgePointerUrl, /^https:\/\/[a-z0-9]+\.cloudfront\.net\/g\/[A-Za-z0-9_-]+\/generation\.json$/, "the dev environment's pointer, an identifier");
   assert.ok(Object.isFrozen(config));
 });
 
@@ -19,6 +20,7 @@ test("the environment overrides each identifier and the model list", () => {
   assert.equal(config.agentId, "agt_dev");
   assert.equal(config.environment, "staging");
   assert.deepEqual(config.models, ["a", "b", "c"]);
+  assert.equal(readConfig({ AIRPROMPTER_EDGE_POINTER_URL: "   " }).edgePointerUrl, null, "an empty pointer is no pointer");
 });
 
 test("a bad environment or an empty model list is refused by name", () => {

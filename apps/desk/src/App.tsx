@@ -1,8 +1,9 @@
 /**
  * The desk, signed in: the release bar across the top, the inbox on the left, the ticket and its run panel in
- * the middle, the fleet (host cards), the timeline and the presenter panel on the right. State polls the API —
- * `/state` every 10 s, `/events` every 5 s — because an on_invoke Lambda cannot push. Everything shown is the
- * API's record; the app formats, it never computes a result of its own.
+ * the middle, the fleet (host cards), the approvals, the presenter panel and the timeline on the right. State polls
+ * the API — `/state` every 10 s, `/events` and `/approvals` every 5 s — because an on_invoke Lambda cannot push;
+ * one poll of each kind is in flight at a time and timeline rows are merged by id, so a row is never shown twice.
+ * Everything shown is the API's record; the app formats, it never computes a result of its own.
  *
  * @example
  * ```tsx
@@ -10,14 +11,16 @@
  * ```
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, type Api, type Run, type State, type Ticket, type TimelineEvent } from "./api";
+import { ApiError, type Api, type Approval, type Run, type State, type Ticket, type TimelineEvent } from "./api";
 import type { DeskConfig } from "./config";
+import { Approvals } from "./components/Approvals";
 import { HostCards } from "./components/HostCards";
 import { Inbox } from "./components/Inbox";
 import { Presenter } from "./components/Presenter";
 import { ReleaseBar } from "./components/ReleaseBar";
 import { TicketView } from "./components/TicketView";
 import { Timeline } from "./components/Timeline";
+import { mergeEvents } from "./format";
 
 export interface Notice { tone: "info" | "warn" | "error"; text: string }
 
@@ -27,9 +30,11 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   const [runs, setRuns] = useState<Run[]>([]);
   const [state, setState] = useState<State | null>(null);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
+  const [approvals, setApprovals] = useState<Approval[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const lastEventAt = useRef<string | null>(null);
+  const polling = useRef<{ events: boolean; approvals: boolean; state: boolean }>({ events: false, approvals: false, state: false });
 
   const say = useCallback((tone: Notice["tone"], text: string) => setNotice({ tone, text }), []);
   const failed = useCallback((error: unknown) => {
@@ -51,24 +56,46 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
     } catch (error) { failed(error); }
   }, [api, failed]);
   const loadState = useCallback(async () => {
-    try { setState(await api.state()); } catch (error) { failed(error); }
+    if (polling.current.state) return;
+    polling.current.state = true;
+    try { setState(await api.state()); } catch (error) { failed(error); } finally { polling.current.state = false; }
   }, [api, failed]);
   const loadEvents = useCallback(async () => {
+    // One poll in flight: the first load and the first interval tick both asked with no `since` and the timeline
+    // showed every row twice; now the second waits, and the merge keys on the row id besides.
+    if (polling.current.events) return;
+    polling.current.events = true;
     try {
       const { events: fresh } = await api.events(lastEventAt.current);
       if (fresh.length === 0) return;
       lastEventAt.current = fresh[fresh.length - 1]!.at;
-      setEvents((current) => [...current, ...fresh].slice(-200));
-    } catch { /* the next poll tries again; a timeline gap is not worth a banner */ }
+      setEvents((current) => mergeEvents(current, fresh));
+    } catch { /* the next poll tries again; a timeline gap is not worth a banner */ } finally { polling.current.events = false; }
+  }, [api]);
+  const loadApprovals = useCallback(async () => {
+    if (polling.current.approvals) return;
+    polling.current.approvals = true;
+    try { setApprovals((await api.approvals()).approvals); } catch { /* next poll */ } finally { polling.current.approvals = false; }
   }, [api]);
 
-  useEffect(() => { void loadTickets(); void loadState(); void loadEvents(); }, [loadTickets, loadState, loadEvents]);
+  useEffect(() => { void loadTickets(); void loadState(); void loadEvents(); void loadApprovals(); }, [loadTickets, loadState, loadEvents, loadApprovals]);
   useEffect(() => {
     const s = setInterval(() => void loadState(), 10_000);
-    const e = setInterval(() => void loadEvents(), 5_000);
+    const e = setInterval(() => { void loadEvents(); void loadApprovals(); }, 5_000);
     return () => { clearInterval(s); clearInterval(e); };
-  }, [loadState, loadEvents]);
+  }, [loadState, loadEvents, loadApprovals]);
   useEffect(() => { if (selectedId) void loadRuns(selectedId); else setRuns([]); }, [selectedId, loadRuns]);
+  // A run on another host lands in the ticket's list without a click: re-read the runs when a newer foreign run event arrives.
+  const seenForeignRun = useRef<string | null>(null);
+  useEffect(() => {
+    const newest = [...events].reverse().find((e) => e.kind === "ticket_run" && state && e.host !== state.host.hostId);
+    const key = newest ? (newest.id ?? `${newest.at}|${newest.host}`) : null;
+    if (key && key !== seenForeignRun.current) {
+      seenForeignRun.current = key;
+      if (selectedId) void loadRuns(selectedId);
+      void loadTickets();
+    }
+  }, [events, selectedId, loadRuns, loadTickets, state]);
 
   const act = useCallback(async (label: string, fn: () => Promise<void>) => {
     setBusy(label);
@@ -94,6 +121,11 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
     await Promise.all([loadState(), loadEvents(), action === "seed" ? loadTickets() : Promise.resolve()]);
     if (action === "seed") setRuns([]);
   });
+  const approve = (approvalId: string) => act("approve", async () => {
+    const { message, already } = await api.approve(approvalId);
+    say(already ? "warn" : "info", message);
+    await Promise.all([loadApprovals(), loadEvents()]);
+  });
 
   const selected = tickets.find((t) => t.ticketId === selectedId) ?? null;
   return (
@@ -113,8 +145,9 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
           {selected ? <TicketView ticket={selected} runs={runs} busy={busy} onRun={() => run(selected.ticketId, "run")} onEscalate={() => run(selected.ticketId, "escalate")} onFeedback={feedback} /> : <div className="empty">No tickets yet — re-seed the inbox from the presenter panel.</div>}
         </main>
         <aside className="side">
+          <Approvals approvals={approvals} busy={busy} onApprove={approve} />
           <HostCards state={state} />
-          <Presenter state={state} busy={busy} onAction={presenter} environment={config.environment} agentId={config.agentId} />
+          <Presenter state={state} busy={busy} selectedTicketId={selectedId} onAction={presenter} environment={config.environment} agentId={config.agentId} />
           <Timeline events={events} />
         </aside>
       </div>

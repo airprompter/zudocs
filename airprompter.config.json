@@ -3,9 +3,10 @@
   "baseUrl": "https://api-dev.airprompter.com",
   "hostedEnvironment": "dev",
   "rootUrl": "https://dwp5emkmjpv8.cloudfront.net/roots/dev/root.json",
+  "edgePointerUrl": "https://dwp5emkmjpv8.cloudfront.net/g/5Mk7g0ejf8RAbeKs3ojhxCJYPM5-IZ_VIalKXNT4I0g/generation.json",
   "organizationId": "2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b",
   "workspaceId": "a83801e5-31c7-48f0-bd87-bf80b2f7a693",
   "agentId": "agent_1QNnYql4RXq9taZn",
   "environment": "dev",
-  "models": ["amazon.nova-micro", "openai.gpt-5-6-luna", "anthropic.claude-haiku-4-5"]
+  "models": ["amazon.nova-micro", "amazon.nova-2-lite", "openai.gpt-5-6-luna", "anthropic.claude-haiku-4-5"]
 }

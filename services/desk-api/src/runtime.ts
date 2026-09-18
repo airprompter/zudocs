@@ -18,64 +18,42 @@
  * await ap.invoke(async () => { ... ap.prompt("support.reply", { subject }).renderAsync(values) ... });
  * ```
  */
-import { AsyncLocalStorage } from "node:async_hooks";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { DecryptCommand, EncryptCommand, KMSClient } from "@aws-sdk/client-kms";
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
-import { AirPrompterAgent, SDK_NAME, SDK_VERSION, customKeyProvider, type Observation } from "@airprompter/agent-sdk";
+import { AirPrompterAgent, SDK_NAME, SDK_VERSION, customKeyProvider } from "@airprompter/agent-sdk";
 import { createCallers, type Callers } from "./bedrock.js";
 import { readEnv, type DeskEnv } from "./env.js";
 import { MODELS } from "./modelCatalogue.js";
+import { collectObservations, tapObservations, type Observed } from "./observe.js";
 import { createStore, type Store } from "./store.js";
 import { teeFetch } from "./tee.js";
 
-export interface Host {
-  readonly env: DeskEnv;
+export { collectObservations, tapObservations } from "./observe.js";
+
+/** What a run needs of a host — the us-east container and the eu-west worker both provide it (`run.ts`). */
+export interface RunHost {
+  readonly env: Pick<DeskEnv, "hostId">;
   readonly ap: AirPrompterAgent;
   readonly store: Store;
   readonly callers: Callers;
+  /** Run `fn` and collect the observations the SDK files while it runs — on a failure too; never throws. */
+  observed<T>(fn: () => Promise<T>): Promise<Observed<T>>;
+}
+
+export interface Host extends RunHost {
+  readonly env: DeskEnv;
   readonly startedAt: string;
   readonly sdk: string;
   invocations: number;
   /** True on the invocation that started this container; false on every later one. */
   coldStart: boolean;
-  /** Run `fn` and collect the observations the SDK files while it runs — on a failure too; never throws. */
-  observed<T>(fn: () => Promise<T>): Promise<{ result: T; error?: undefined; observations: Observation[] } | { result?: undefined; error: unknown; observations: Observation[] }>;
   /** This host's status document, written to the status table. */
   writeStatus(): Promise<void>;
 }
 
-const capture = new AsyncLocalStorage<Observation[]>();
 let pending: Promise<Host> | null = null;
-
-/**
- * The tap: the SDK's own observation for each model call, also handed to the request that made it. The spool writer
- * is a public property and every wrapper files through `spool.observe`, so an own property shadowing the method sees
- * each observation before the original writes it. (An `onObservation` listener on the SDK would make this a contract;
- * filed as a gap.) Idempotent: tapping twice keeps one tap.
- */
-export function tapObservations(ap: { spool: { observe: (observation: Observation, nowMs: number) => void } }): void {
-  const spool = ap.spool as { observe: (observation: Observation, nowMs: number) => void; [TAPPED]?: boolean };
-  if (spool[TAPPED]) return;
-  const original = spool.observe.bind(spool);
-  spool.observe = (observation, nowMs) => {
-    capture.getStore()?.push(observation);
-    return original(observation, nowMs);
-  };
-  spool[TAPPED] = true;
-}
-const TAPPED = Symbol("zudocs.tapped");
-
-/** Run `fn` with the observations the SDK files during it collected — the tap's other half; see `Host.observed`. */
-export async function collectObservations<T>(fn: () => Promise<T>): Promise<{ result: T; error?: undefined; observations: Observation[] } | { result?: undefined; error: unknown; observations: Observation[] }> {
-  const observations: Observation[] = [];
-  // The wrappers file the observation when the call settles, one turn after the caller sees the result (or the
-  // error): give the spool that turn — a bounded wait, so a call the wrapper never attributed still returns.
-  const settled = await capture.run(observations, () => fn().then((value) => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error })));
-  for (let waited = 0; observations.length === 0 && waited < 500; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
-  return settled.ok ? { result: settled.value, observations } : { error: settled.error, observations };
-}
 
 /** The Agent key: read by name from SSM, decrypted by SSM, never logged, never put back in the environment. */
 async function readAgentKey(env: DeskEnv): Promise<string> {

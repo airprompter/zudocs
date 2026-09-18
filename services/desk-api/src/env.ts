@@ -20,8 +20,11 @@ export interface DeskEnv {
     readonly status: string;
     readonly events: string;
     readonly counters: string;
+    readonly approvals: string;
   };
   readonly kmsKeyId: string;
+  /** The eu-west wire function (`zudocs-wire`) the presenter's cut / restore invoke; empty until that stack exists. */
+  readonly wireFunctionArn: string;
   /** The SSM SecureString parameter NAME the Agent key is read from at cold start. */
   readonly agentKeyParameter: string;
   readonly airprompter: {
@@ -69,8 +72,10 @@ export function readEnv(env: NodeJS.ProcessEnv = process.env): DeskEnv {
       status: need(env, "STATUS_TABLE"),
       events: need(env, "EVENTS_TABLE"),
       counters: need(env, "COUNTERS_TABLE"),
+      approvals: need(env, "APPROVALS_TABLE"),
     }),
     kmsKeyId: need(env, "KMS_KEY_ID"),
+    wireFunctionArn: env.WIRE_FUNCTION_ARN?.trim() || "",
     agentKeyParameter: parameter,
     airprompter: Object.freeze({
       baseUrl: need(env, "AIRPROMPTER_BASE_URL"),

@@ -8,6 +8,7 @@
  * const api = createApi(config.apiUrl, () => auth.idToken());
  * const { tickets } = await api.tickets();
  * const { run } = await api.runTicket("T-1041");      // throws ApiError { status: 429, error: "daily_cap", … }
+ * const { approval, already } = await api.approve("eu-west-1-ec2-g2");   // the owner's decision, recorded once
  * ```
  */
 
@@ -39,9 +40,24 @@ export interface Step {
   error: { name: string; message: string } | null;
 }
 export interface Run { runId: string; ticketId: string; customerId: string; at: string; by: string; host: string; kind: "run" | "escalate"; generation: number; applyState: string; steps: Step[]; triage: { category: string | null; priority: string | null; summary: string | null } | null; reply: string | null; handoff: string | null; durationMs: number; capUsed: number; ok: boolean; feedback?: Array<{ at: string; signals: Record<string, unknown>; by: string; filed: boolean }> }
-export interface HostStatus { hostId: string; region: string; kind: string; sdk: string; writtenAt: string; status: Record<string, any>; healthz: Record<string, any>; container: { instanceId: string; coldStart: boolean; startedAt: string; invocations: number } }
-export interface State { host: { hostId: string; region: string; sdk: string; instanceId: string; startedAt: string; invocations: number; coldStart: boolean; status: Record<string, any>; healthz: Record<string, any>; models: string[]; stateDir: string }; hosts: HostStatus[]; cap: { day: string; used: number; cap: number }; airprompter: { baseUrl: string; environment: string; agentId: string } }
-export interface TimelineEvent { at: string; kind: string; host: string; [key: string]: unknown }
+export interface HostStatus {
+  hostId: string;
+  region: string;
+  kind: string;
+  sdk: string;
+  writtenAt: string;
+  status: Record<string, any>;
+  healthz: Record<string, any>;
+  container: { instanceId: string; coldStart: boolean; startedAt: string; invocations: number };
+  /** The eu-west host's attached workers: the Node worker that writes the row, the Python worker's own part. */
+  worker?: { instanceId: string; sdk: string; startedAt: string; tickets: number; source: string; attached: boolean; healthz: string; reasons: string[] } | null;
+  python?: { instanceId: string; sdk: string; startedAt: string; writtenAt: string; generation: number; stagedGeneration: number | null; applyState: string; source: string; attached: boolean; healthz: string; reasons: string[]; runs: number; lastRunAt: string | null } | null;
+  ec2?: { instanceId: string; availabilityZone: string } | null;
+}
+export interface State { host: { hostId: string; region: string; sdk: string; instanceId: string; startedAt: string; invocations: number; coldStart: boolean; status: Record<string, any>; healthz: Record<string, any>; models: string[]; stateDir: string }; hosts: HostStatus[]; cap: { day: string; used: number; cap: number }; airprompter: { baseUrl: string; environment: string; agentId: string }; features?: { wire: boolean } }
+export interface TimelineEvent { at: string; kind: string; host: string; id?: string; [key: string]: unknown }
+export type ApprovalDecision = "pending" | "approved" | "activated" | "superseded" | "failed";
+export interface Approval { approvalId: string; hostId: string; generation: number; releaseDigest: string | null; stagedAt: string; unlockRequest: { requestedBy: string; requestedAt: string; expiresAt: string; note?: string } | null; decision: ApprovalDecision; decidedBy: string | null; decidedAt: string | null; activatedAt: string | null; outcome: string | null; updatedAt: string }
 
 export interface Api {
   tickets(): Promise<{ tickets: Ticket[] }>;
@@ -51,6 +67,8 @@ export interface Api {
   feedback(runId: string, step: string, signals: Record<string, unknown>): Promise<{ filed: boolean; message: string }>;
   state(): Promise<State>;
   events(since: string | null): Promise<{ events: TimelineEvent[] }>;
+  approvals(): Promise<{ approvals: Approval[]; pending: number }>;
+  approve(approvalId: string): Promise<{ approval: Approval; already: boolean; message: string }>;
   presenter(action: string, body?: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
@@ -86,6 +104,8 @@ export function createApi(baseUrl: string, tokenOf: () => Promise<string | null>
     feedback: (runId, step, signals) => call("POST", `/runs/${encodeURIComponent(runId)}/feedback`, { step, signals }),
     state: () => call("GET", "/state"),
     events: (since) => call("GET", `/events${since ? `?since=${encodeURIComponent(since)}` : ""}`),
+    approvals: () => call("GET", "/approvals"),
+    approve: (approvalId) => call("POST", `/approvals/${encodeURIComponent(approvalId)}/approve`, {}),
     presenter: (action, body = {}) => call("POST", `/presenter/${encodeURIComponent(action)}`, body),
   };
 }

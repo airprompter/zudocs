@@ -3,7 +3,8 @@
  * Every source file opens with a header that says what the file is for and shows how to use it.
  *
  * The rule (CONTRIBUTING.md › "File headers"): a TypeScript / JavaScript file starts with a `/** … *\/` block (or a
- * run of `//` lines), a shell script or Python file with a run of `#` lines / a module docstring after the shebang;
+ * run of `//` lines), a shell script (by extension or shebang), a systemd unit or a Python file with a run of `#`
+ * lines / a module docstring after the shebang;
  * the header explains the file in a sentence or more and carries one small usage example — a `@example` fenced
  * block, a `$ command` line, or an indented call. Tests and vendored code are exempt. Plain Node, no dependencies:
  *
@@ -37,7 +38,9 @@ function* walk(dir) {
       continue;
     }
     const ext = extname(entry);
-    if (!EXT.has(ext) || entry.endsWith(".d.ts")) continue;
+    // A script with no extension counts when it starts with a shebang (the eu-west host's helpers); so does a systemd unit.
+    const shebang = ext === "" && readFileSync(path, "utf8").startsWith("#!");
+    if (!(EXT.has(ext) || shebang || ext === ".service") || entry.endsWith(".d.ts")) continue;
     const rel = relative(root, path).split(sep).join("/");
     if (/(^|\/)(test|tests)\//.test(rel) || /\.test\.(ts|mjs|js)$/.test(entry) || /^test_.*\.py$/.test(entry) || entry === "conftest.py") continue;
     yield path;
@@ -53,7 +56,8 @@ function headerOf(source, ext) {
     const match = /^("""|''')([\s\S]*?)\1/.exec(text);
     return match ? match[2] : null;
   }
-  if (ext === ".sh") return lineRun(text, "#");
+  // A shell script (by extension or shebang) and a systemd unit both open with a `#` run.
+  if (ext === ".sh" || ext === ".service" || ext === "") return lineRun(text, "#");
   if (text.startsWith("/*")) {
     const end = text.indexOf("*/");
     // Without the ` * ` gutter, so an indented snippet or a `$ ` line inside a JSDoc block is seen as one.

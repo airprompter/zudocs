@@ -1,8 +1,9 @@
 /**
  * The us-east-1 desk stack: the serverless host and the app a prospect watches.
  *
- * - Seven on-demand DynamoDB tables (tickets, customers, runs, feedback, status, events, counters) — the desk's
- *   own data plane; a KMS key that wraps the SDK's slot-store data key and encrypts the SSM SecureString the
+ * - Eight on-demand DynamoDB tables (tickets, customers, runs, feedback, status, events, counters, approvals) — the
+ *   desk's own data plane, which every host writes (the eu-west host by table ARN across regions, `shared-host-stack.ts`);
+ *   a KMS key that wraps the SDK's slot-store data key and encrypts the SSM SecureString the
  *   Agent key lives in. The stack knows that parameter by NAME only; the owner writes the value by hand
  *   (`--cli-input-json file://…`, never argv) and the Lambda reads it at cold start.
  * - The desk API: one Node 22 arm64 function (reserved concurrency 5, logs kept seven days) behind an HTTP API
@@ -13,7 +14,7 @@
  *   strict CSP that allows exactly the API and the hosted UI as connect targets; its runtime configuration is a
  *   `config.json` written at deploy time from the stack's own outputs.
  * - The Budgets action: at 100 % of `zudocs-monthly`, `ZudocsBudgetBedrockDeny` is attached to the function's role
- *   automatically — a bug that loops stops paying for models without a person awake.
+ *   and the eu-west host's automatically — a bug that loops stops paying for models without a person awake.
  *
  * Two things a synth cannot catch: the SSM parameter must exist before the first request (the function fails its
  * cold start with the parameter's name otherwise), and Bedrock model access in a fresh account is a per-model
@@ -33,6 +34,7 @@ import { fileURLToPath } from "node:url";
 import { CATALOGUE } from "../../services/desk-api/src/modelCatalogue.js";
 import { ROUTES } from "../../services/desk-api/src/router.js";
 import type { ZudocsConfig } from "./config.js";
+import { EU_HOST_ROLE_NAME, WIRE_FUNCTION_NAME } from "./shared-host-names.js";
 import { BUDGET_NAME, type SiteStack } from "./site-stack.js";
 
 export interface DeskStackProps extends cdk.StackProps {
@@ -49,6 +51,8 @@ export interface AirPrompterIds {
   readonly baseUrl: string;
   readonly hostedEnvironment: string;
   readonly rootUrl: string;
+  /** The environment's edge pointer (`…/g/<token>/generation.json`), an identifier; null when the file names none. */
+  readonly edgePointerUrl: string | null;
   readonly organizationId: string;
   readonly agentId: string;
   readonly environment: string;
@@ -60,7 +64,9 @@ export const DESK_KEY_ALIAS = "alias/zudocs-desk";
 /** Runs per UTC day before the API refuses with 429. */
 export const DAILY_RUN_CAP = 2000;
 export const EMF_NAMESPACE = "Zudocs/Desk";
-export const TABLE_NAMES = ["tickets", "customers", "runs", "feedback", "status", "events", "counters"] as const;
+export const TABLE_NAMES = ["tickets", "customers", "runs", "feedback", "status", "events", "counters", "approvals"] as const;
+/** `zudocs-desk-<name>`: fixed, so a stack in another region can name the table by ARN without a cross-region reference. */
+export const tableNameOf = (name: (typeof TABLE_NAMES)[number]): string => `zudocs-desk-${name}`;
 
 const repoRoot = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..");
 
@@ -85,7 +91,9 @@ export function readAirPrompterIds(root = repoRoot): AirPrompterIds {
   if (!existsSync(rootPath)) throw new Error(`${rootPath} is missing: the pinned root for the ${hosted} deployment`);
   const jwk = JSON.parse(readFileSync(rootPath, "utf8")) as Record<string, unknown>;
   if (jwk.d !== undefined) throw new Error(`${rootPath} carries a private member; keys/ holds public JWKs only`);
-  return { baseUrl: need("baseUrl"), hostedEnvironment: hosted, rootUrl: need("rootUrl"), organizationId: need("organizationId"), agentId: need("agentId"), environment: need("environment"), rootJwk: JSON.stringify(jwk) };
+  const pointer = typeof file.edgePointerUrl === "string" && file.edgePointerUrl.trim() ? file.edgePointerUrl.trim() : null;
+  if (pointer && !/^https:\/\/[^\s/]+\/g\/[A-Za-z0-9_-]+\/generation\.json$/.test(pointer)) throw new Error("airprompter.config.json: edgePointerUrl is not an environment's generation.json URL");
+  return { baseUrl: need("baseUrl"), hostedEnvironment: hosted, rootUrl: need("rootUrl"), edgePointerUrl: pointer, organizationId: need("organizationId"), agentId: need("agentId"), environment: need("environment"), rootJwk: JSON.stringify(jwk) };
 }
 
 export class DeskStack extends cdk.Stack {
@@ -104,7 +112,7 @@ export class DeskStack extends cdk.Stack {
     // --- Data plane ---------------------------------------------------------------------------
     const table = (name: (typeof TABLE_NAMES)[number], key: dynamodb.Attribute, sortKey?: dynamodb.Attribute): dynamodb.Table =>
       new dynamodb.Table(this, `${name[0]!.toUpperCase()}${name.slice(1)}Table`, {
-        tableName: `zudocs-desk-${name}`,
+        tableName: tableNameOf(name),
         partitionKey: key,
         ...(sortKey ? { sortKey } : {}),
         billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -121,6 +129,7 @@ export class DeskStack extends cdk.Stack {
       status: table("status", { name: "hostId", type: S }),
       events: table("events", { name: "day", type: S }, { name: "sk", type: S }),
       counters: table("counters", { name: "pk", type: S }),
+      approvals: table("approvals", { name: "approvalId", type: S }),
     };
     this.tables.runs.addGlobalSecondaryIndex({ indexName: "byTicket", partitionKey: { name: "ticketId", type: S }, sortKey: { name: "at", type: S }, projectionType: dynamodb.ProjectionType.ALL });
 
@@ -133,6 +142,7 @@ export class DeskStack extends cdk.Stack {
     });
     const agentKeyParameter = `/zudocs/${airprompter.environment}/agent-key`;
     const parameterArn = this.formatArn({ service: "ssm", resource: "parameter", resourceName: agentKeyParameter.slice(1) });
+    const wireFunctionArn = `arn:${this.partition}:lambda:${config.regions.sharedHost}:${this.account}:function:${WIRE_FUNCTION_NAME}`;
 
     // --- The function ---------------------------------------------------------------------------
     const logGroup = new logs.LogGroup(this, "ApiLogs", { logGroupName: `/aws/lambda/${DESK_FUNCTION_NAME}`, retention: logs.RetentionDays.ONE_WEEK, removalPolicy: cdk.RemovalPolicy.DESTROY });
@@ -156,14 +166,18 @@ export class DeskStack extends cdk.Stack {
         STATUS_TABLE: this.tables.status.tableName,
         EVENTS_TABLE: this.tables.events.tableName,
         COUNTERS_TABLE: this.tables.counters.tableName,
+        APPROVALS_TABLE: this.tables.approvals.tableName,
         KMS_KEY_ID: this.key.keyArn,
         AGENT_KEY_PARAMETER: agentKeyParameter,
+        // The eu-west wire function, by its fixed name (no cross-region reference): the presenter's cut / restore.
+        WIRE_FUNCTION_ARN: wireFunctionArn,
         AIRPROMPTER_BASE_URL: airprompter.baseUrl,
         AIRPROMPTER_ORGANIZATION_ID: airprompter.organizationId,
         AIRPROMPTER_AGENT_ID: airprompter.agentId,
         AIRPROMPTER_ENVIRONMENT: airprompter.environment,
         AIRPROMPTER_HOSTED_ENVIRONMENT: airprompter.hostedEnvironment,
         AIRPROMPTER_ROOT_URL: airprompter.rootUrl,
+        ...(airprompter.edgePointerUrl ? { AIRPROMPTER_EDGE_POINTER_URL: airprompter.edgePointerUrl } : {}),
         AIRPROMPTER_ROOT_JWK: airprompter.rootJwk,
         // `--context dailyRunCap=2` for the cap proof; the default is the plan's line.
         DAILY_RUN_CAP: String(dailyRunCapOf(this.node.tryGetContext("dailyRunCap"))),
@@ -191,8 +205,9 @@ export class DeskStack extends cdk.Stack {
     if (Object.values(CATALOGUE).some((m) => m.path === "mantle")) {
       this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["bedrock-mantle:CreateInference"], resources: [this.formatArn({ service: "bedrock-mantle", resource: "project", resourceName: "default" })] }));
     }
-    // The replay job: the function invokes itself asynchronously (by its fixed name, so the policy has no cycle).
-    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [this.formatArn({ service: "lambda", resource: "function", resourceName: DESK_FUNCTION_NAME, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME })] }));
+    // The replay job: the function invokes itself asynchronously (by its fixed name, so the policy has no cycle);
+    // the presenter's cut / restore invokes the eu-west wire function (by its fixed name in the other region).
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [this.formatArn({ service: "lambda", resource: "function", resourceName: DESK_FUNCTION_NAME, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME }), wireFunctionArn] }));
 
     // --- The API ----------------------------------------------------------------------------------
     const authorizer = new authorizers.HttpJwtAuthorizer("Jwt", site.userPool.userPoolProviderUrl, { jwtAudience: [site.userPoolClient.userPoolClientId, site.proofClient.userPoolClientId], identitySource: ["$request.header.Authorization"] });
@@ -255,9 +270,13 @@ export class DeskStack extends cdk.Stack {
     new cdk.CfnOutput(this, "KeyAlias", { value: DESK_KEY_ALIAS });
 
     // --- The Budgets action -------------------------------------------------------------------------
+    // Every role that can call a model: this function's and the eu-west host's (IAM is global; the role's name is
+    // fixed in `shared-host-stack.ts`, and that stack deploys first — `app.ts` orders it — so the action never names
+    // a role that does not exist).
     if (config.budget.email) {
-      const actionRole = new iam.Role(this, "BudgetActionRole", { assumedBy: new iam.ServicePrincipal("budgets.amazonaws.com"), description: "Assumed by AWS Budgets to attach the Bedrock deny policy to the desk function's role" });
-      actionRole.addToPolicy(new iam.PolicyStatement({ actions: ["iam:AttachRolePolicy", "iam:DetachRolePolicy"], resources: [this.fn.role!.roleArn] }));
+      const modelRoles = [this.fn.role!.roleName, EU_HOST_ROLE_NAME];
+      const actionRole = new iam.Role(this, "BudgetActionRole", { assumedBy: new iam.ServicePrincipal("budgets.amazonaws.com"), description: "Assumed by AWS Budgets to attach the Bedrock deny policy to the roles that call models" });
+      actionRole.addToPolicy(new iam.PolicyStatement({ actions: ["iam:AttachRolePolicy", "iam:DetachRolePolicy"], resources: modelRoles.map((name) => this.formatArn({ service: "iam", region: "", resource: "role", resourceName: name })) }));
       new budgets.CfnBudgetsAction(this, "BedrockDenyAction", {
         budgetName: BUDGET_NAME,
         actionType: "APPLY_IAM_POLICY",
@@ -265,7 +284,7 @@ export class DeskStack extends cdk.Stack {
         notificationType: "ACTUAL",
         approvalModel: "AUTOMATIC",
         executionRoleArn: actionRole.roleArn,
-        definition: { iamActionDefinition: { policyArn: site.bedrockDenyPolicy.managedPolicyArn, roles: [this.fn.role!.roleName] } },
+        definition: { iamActionDefinition: { policyArn: site.bedrockDenyPolicy.managedPolicyArn, roles: modelRoles } },
         subscribers: [{ type: "EMAIL", address: config.budget.email }],
       });
     }

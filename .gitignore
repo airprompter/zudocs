@@ -35,3 +35,7 @@ state/
 apps/desk/public/config.json
 # Anything a local session writes beside the app for a laptop run (a signed-in session for a visual check)
 apps/desk/public/dev-*.json
+
+# Python bytecode (a py_compile check leaves it beside the worker)
+__pycache__/
+*.pyc

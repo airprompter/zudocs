@@ -27,6 +27,11 @@ request that goes through an adversarial review before merge, and `main` deploys
   key is born on the host, stays at 0600, and its role can write exactly the public half to the exchange. The puller
   is the one process in ap-southeast-1 with the Agent key, read from SSM by name at cold start.
 - Nothing on the air-gapped host pretends to call a model: its render probes file `status: "refused"` observations.
+- The one bundle in git is `vendored/zudocs-ci.dev.apbundle`, the `zudocs-ci` Agent's placeholder slot;
+  `npm run check-vendored` refuses any other agent or slot. The recorded strips under `docs/strips/` are written by
+  `scripts/strip.sh`, which refuses to keep anything key-shaped; do not edit them by hand.
+- The desk's host CLI is an allowlist of exact `zudocs-cli` lines (`services/desk-api/src/hostCli.ts`); a new drill
+  is a new entry and a test, never an argument from the request.
 
 ## File headers
 
@@ -37,7 +42,7 @@ with a header that says what the file is for and carries one small usage example
 ## Before you push
 
 ```sh
-npm run check-headers && npm run check-keys && npm run typecheck && npm test && npm run synth
+npm run check-headers && npm run check-keys && npm run check-vendored && npm run typecheck && npm test && npm run build && npm run synth
 ```
 
 A change to the seed, the smoke or the prompt-file grammar is also run for real: `npm run prompts:seed && npm run

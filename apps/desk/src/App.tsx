@@ -11,12 +11,13 @@
  * ```
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, type Api, type Approval, type Run, type State, type Ticket, type TimelineEvent } from "./api";
+import { ApiError, type AnyRun, type Api, type Approval, type Arms, type State, type Ticket, type TimelineEvent } from "./api";
 import type { DeskConfig } from "./config";
 import { Approvals } from "./components/Approvals";
+import { Experiments } from "./components/Experiments";
 import { HostCards } from "./components/HostCards";
 import { Inbox } from "./components/Inbox";
-import { Presenter } from "./components/Presenter";
+import { Presenter, type CliOutput } from "./components/Presenter";
 import { ReleaseBar } from "./components/ReleaseBar";
 import { TicketView } from "./components/TicketView";
 import { Timeline } from "./components/Timeline";
@@ -24,17 +25,26 @@ import { mergeEvents } from "./format";
 
 export interface Notice { tone: "info" | "warn" | "error"; text: string }
 
+/** The newest host-CLI answer on the timeline (the job writes it there), for the presenter panel. */
+function newestCli(events: TimelineEvent[]): CliOutput | null {
+  const row = [...events].reverse().find((e) => e.kind === "host_cli");
+  if (!row) return null;
+  return { command: String(row.command ?? ""), summary: String(row.summary ?? ""), document: row.document ?? null, stdout: String(row.stdout ?? ""), status: String(row.status ?? ""), at: row.at };
+}
+
 export function App({ api, config, who, onSignOut }: { api: Api; config: DeskConfig; who: string; onSignOut: () => void }) {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [runs, setRuns] = useState<Run[]>([]);
+  const [runs, setRuns] = useState<AnyRun[]>([]);
+  const [arms, setArms] = useState<Arms | null>(null);
+
   const [state, setState] = useState<State | null>(null);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const lastEventAt = useRef<string | null>(null);
-  const polling = useRef<{ events: boolean; approvals: boolean; state: boolean }>({ events: false, approvals: false, state: false });
+  const polling = useRef<{ events: boolean; approvals: boolean; state: boolean; arms: boolean }>({ events: false, approvals: false, state: false, arms: false });
 
   const say = useCallback((tone: Notice["tone"], text: string) => setNotice({ tone, text }), []);
   const failed = useCallback((error: unknown) => {
@@ -77,13 +87,20 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
     polling.current.approvals = true;
     try { setApprovals((await api.approvals()).approvals); } catch { /* next poll */ } finally { polling.current.approvals = false; }
   }, [api]);
+  // The per-arm fold is a scan of the runs table: every 20 s, and after anything that adds a run.
+  const loadArms = useCallback(async () => {
+    if (polling.current.arms) return;
+    polling.current.arms = true;
+    try { setArms(await api.arms()); } catch { /* next poll */ } finally { polling.current.arms = false; }
+  }, [api]);
 
-  useEffect(() => { void loadTickets(); void loadState(); void loadEvents(); void loadApprovals(); }, [loadTickets, loadState, loadEvents, loadApprovals]);
+  useEffect(() => { void loadTickets(); void loadState(); void loadEvents(); void loadApprovals(); void loadArms(); }, [loadTickets, loadState, loadEvents, loadApprovals, loadArms]);
   useEffect(() => {
     const s = setInterval(() => void loadState(), 10_000);
     const e = setInterval(() => { void loadEvents(); void loadApprovals(); }, 5_000);
-    return () => { clearInterval(s); clearInterval(e); };
-  }, [loadState, loadEvents, loadApprovals]);
+    const a = setInterval(() => void loadArms(), 20_000);
+    return () => { clearInterval(s); clearInterval(e); clearInterval(a); };
+  }, [loadState, loadEvents, loadApprovals, loadArms]);
   useEffect(() => { if (selectedId) void loadRuns(selectedId); else setRuns([]); }, [selectedId, loadRuns]);
   // A run on another host lands in the ticket's list without a click: re-read the runs when a newer foreign run event arrives.
   const seenForeignRun = useRef<string | null>(null);
@@ -103,11 +120,18 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
     try { await fn(); } catch (error) { failed(error); } finally { setBusy(null); }
   }, [failed]);
 
-  const run = (ticketId: string, kind: "run" | "escalate") => act(kind, async () => {
+  const run = (ticketId: string, kind: "run" | "escalate" | "hosted") => act(kind, async () => {
+    if (kind === "hosted") {
+      const { run } = await api.hostedRun(ticketId);
+      setRuns((current) => [run, ...current]);
+      say(run.ok ? "info" : "warn", run.ok ? `hosted staging answered: ${run.stream.deltas.length} deltas, arm ${run.stream.result?.arm ?? "—"}, ${run.stream.result?.priceMicros ?? "—"} µ$` : `hosted staging: ${run.gaps[0] ?? "the route refused"}`);
+      await loadEvents();
+      return;
+    }
     const { run } = kind === "run" ? await api.runTicket(ticketId) : await api.escalateTicket(ticketId);
     setRuns((current) => [run, ...current]);
     if (!run.ok) say("warn", "the model did not answer every step — the record shows what the host observed");
-    await Promise.all([loadTickets(), loadState(), loadEvents()]);
+    await Promise.all([loadTickets(), loadState(), loadEvents(), loadArms()]);
   });
   const feedback = (runId: string, step: string, signals: Record<string, unknown>) => act("feedback", async () => {
     const { filed, message } = await api.feedback(runId, step, signals);
@@ -118,13 +142,17 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   const presenter = (action: string, body?: Record<string, unknown>) => act(action, async () => {
     const result = await api.presenter(action, body);
     say("info", typeof result.message === "string" ? result.message : `${action}: done`);
-    await Promise.all([loadState(), loadEvents(), action === "seed" ? loadTickets() : Promise.resolve()]);
-    if (action === "seed") setRuns([]);
+    await Promise.all([loadState(), loadEvents(), action === "seed" || action === "reset" ? loadTickets() : Promise.resolve(), action === "reset" || action === "replay" ? loadArms() : Promise.resolve(), action === "reset" ? loadApprovals() : Promise.resolve()]);
+    if (action === "seed" || action === "reset") { setRuns([]); if (action === "reset") { setEvents([]); lastEventAt.current = null; } }
   });
   const approve = (approvalId: string) => act("approve", async () => {
-    const { message, already } = await api.approve(approvalId);
-    say(already ? "warn" : "info", message);
-    await Promise.all([loadApprovals(), loadEvents()]);
+    try {
+      const { message, already } = await api.approve(approvalId);
+      say(already ? "warn" : "info", message);
+    } finally {
+      // A refusal (`409 approval_stale`: the host moved past this row) is shown by `act`; the rows are re-read either way.
+      await Promise.all([loadApprovals(), loadEvents()]);
+    }
   });
 
   const selected = tickets.find((t) => t.ticketId === selectedId) ?? null;
@@ -142,12 +170,13 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
       <div className="columns">
         <Inbox tickets={tickets} selectedId={selectedId} onSelect={setSelectedId} />
         <main className="centre">
-          {selected ? <TicketView ticket={selected} runs={runs} busy={busy} onRun={() => run(selected.ticketId, "run")} onEscalate={() => run(selected.ticketId, "escalate")} onFeedback={feedback} /> : <div className="empty">No tickets yet — re-seed the inbox from the presenter panel.</div>}
+          {selected ? <TicketView ticket={selected} runs={runs} busy={busy} frozen={state?.frozen ?? null} hosted={state?.features?.hosted ? state.hosted ?? null : null} onRun={() => run(selected.ticketId, "run")} onEscalate={() => run(selected.ticketId, "escalate")} onHosted={() => run(selected.ticketId, "hosted")} onFeedback={feedback} /> : <div className="empty">No tickets yet — re-seed the inbox from the presenter panel.</div>}
+          <Experiments arms={arms} />
         </main>
         <aside className="side">
           <Approvals approvals={approvals} busy={busy} onApprove={approve} />
           <HostCards state={state} />
-          <Presenter state={state} busy={busy} selectedTicketId={selectedId} onAction={presenter} environment={config.environment} agentId={config.agentId} />
+          <Presenter state={state} busy={busy} selectedTicketId={selectedId} onAction={presenter} environment={config.environment} agentId={config.agentId} cliOutput={newestCli(events)} />
           <Timeline events={events} />
         </aside>
       </div>

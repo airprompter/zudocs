@@ -1,0 +1,14 @@
+{
+  "kind": "airprompter-bundle-meta",
+  "v": 1,
+  "organizationId": "2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b",
+  "agentId": "agent_KppKmZFdor5CkxKu",
+  "target": "dev",
+  "generation": 1,
+  "releaseDigest": "sha256:dfd212eb96c5c88ca4f917dbdefc832ef511e7b6808fd31d20b363c9225b86ed",
+  "createdAt": "2026-09-19T01:33:41.105Z",
+  "notAfter": "2026-12-18T01:33:41.113Z",
+  "encryption": "none",
+  "recipientKeyId": null,
+  "cli": "0.1.0"
+}

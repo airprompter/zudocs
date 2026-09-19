@@ -29,6 +29,14 @@ export interface DeskEnv {
   readonly nudgeQueueUrl: string;
   /** The SSM SecureString parameter NAME the Agent key is read from at cold start. */
   readonly agentKeyParameter: string;
+  /**
+   * Hosted staging (phase 6): the SSM SecureString NAME of the staging run key, the hosted run route's origin (the
+   * `AgentRunUrl` of AirPrompter's execution stack, an identifier) and the environment the key is bound to. Empty when
+   * the deployment names none: the desk then says hosted staging is not configured instead of pretending.
+   */
+  readonly hosted: { readonly runKeyParameter: string; readonly runUrl: string; readonly target: "dev" | "staging" | "prod" };
+  /** The eu-west host's region and the Name tag its instance carries: the presenter's one-click CLI runs there through Run Command. */
+  readonly euHost: { readonly region: string; readonly nameTag: string };
   readonly airprompter: {
     readonly baseUrl: string;
     readonly organizationId: string;
@@ -63,6 +71,13 @@ export function readEnv(env: NodeJS.ProcessEnv = process.env): DeskEnv {
   if (!Number.isInteger(cap) || cap < 1) throw new Error("env: DAILY_RUN_CAP must be a positive integer");
   const parameter = need(env, "AGENT_KEY_PARAMETER");
   if (!parameter.startsWith("/")) throw new Error("env: AGENT_KEY_PARAMETER is an SSM parameter name (it starts with /), never a key");
+  const runKeyParameter = env.RUN_KEY_PARAMETER?.trim() || "";
+  if (runKeyParameter && !runKeyParameter.startsWith("/")) throw new Error("env: RUN_KEY_PARAMETER is an SSM parameter name (it starts with /), never a key");
+  if (runKeyParameter.startsWith("apr_") || runKeyParameter.startsWith("apa_")) throw new Error("env: RUN_KEY_PARAMETER looks like a key, not a parameter name");
+  const runUrl = env.AIRPROMPTER_HOSTED_RUN_URL?.trim() || "";
+  if (runUrl && !/^https:\/\/[^\s/]+$/.test(runUrl)) throw new Error("env: AIRPROMPTER_HOSTED_RUN_URL is an https origin with no path");
+  const hostedTarget = env.AIRPROMPTER_HOSTED_TARGET?.trim() || "staging";
+  if (!["dev", "staging", "prod"].includes(hostedTarget)) throw new Error("env: AIRPROMPTER_HOSTED_TARGET must be dev, staging or prod");
   const stateEpoch = need(env, "STATE_EPOCH");
   const heartbeat = Number(env.HEARTBEAT_SECONDS ?? "60");
   return Object.freeze({
@@ -80,6 +95,8 @@ export function readEnv(env: NodeJS.ProcessEnv = process.env): DeskEnv {
     wireFunctionArn: env.WIRE_FUNCTION_ARN?.trim() || "",
     nudgeQueueUrl: env.NUDGE_QUEUE_URL?.trim() || "",
     agentKeyParameter: parameter,
+    hosted: Object.freeze({ runKeyParameter, runUrl, target: hostedTarget as "dev" | "staging" | "prod" }),
+    euHost: Object.freeze({ region: env.EU_HOST_REGION?.trim() || "eu-west-1", nameTag: env.EU_HOST_NAME_TAG?.trim() || "zudocs-eu-host" }),
     airprompter: Object.freeze({
       baseUrl: need(env, "AIRPROMPTER_BASE_URL"),
       organizationId: need(env, "AIRPROMPTER_ORGANIZATION_ID"),

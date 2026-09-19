@@ -7,7 +7,15 @@
  * with a job event and walks it sequentially under the same cap. The status tick (`{ tick: "status" }` from EventBridge
  * every five minutes) is a sync pass and one status row, so the card never goes stale between runs. Approvals are the eu-west host's staged releases:
  * the host writes the row, `POST /approvals/{id}/approve` records the owner's decision exactly once (a repeat
- * answers with the row as it stands), and the host activates through its daemon and settles the row.
+ * answers with the row as it stands; a row the host has moved past — a newer generation staged on the same store,
+ * or the host's own row saying something else is staged — answers `409 approval_stale` and is not approved), and
+ * the host activates through its daemon and settles the row. Phase 6 adds
+ * the hosted staging run (`POST /tickets/{id}/hosted-run`, `hosted.ts`), the per-arm results (`GET /arms`), the
+ * approval rows enriched with the ramp plan the us-east host read from the same signed manifest, and four presenter
+ * actions: `host_cli` (an allowlisted `zudocs-cli` command on the eu-west host through Run Command), `policy` (this
+ * host's own apply policy — an operator's act, the one way a pin loosens), `golden` (run the active release's golden
+ * sets now and show the report) and `reset` (clear the desk's records and re-seed: the reset script's last step).
+ * A frozen environment (a `disable` directive on the manifest) refuses every run with the SDK's own reason.
  *
  * Errors answer as JSON with a class and a message; ticket bodies, rendered text and keys never reach a log line.
  *
@@ -20,12 +28,15 @@
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyResultV2, Context } from "aws-lambda";
 import { normalizeFeedback } from "@airprompter/agent-sdk";
+import { foldArms } from "./arms.js";
+import { HOST_CLI_COMMANDS, isHostCliCommand, type HostCliCommand } from "./hostCli.js";
+import { hostedConfigured, hostedRun } from "./hosted.js";
 import { MODELS } from "./modelCatalogue.js";
 import { match } from "./router.js";
 import { runTicket, type StepRecord } from "./run.js";
 import { getHost, type Host } from "./runtime.js";
 import { SEED_CUSTOMERS, SEED_TICKETS } from "./seedData.js";
-import { dayOf } from "./store.js";
+import { dayOf, type ApprovalRow, type StatusRow } from "./store.js";
 
 type Result = { statusCode: number; body: unknown };
 const json = (statusCode: number, body: unknown): APIGatewayProxyResultV2 => ({ statusCode, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify(body) });
@@ -34,10 +45,15 @@ const json = (statusCode: number, body: unknown): APIGatewayProxyResultV2 => ({ 
 export interface ReplayJob {
   replay: { n: number; by: string; ticketIds?: string[] };
 }
+/** A host-CLI job the function hands itself: one allowlisted command on the eu-west host; the result lands on the timeline. */
+export interface HostCliJob {
+  hostCli: { command: HostCliCommand; by: string; requestedAt: string };
+}
 
 export const REPLAY_MAX = 30;
 
 const isReplay = (event: unknown): event is ReplayJob => typeof event === "object" && event !== null && "replay" in event;
+const isHostCliJob = (event: unknown): event is HostCliJob => typeof event === "object" && event !== null && "hostCli" in event;
 /** The scheduled status tick: not a request, not a replay. */
 export const isStatusTick = (event: unknown): boolean => typeof event === "object" && event !== null && (event as { tick?: unknown }).tick === "status";
 
@@ -58,7 +74,43 @@ const readBody = (event: APIGatewayProxyEventV2WithJWTAuthorizer): Record<string
   }
 };
 
-export type DeskHandler = (event: APIGatewayProxyEventV2WithJWTAuthorizer | ReplayJob, context?: Context) => Promise<APIGatewayProxyResultV2 | void>;
+/**
+ * Is this approval row still the one its host would activate? Two readings, both from the desk's own tables: another
+ * row of the same host and store for a newer generation (the watcher opened it when the daemon staged past this one —
+ * the watcher settles the old row on the same tick, but the click can race it), and the host's status row, when it
+ * was written after this row was staged, naming a different staged generation (or none: the release went live or
+ * away on the host). A stale row is refused so a late click never approves a generation the host no longer holds
+ * staged. Pure.
+ */
+export function approvalStaleness(row: ApprovalRow, approvals: ApprovalRow[], hosts: StatusRow[]): { stale: boolean; reason: string | null } {
+  const newer = approvals.filter((a) => a.hostId === row.hostId && a.storeId === row.storeId && a.generation > row.generation).sort((a, b) => b.generation - a.generation)[0];
+  if (newer) return { stale: true, reason: `release #${row.generation} is no longer what ${row.hostId} holds staged: #${newer.generation} was staged in its place (its own row is ${newer.decision})` };
+  const host = hosts.find((h) => h.hostId === row.hostId);
+  const status = host?.status as { stagedGeneration?: number | null; generation?: number } | undefined;
+  if (host && status && typeof status.generation === "number" && Date.parse(host.writtenAt) > Date.parse(row.stagedAt) && status.stagedGeneration !== row.generation) {
+    if (status.generation >= row.generation) return { stale: true, reason: `release #${row.generation} is not staged on ${row.hostId} any more: its row written at ${host.writtenAt} says #${status.generation} is live${status.stagedGeneration ? ` and #${status.stagedGeneration} is staged` : " and nothing is staged"}` };
+    if (status.stagedGeneration) return { stale: true, reason: `release #${row.generation} is not staged on ${row.hostId} any more: its row written at ${host.writtenAt} says #${status.stagedGeneration} is staged (#${status.generation} live)` };
+  }
+  return { stale: false, reason: null };
+}
+
+/** The freeze as this host sees it: the manifest's `disable` directive on the whole agent (`status().disabled.agent`). */
+export const FROZEN_REASON = "the release's manifest carries a disable directive for this agent — frozen from the console";
+export function frozenOf(host: Pick<Host, "ap">): { frozen: boolean; reason: string | null } {
+  const status = host.ap.status();
+  if (!status.disabled?.agent) return { frozen: false, reason: null };
+  return { frozen: true, reason: FROZEN_REASON };
+}
+
+/** Thrown inside the invoke, after its sync pass, so a run is refused by the release this container just verified — before a cap slot is taken. */
+class FrozenError extends Error {
+  constructor() {
+    super(FROZEN_REASON);
+    this.name = "FrozenError";
+  }
+}
+
+export type DeskHandler = (event: APIGatewayProxyEventV2WithJWTAuthorizer | ReplayJob | HostCliJob, context?: Context) => Promise<APIGatewayProxyResultV2 | void>;
 
 /** The handler over a host provider — the real cold-start memo in production, a fake host in tests. */
 export const createHandler = (hostOf: () => Promise<Host>): DeskHandler => async (event, context) => {
@@ -68,13 +120,17 @@ export const createHandler = (hostOf: () => Promise<Host>): DeskHandler => async
   } catch (error) {
     const e = error as Error & { code?: string };
     console.log(JSON.stringify({ source: "desk", event: "host_start_failed", name: e.name, code: e.code ?? null, message: e.message }));
-    if (isReplay(event) || isStatusTick(event)) return;
+    if (isReplay(event) || isHostCliJob(event) || isStatusTick(event)) return;
     return json(503, { error: "host_unavailable", name: e.name, code: e.code ?? null, message: e.message });
   }
   host.invocations += 1;
   try {
     if (isReplay(event)) {
       await replay(host, event, context);
+      return;
+    }
+    if (isHostCliJob(event)) {
+      await hostCliJob(host, event);
       return;
     }
     if (isStatusTick(event)) {
@@ -119,15 +175,40 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       const ticket = await store.getTicket(params.ticketId!);
       if (!ticket) return { statusCode: 404, body: { error: "no_such_ticket" } };
       const day = dayOf(new Date().toISOString());
-      const slot = await store.takeRunSlot(day, env.dailyRunCap);
-      if (!slot.ok) {
+      // Inside the invoke, after its sync pass: the freeze this container just verified refuses before a cap slot is
+      // taken; then the slot, atomically; then the run. A refusal answers as itself, not as a run.
+      const outcome = await ap.invoke(async (): Promise<{ kind: "run"; record: Awaited<ReturnType<typeof runTicket>>; used: number } | { kind: "cap"; used: number }> => {
+        if (frozenOf(host).frozen) throw new FrozenError();
+        const slot = await store.takeRunSlot(day, env.dailyRunCap);
+        if (!slot.ok) return { kind: "cap", used: slot.used };
+        return { kind: "run", record: await runTicket(host, ticket, { by, kind: name === "run_ticket" ? "run" : "escalate", capUsed: slot.used }), used: slot.used };
+      }).catch(async (error: unknown) => {
+        if (!(error instanceof FrozenError)) throw error;
+        await store.appendEvent({ at: new Date().toISOString(), kind: "run_refused", host: env.hostId, ticketId: ticket.ticketId, reason: FROZEN_REASON, by });
+        return { kind: "frozen" as const, used: 0 };
+      });
+      if (outcome.kind === "frozen") return { statusCode: 423, body: { error: "frozen", message: `this host refuses to render: ${FROZEN_REASON}. Unfreeze from the console; the next sync lifts it.`, reason: FROZEN_REASON } };
+      if (outcome.kind === "cap") {
         // `capDay`, not `day`: the events table's partition key is `day` and the reader does not return it.
-        await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, capDay: day, cap: env.dailyRunCap, used: slot.used, by });
-        return { statusCode: 429, body: { error: "daily_cap", message: `this host refuses past ${env.dailyRunCap} runs per UTC day; ${slot.used} were used on ${day}. Nothing was simulated.`, cap: env.dailyRunCap, used: slot.used, day } };
+        await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, capDay: day, cap: env.dailyRunCap, used: outcome.used, by });
+        return { statusCode: 429, body: { error: "daily_cap", message: `this host refuses past ${env.dailyRunCap} runs per UTC day; ${outcome.used} were used on ${day}. Nothing was simulated.`, cap: env.dailyRunCap, used: outcome.used, day } };
       }
-      const record = await ap.invoke(() => runTicket(host, ticket, { by, kind: name === "run_ticket" ? "run" : "escalate", capUsed: slot.used }));
       await host.writeStatus();
-      return { statusCode: record.ok ? 200 : 502, body: { run: record, cap: { used: slot.used, cap: env.dailyRunCap, day } } };
+      return { statusCode: outcome.record.ok ? 200 : 502, body: { run: outcome.record, cap: { used: outcome.used, cap: env.dailyRunCap, day } } };
+    }
+    case "hosted_run": {
+      const ticket = await store.getTicket(params.ticketId!);
+      if (!ticket) return { statusCode: 404, body: { error: "no_such_ticket" } };
+      if (!host.hosted || !hostedConfigured(env)) return { statusCode: 501, body: { error: "hosted_not_configured", message: "hosted staging is not configured on this deployment: the stack names no run key parameter or run URL (RUNBOOK.md › Hosted staging)" } };
+      const customer = await store.getCustomer(ticket.customerId);
+      const record = await hostedRun({ ports: { env: { hosted: env.hosted, hostId: env.hostId, region: env.region, agentId: env.airprompter.agentId }, store }, client: host.hosted, ticket, customer, by });
+      return { statusCode: record.ok ? 200 : 502, body: { run: record } };
+    }
+    case "arms": {
+      const [runs, feedback] = await Promise.all([store.listRuns(), store.listAllFeedback()]);
+      const folded = foldArms(runs, feedback);
+      const ramps = (ap.status().ramps ?? []).map((r) => ({ experimentId: r.experimentId, tag: r.tag, arms: r.arms, weightBps: r.weightBps, step: r.step, nextStepAt: r.nextStepAt, plan: r.plan }));
+      return { statusCode: 200, body: { ...folded, ramps, readAt: new Date().toISOString(), runsRead: runs.length } };
     }
     case "feedback": {
       const run = await store.getRun(params.runId!);
@@ -151,6 +232,9 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       return { statusCode: 200, body: { filed: true, signals: accepted, container: outcome.container, message: outcome.container === "same" ? "filed on the run's window; it leaves with the next upload" : "filed on this container against the same prompt version and arm (the run was served by another container of this host); it leaves with the next upload" } };
     }
     case "state": {
+      // A sync pass first (on_invoke: one pointer read when nothing changed): several containers stay warm behind the
+      // API, and the one answering this poll must know the freeze, the generation and the ramp the others do.
+      await ap.invoke(async () => undefined);
       const day = dayOf(new Date().toISOString());
       const [hosts, used] = await Promise.all([store.listStatus(), store.readRunSlots(day)]);
       return {
@@ -161,7 +245,10 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
           cap: { day, used, cap: env.dailyRunCap },
           airprompter: { baseUrl: env.airprompter.baseUrl, environment: env.airprompter.environment, agentId: env.airprompter.agentId },
           // What the presenter panel may offer: the wire buttons exist only when the eu-west stack is deployed.
-          features: { wire: env.wireFunctionArn !== "", nudge: env.nudgeQueueUrl !== "" },
+          features: { wire: env.wireFunctionArn !== "", nudge: env.nudgeQueueUrl !== "", hosted: hostedConfigured(env), hostCli: env.wireFunctionArn !== "" },
+          hosted: hostedConfigured(env) ? { target: env.hosted.target, runUrl: env.hosted.runUrl } : null,
+          frozen: frozenOf(host),
+          hostCliCommands: Object.keys(HOST_CLI_COMMANDS),
         },
       };
     }
@@ -171,12 +258,25 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       return { statusCode: 200, body: { events } };
     }
     case "list_approvals": {
+      await ap.invoke(async () => undefined);
       const approvals = await store.listApprovals(50);
-      return { statusCode: 200, body: { approvals, pending: approvals.filter((a) => a.decision === "pending").length } };
+      // The ramp plan a staged release carries: this host applied the same generation under `auto` and read it from the
+      // signed manifest, so the page can show what one approval on eu-west unlocks — every step of the plan, no check-in.
+      const status = ap.status();
+      const rampsOf = (generation: number) => (status.generation === generation ? status.ramps ?? [] : []).map((r) => ({ experimentId: r.experimentId, tag: r.tag, arms: r.arms, weightBps: r.weightBps, plan: r.plan, readBy: env.hostId }));
+      const enriched = approvals.map((a) => ({ ...a, ramps: rampsOf(a.generation) }));
+      return { statusCode: 200, body: { approvals: enriched, pending: approvals.filter((a) => a.decision === "pending").length } };
     }
     case "approve": {
       // Everyone who can sign in is the owner (README › sign-in); the decision is recorded once, under the signer's name.
       const at = new Date().toISOString();
+      const current = await store.getApproval(params.approvalId!);
+      if (!current) return { statusCode: 404, body: { error: "no_such_approval" } };
+      if (current.decision === "pending") {
+        const [approvals, hosts] = await Promise.all([store.listApprovals(50), store.listStatus()]);
+        const staleness = approvalStaleness(current, approvals, hosts);
+        if (staleness.stale) return { statusCode: 409, body: { error: "approval_stale", approval: current, message: `not approved: ${staleness.reason}; the host settles this row on its next tick` } };
+      }
       const decided = await store.approve(params.approvalId!, by, at);
       if (!decided.row) return { statusCode: 404, body: { error: "no_such_approval" } };
       if (decided.ok) {
@@ -297,8 +397,87 @@ async function presenter(host: Host, action: string, body: Record<string, unknow
       await store.appendEvent({ at: sentAt, kind: "presenter", host: env.hostId, action, by, messageId });
       return { statusCode: 202, body: { action, messageId, sentAt, message: "the fleet was nudged: the puller reads the origin on its next invocation (within seconds) and the timeline shows the pull" } };
     }
+    case "host_cli": {
+      // One allowlisted `zudocs-cli` command on the eu-west host, as a job this function hands itself (the HTTP API caps
+      // an integration at 30 s; Run Command's dispatch plus `doctor` can take a minute): the CLI's own document lands on
+      // the timeline as a `host_cli` row, which the presenter panel shows.
+      if (!env.wireFunctionArn) return { statusCode: 501, body: { error: "no_eu_host", message: "the eu-west stack (ZudocsSharedHost) is not deployed: no host to run the CLI on" } };
+      const command = body.command;
+      if (!isHostCliCommand(command)) return { statusCode: 400, body: { error: "no_such_command", message: `the desk runs exactly these on the host: ${Object.keys(HOST_CLI_COMMANDS).join(", ")}`, commands: Object.keys(HOST_CLI_COMMANDS) } };
+      if (!env.functionName) return { statusCode: 501, body: { error: "no_self_invoke", message: "the host CLI needs the function's own name (AWS_LAMBDA_FUNCTION_NAME)" } };
+      const requestedAt = at();
+      const job: HostCliJob = { hostCli: { command, by, requestedAt } };
+      await new LambdaClient({ region: env.region }).send(new InvokeCommand({ FunctionName: env.functionName, InvocationType: "Event", Payload: Buffer.from(JSON.stringify(job)) }));
+      await store.appendEvent({ at: requestedAt, kind: "presenter", host: env.hostId, action, by, command, forHost: `${env.euHost.region}/ec2` });
+      return { statusCode: 202, body: { action, command, line: HOST_CLI_COMMANDS[command], requestedAt, message: `zudocs-cli ${command} queued for the eu-west host; the timeline shows the CLI's answer when it lands (seconds; doctor takes up to a minute)` } };
+    }
+    case "policy": {
+      // This host's own apply policy: an operator's act on the SDK (`setApplyPolicy`) — `auto` loosens a pin the console tightened, `unlock_required` tightens it by hand.
+      const value = body.value;
+      if (value !== "auto" && value !== "unlock_required") return { statusCode: 400, body: { error: "no_such_policy", message: "value is auto or unlock_required" } };
+      const before = ap.status().applyPolicy;
+      const after = await ap.invoke(async () => ap.setApplyPolicy(value, { by }));
+      await store.appendEvent({ at: at(), kind: "policy_set", host: env.hostId, value, before: before.effective, after: after.effective, source: after.source, by });
+      await host.writeStatus();
+      return { statusCode: 200, body: { action, before, after, message: before.effective === after.effective ? `this host's policy was already ${after.effective} (${after.source})` : `this host's policy: ${before.effective} → ${after.effective} (${after.source}); the console's setting is advisory here` } };
+    }
+    case "golden": {
+      // The active release's golden sets, run now against the pinned model; the SDK files goldenPass per case, the desk shows counts.
+      const tag = typeof body.tag === "string" ? body.tag : undefined;
+      const reports = await ap.invoke(async () => ap.golden({ ...(tag ? { tag } : {}) }));
+      const summary = reports.map((r) => ({ tag: r.tag, arm: r.arm, model: r.model, cases: r.cases, passed: r.passed, failed: r.failed, passBps: r.passBps, minPassBps: r.minPassBps, meetsThreshold: r.meetsThreshold, failedCases: r.results.filter((c) => !c.ok).map((c) => ({ caseId: c.caseId, failed: c.failed, error: c.error ?? null })) }));
+      await store.appendEvent({ at: at(), kind: "golden_run", host: env.hostId, generation: ap.generation, reports: summary.map((r) => ({ tag: r.tag, arm: r.arm, passed: r.passed, cases: r.cases, met: r.meetsThreshold })), by });
+      await host.writeStatus();
+      return { statusCode: 200, body: { action, generation: ap.generation, reports: summary, message: summary.length ? summary.map((r) => `${r.tag} (${r.arm}): ${r.passed}/${r.cases} ${r.meetsThreshold ? "meets" : "BELOW"} the ${r.minPassBps / 100}% floor`).join("; ") : "no slot of the active release carries a golden set" } };
+    }
+    case "reset": {
+      // The reset script's clearing step: runs, feedback, approvals, events and counters gone; the inbox re-seeded.
+      const counts = await store.reset([...SEED_CUSTOMERS], [...SEED_TICKETS]);
+      await store.appendEvent({ at: at(), kind: "presenter", host: env.hostId, action, by, ...counts });
+      await host.writeStatus();
+      return { statusCode: 200, body: { action, ...counts, message: `cleared ${counts.runs} runs, ${counts.feedback} feedback rows, ${counts.approvals} approvals, ${counts.events} events, ${counts.counters} counters; seeded ${counts.customers} customers and ${counts.tickets} tickets` } };
+    }
     default:
-      return { statusCode: 404, body: { error: "no_such_action", actions: ["heartbeat", "upload", "sync", "seed", "replay", "enqueue", "cut_wire", "restore_wire", "nudge"] } };
+      return { statusCode: 404, body: { error: "no_such_action", actions: ["heartbeat", "upload", "sync", "seed", "replay", "enqueue", "cut_wire", "restore_wire", "nudge", "host_cli", "policy", "golden", "reset"] } };
+  }
+}
+
+/** The host-CLI job: run the command through Run Command, put the CLI's document on the timeline (never a key — the CLI prints none). */
+async function hostCliJob(host: Host, job: HostCliJob): Promise<void> {
+  const { store, env } = host;
+  const { command, by, requestedAt } = job.hostCli;
+  let result: Awaited<ReturnType<Host["hostCli"]>>;
+  try {
+    result = await host.hostCli(command, command === "doctor" ? 120 : 90);
+  } catch (error) {
+    await store.appendEvent({ at: new Date().toISOString(), kind: "host_cli", host: env.hostId, forHost: `${env.euHost.region}/ec2`, command, line: HOST_CLI_COMMANDS[command], status: "Failed", instanceId: null, summary: `Run Command could not be sent: ${(error as Error).message.slice(0, 200)}`, document: null, stdout: "", requestedAt, by });
+    return;
+  }
+  const summary = summariseCli(command, result.document ?? {});
+  await store.appendEvent({ at: new Date().toISOString(), kind: "host_cli", host: env.hostId, forHost: `${env.euHost.region}/ec2`, command, line: result.line, status: result.status, instanceId: result.instanceId, summary, document: result.document, stdout: result.stdout.slice(0, 4000), stderr: result.stderr.slice(0, 1000), durationMs: result.durationMs, requestedAt, by });
+}
+
+/** One line from the CLI's document, per command — what the notice and the timeline row say. */
+export function summariseCli(command: string, doc: Record<string, unknown>): string {
+  if (doc.ok === false) return `refused: ${String(doc.error ?? doc.reason ?? "")}`.trim();
+  const policy = doc.applyPolicy as { effective?: string; source?: string; manifestSaid?: string | null; value?: string } | undefined;
+  switch (command) {
+    case "policy show":
+      return policy ? `in force ${policy.effective ?? policy.value} (${policy.source})${policy.manifestSaid && policy.manifestSaid !== policy.effective ? `; the console says ${policy.manifestSaid} — advisory here` : ""}` : "no policy document";
+    case "rollback":
+      return `generation ${String(doc.generation ?? "?")} live${doc.previousGeneration !== undefined ? ` (was ${String(doc.previousGeneration)})` : ""}${doc.forced ? " — a forced downgrade, stamped on evidence" : ""}`;
+    case "unlock":
+      return doc.generation === null || doc.generation === undefined ? "nothing was staged; nothing activated" : `generation ${String(doc.generation)} activated${doc.previousGeneration !== undefined ? ` (was ${String(doc.previousGeneration)})` : ""}`;
+    case "status":
+      return `generation ${String(doc.generation)}${doc.stagedSlot ? " · a release is staged" : ""}${doc.forcedDowngrade ? " · forced downgrade" : ""} · ${String(doc.storageProtection)}`;
+    case "doctor": {
+      const checks = Array.isArray(doc.checks) ? (doc.checks as Array<{ name: string; level: string }>) : [];
+      const warn = checks.filter((c) => c.level === "warn").map((c) => c.name);
+      const fail = checks.filter((c) => c.level === "fail").map((c) => c.name);
+      return `${checks.length} checks · ${fail.length} failing${fail.length ? ` (${fail.join(", ")})` : ""} · ${warn.length} warning${warn.length === 1 ? "" : "s"}${warn.length ? ` (${warn.join(", ")})` : ""}`;
+    }
+    default:
+      return "done";
   }
 }
 
@@ -313,12 +492,22 @@ async function replay(host: Host, job: ReplayJob, context?: Context): Promise<vo
     if (context && context.getRemainingTimeInMillis() < 45_000) break;
     const ticket = chosen[i % chosen.length]!;
     const day = dayOf(new Date().toISOString());
-    const slot = await store.takeRunSlot(day, env.dailyRunCap);
-    if (!slot.ok) {
-      await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, capDay: day, cap: env.dailyRunCap, used: slot.used, by: job.replay.by });
+    // The same order as a click: inside the invoke (after its sync pass) the freeze, then the cap slot, then the run.
+    const outcome = await ap.invoke(async (): Promise<"run" | "frozen" | { cap: number }> => {
+      if (frozenOf(host).frozen) return "frozen";
+      const slot = await store.takeRunSlot(day, env.dailyRunCap);
+      if (!slot.ok) return { cap: slot.used };
+      await runTicket(host, ticket, { by: job.replay.by, kind: "run", capUsed: slot.used });
+      return "run";
+    });
+    if (outcome === "frozen") {
+      await store.appendEvent({ at: new Date().toISOString(), kind: "run_refused", host: env.hostId, ticketId: ticket.ticketId, reason: FROZEN_REASON, by: job.replay.by });
       break;
     }
-    await ap.invoke(() => runTicket(host, ticket, { by: job.replay.by, kind: "run", capUsed: slot.used }));
+    if (outcome !== "run") {
+      await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, capDay: day, cap: env.dailyRunCap, used: outcome.cap, by: job.replay.by });
+      break;
+    }
     done += 1;
   }
   await host.writeStatus();

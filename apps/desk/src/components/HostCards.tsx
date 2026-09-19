@@ -53,6 +53,9 @@ function HostCard({ host }: { host: HostStatus }) {
         <div><dt>sync</dt><dd>{s.lastSyncOutcome ?? "—"} · {ago(s.lastSyncAt ?? null)}{failures > 0 ? <span className={failures >= 3 ? "refusal" : "staged"}> · {failures} failure{failures === 1 ? "" : "s"} in a row</span> : ""}{staleRefusal(s) ? <span className="muted"> · last refusal {s.lastRefusal} (cleared by the next activation)</span> : ""}</dd></div>
         <div><dt>spool</dt><dd>{s.spool?.depthSegments ?? 0} seg · {s.spool?.depthBytes ?? 0} B{s.upload?.lastUploadAt ? ` · uploaded ${ago(s.upload.lastUploadAt)}` : ""}</dd></div>
         <div><dt>variables</dt><dd>{(s.variables?.sources ?? []).join(", ") || "none"}{(s.variables?.unsourced ?? []).length ? ` · unsourced: ${s.variables.unsourced.map((u: { tag: string; names: string[] }) => `${u.tag} ${u.names.join("/")}`).join("; ")}` : ""}</dd></div>
+        {Array.isArray(s.ramps) && s.ramps.length ? <div><dt title={TOOLTIPS.arm}>experiments</dt><dd>{(s.ramps as Array<{ tag: string | null; arms: string[]; weightBps: number[]; step: number; plan: unknown[] }>).map((r) => `${r.tag ? r.tag.replace(/^support\./, "") : "all"}: ${r.arms.map((a, i) => `${a} ${Math.round((r.weightBps[i] ?? 0) / 100)}%`).join(" · ")}${r.plan?.length ? ` (step ${r.step + 1}/${r.plan.length})` : ""}`).join(" — ")}</dd></div> : null}
+        {s.disabled?.agent ? <div><dt title={TOOLTIPS.frozen}>frozen</dt><dd><span className="refusal">yes — every render refuses</span></dd></div> : null}
+        {s.golden ? <div><dt title={TOOLTIPS.golden}>golden</dt><dd>release #{s.golden.generation}: {(s.golden.reports as Array<{ tag: string; passed: number; cases: number }>).map((r) => `${r.tag.replace(/^support\./, "")} ${r.passed}/${r.cases}`).join(", ")} · {s.golden.met ? "met the floor" : <span className="refusal">below the floor — staged, not activated</span>}</dd></div> : null}
         <div><dt>sdk</dt><dd>{host.sdk}</dd></div>
         {daemon ? (
           <>

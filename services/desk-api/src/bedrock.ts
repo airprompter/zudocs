@@ -27,7 +27,7 @@ import { SignatureV4 } from "@smithy/signature-v4";
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { generateText, wrapLanguageModel, type LanguageModel } from "ai";
 import OpenAI from "openai";
-import type { AirPrompterAgent, Rendered } from "@airprompter/agent-sdk";
+import type { AirPrompterAgent, GoldenInvocation, Rendered } from "@airprompter/agent-sdk";
 import { CATALOGUE, bedrockIdOf, entryOf } from "./modelCatalogue.js";
 
 export interface Completion {
@@ -39,6 +39,12 @@ export interface Completion {
 export interface Callers {
   complete(rendered: Pick<Rendered, "model" | "text">): Promise<Completion>;
   judge(prompt: string): Promise<string>;
+  /**
+   * T34: one golden case — the slot's text rendered with the case's variables, asked of the pinned model with the
+   * version's own settings, unobserved (a case is not a render; the SDK files `goldenPass` per case itself). The
+   * output token count rides along for a length check.
+   */
+  golden(invocation: GoldenInvocation): Promise<{ text: string; outputTokens: number | null }>;
   readonly judgeModel: string;
 }
 
@@ -84,12 +90,39 @@ export function aliasModel<M extends { modelId: string; doGenerate: (...args: an
   });
 }
 
+/** The version's sealed settings in the units the providers take: `temperatureMilli` → a temperature, the output cap as is. Pure. */
+export function inferenceSettings(inference: GoldenInvocation["inference"] | undefined): { temperature?: number; maxOutputTokens?: number } {
+  const i = (inference ?? {}) as { temperatureMilli?: number; maxOutputTokens?: number };
+  return { ...(typeof i.temperatureMilli === "number" ? { temperature: i.temperatureMilli / 1000 } : {}), ...(typeof i.maxOutputTokens === "number" ? { maxOutputTokens: i.maxOutputTokens } : {}) };
+}
+
 /** `choices[0].message.content` as text — a string, or the text parts of an array; empty when the model said nothing. */
 export function textOfChat(response: unknown): string {
   const content = (response as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) return content.map((part) => (typeof part?.text === "string" ? part.text : "")).join("");
   return "";
+}
+
+/**
+ * The golden-set caller on its own — no SDK, no wrapper: the T34 hook runs inside the boot sync, before the host's
+ * observed callers exist, and a golden case is not a render anyway (the SDK counts `goldenPass` per case itself).
+ */
+export function createGoldenCaller(region: string, options: { fetch?: FetchImpl } = {}): Callers["golden"] {
+  const openai = new OpenAI({ baseURL: mantleBaseUrl(region), apiKey: "sigv4", fetch: options.fetch ?? mantleFetch(region), maxRetries: 0, timeout: 45_000 });
+  const bedrock = createAmazonBedrock({ region, credentialProvider: defaultProvider(), ...(options.fetch ? { fetch: options.fetch as any } : {}) });
+  return async (invocation) => {
+    const entry = entryOf(invocation.model);
+    const settings = inferenceSettings(invocation.inference);
+    if (entry.path === "mantle") {
+      const response = await openai.chat.completions.create({ model: invocation.model, messages: [{ role: "user", content: invocation.text }], ...(settings.maxOutputTokens !== undefined ? { max_completion_tokens: settings.maxOutputTokens } : {}) });
+      const usage = (response as { usage?: { completion_tokens?: number } }).usage;
+      return { text: textOfChat(response), outputTokens: typeof usage?.completion_tokens === "number" ? usage.completion_tokens : null };
+    }
+    const result = await generateText({ model: aliasModel(bedrock(bedrockIdOf(invocation.model)), invocation.model), prompt: invocation.text, maxRetries: 0, ...(settings.temperature !== undefined ? { temperature: settings.temperature } : {}), ...(settings.maxOutputTokens !== undefined ? { maxOutputTokens: settings.maxOutputTokens } : {}) });
+    const out = (result.usage as { outputTokens?: number } | undefined)?.outputTokens;
+    return { text: result.text, outputTokens: typeof out === "number" ? out : null };
+  };
 }
 
 export function createCallers(ap: AirPrompterAgent, region: string, options: { judgeModel?: string; fetch?: FetchImpl } = {}): Callers {
@@ -117,5 +150,6 @@ export function createCallers(ap: AirPrompterAgent, region: string, options: { j
       const result = await generateText({ model: converse(judgeModel, false), prompt, maxOutputTokens: 400, temperature: 0, maxRetries: 0 });
       return result.text;
     },
+    golden: createGoldenCaller(region, options),
   };
 }

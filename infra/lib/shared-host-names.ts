@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 
 /** The instance role's fixed name (IAM is global, so the desk stack's Budgets action can name it). */
 export const EU_HOST_ROLE_NAME = "zudocs-eu-host";
+/** The instance's Name tag: the desk's one-click CLI targets Run Command by it (phase 6), so the desk never learns an instance id. */
+export const EU_HOST_NAME_TAG = "zudocs-eu-host";
 /** The wire function's fixed name (the desk stack invokes it across regions by ARN). */
 export const WIRE_FUNCTION_NAME = "zudocs-wire";
 /** The host's row in the status table and its name on every timeline event. */

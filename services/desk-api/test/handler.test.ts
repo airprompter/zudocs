@@ -50,6 +50,9 @@ function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[];
     listApprovals: async () => [...self.approvals.values()],
     approve: async (id: string, by: string, at: string) => { const row = self.approvals.get(id); if (!row) return { ok: false, row: null }; if (row.decision !== "pending") return { ok: false, row }; Object.assign(row, { decision: "approved", decidedBy: by, decidedAt: at, updatedAt: at }); return { ok: true, row }; },
     settleApproval: async (id: string, settle: any) => { const row = self.approvals.get(id); if (!row || !["pending", "approved"].includes(row.decision)) return null; Object.assign(row, { decision: settle.decision, outcome: settle.outcome, activatedAt: settle.activatedAt ?? null, updatedAt: settle.at }); return row; },
+    listRuns: async () => [...self.runs.values()],
+    listAllFeedback: async () => self.feedback,
+    reset: async (c: Customer[], t: Ticket[]) => { const counts = { runs: self.runs.size, feedback: self.feedback.length, approvals: self.approvals.size, events: self.events.length, counters: self.used ? 1 : 0, customers: c.length, tickets: t.length }; self.runs.clear(); self.feedback.length = 0; self.approvals.clear(); self.events.length = 0; self.used = 0; return counts; },
     queues: new Map<string, string[]>(),
     approvals: new Map<string, ApprovalRow>(),
   };
@@ -58,8 +61,8 @@ function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[];
 
 /** Enough of the SDK: renders with the desk's source consulted, observes what the callers do, judges, files feedback. */
 function fakeAp(store: Store, calls: string[]) {
-  const state = { generation: 1, foreign: new Set<string>(), minted: 0, versionId: "rev-2", arm: "none", renders: [] as Array<{ tag: string; subject: string | undefined; values: Record<string, string> }> };
-  const status = () => ({ generation: state.generation, applyState: "active", variables: { sources: ["customer_tier"], unsourced: [] }, heartbeat: { lastAt: null, nextAt: null, intervalSeconds: 60, lastRefusal: null }, storageProtection: "kms", source: "store", applyPolicy: { effective: "auto", source: "local", manifestSaid: "auto" }, lastSyncOutcome: "unchanged", stagedGeneration: null });
+  const state = { generation: 1, foreign: new Set<string>(), minted: 0, versionId: "rev-2", arm: "none", renders: [] as Array<{ tag: string; subject: string | undefined; values: Record<string, string> }>, frozen: false, policy: "auto", policySource: "local", ramps: [] as unknown[] };
+  const status = () => ({ generation: state.generation, applyState: "active", variables: { sources: ["customer_tier"], unsourced: [] }, heartbeat: { lastAt: null, nextAt: null, intervalSeconds: 60, lastRefusal: null }, storageProtection: "kms", source: "store", applyPolicy: { effective: state.policy, source: state.policySource, manifestSaid: "auto" }, lastSyncOutcome: "unchanged", stagedGeneration: null, disabled: { agent: state.frozen, slots: [], arms: [] }, lastRefusal: state.frozen ? "disabled: frozen from the console" : null, ramps: state.ramps });
   const declared: Record<string, any[]> = {
     "support.triage": [{ name: "ticket", required: true, trust: "end_user" }],
     "support.reply": [{ name: "tone", required: false, trust: "operator", default: "friendly" }, { name: "customer_tier", required: true, trust: "operator", source: "runtime" }, { name: "ticket", required: true, trust: "end_user" }],
@@ -100,6 +103,8 @@ function fakeAp(store: Store, calls: string[]) {
     uploadNow: async () => null,
     spool: { observe: () => {} },
     onChange: () => () => {},
+    setApplyPolicy: async (value: string) => { state.policy = value; state.policySource = "operator"; return { effective: value, source: "operator", manifestSaid: "auto" }; },
+    golden: async () => [{ tag: "support.triage", arm: "control", setId: "gs", model: "amazon.nova-micro", cases: 5, passed: 4, failed: 1, passBps: 8000, minPassBps: 8000, meetsThreshold: true, results: [{ caseId: "a", ok: true, failed: [] }, { caseId: "b", ok: false, failed: ["category"] }] }],
   };
 }
 
@@ -107,7 +112,7 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
   const store = fakeStore();
   const calls: string[] = [];
   const ap = fakeAp(store, calls) as unknown as Host["ap"];
-  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "", nudgeQueueUrl: "", airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
+  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "", nudgeQueueUrl: "", hosted: { runKeyParameter: "", runUrl: "", target: "staging" }, euHost: { region: "eu-west-1", nameTag: "zudocs-eu-host" }, airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
   const host: Host & { store: ReturnType<typeof fakeStore>; calls: string[] } = {
     env,
     ap,
@@ -120,7 +125,10 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
         return { text: rendered.model === "amazon.nova-micro" ? '{"category":"publishing","priority":"urgent","summary":"site down"}' : "Thanks — the team", response: {} };
       },
       judge: async () => "PASS PASS PASS FAIL",
+      golden: async () => ({ text: "{}", outputTokens: 2 }),
     },
+    hosted: null,
+    hostCli: async (command) => { calls.push(`host_cli:${command}`); return { command, line: `zudocs-cli ${command} --json`, status: "Success" as const, instanceId: "i-eu", document: command === "policy show" ? { via: "daemon", applyPolicy: { effective: "unlock_required", source: "local", manifestSaid: "auto" } } : command === "rollback" ? { generation: 3, forced: true, outcome: "rolled_back" } : { ok: true }, stdout: "{}", stderr: "", durationMs: 1200 }; },
     startedAt: "2026-09-18T10:00:00Z",
     sdk: "agent-sdk-ts/test",
     invocations: 0,
@@ -173,7 +181,7 @@ test("the cap: the third run of a two-run day is refused with 429 and its reason
   assert.equal(body.error, "daily_cap");
   assert.equal(body.used, 2);
   assert.match(body.message, /Nothing was simulated/);
-  assert.equal(host.calls.length, before, "no invoke, no model call");
+  assert.deepEqual(host.calls.slice(before).filter((c) => c !== "invoke"), [], "no model call (the invoke runs for its sync pass, then the cap refuses)");
   const refusal = host.store.events.at(-1)!;
   assert.equal(refusal.kind, "cap_refused");
   assert.equal(refusal.capDay, body.day, "the day rides as capDay: `day` is the events table's partition key and never comes back to the timeline");
@@ -291,7 +299,7 @@ test("state, events, healthz and unknown routes; a failed start answers 503 with
   assert.equal(state.host.status.storageProtection, "kms");
   assert.deepEqual(state.host.models, ["openai.gpt-5-6-luna", "amazon.nova-2-lite", "amazon.nova-micro", "anthropic.claude-haiku-4-5"]);
   assert.deepEqual(state.cap, { day: new Date().toISOString().slice(0, 10), used: 0, cap: 2 });
-  assert.deepEqual(state.features, { wire: false, nudge: false }, "no wire function and no nudge queue configured on this fake host");
+  assert.deepEqual(state.features, { wire: false, nudge: false, hosted: false, hostCli: false }, "no wire function, no nudge queue, no run key configured on this fake host");
   const nudge = await handler(event("POST", "/presenter/nudge"));
   assert.equal((nudge as { statusCode: number }).statusCode, 501, "without the fleet stack there is nothing to nudge, and it says so");
   assert.equal(parse(nudge).error, "no_nudge_queue");

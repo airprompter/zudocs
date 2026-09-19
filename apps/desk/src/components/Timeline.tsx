@@ -22,7 +22,7 @@ function describe(e: TimelineEvent): string {
     case "release_staged": return `release #${e.generation} staged — awaiting approval (policy ${e.policy})${e.note ? ` · console: ${e.note}` : ""}`;
     case "approval_decided": return `release #${e.generation} ${e.decision} for ${e.forHost} by ${e.by}`;
     case "release_activated": return `release #${e.generation} activated${e.by === "host" ? " on the host (unlock, window or rollback)" : ` on the desk's approval by ${e.by}`}`;
-    case "release_unstaged": return `release #${e.generation} is live; the staged release went away`;
+    case "release_unstaged": return e.replacedBy ? `release #${e.replacedBy} staged in place of the earlier staged release (its row is superseded; #${e.generation} stays live)` : `release #${e.generation} is live; the staged release went away`;
     case "approval_failed": return `release #${e.generation}: the unlock was refused — ${e.reason}`;
     case "health_changed": return `health ${e.status}${Array.isArray(e.reasons) && e.reasons.length ? `: ${(e.reasons as string[]).join(", ")}` : ""}${e.consecutiveSyncFailures ? ` · ${e.consecutiveSyncFailures} sync failures` : ""}`;
     case "wire": return `wire ${e.action === "cut" ? "cut" : "restored"}${e.forHost ? ` on ${e.forHost}` : ""} by ${e.by}${e.restoreBy ? ` · the rule restores by ${clock(String(e.restoreBy))}` : ""}`;
@@ -32,6 +32,11 @@ function describe(e: TimelineEvent): string {
     case "cap_refused": return `refused: ${e.used}/${e.cap} runs used on ${e.capDay ?? String(e.at).slice(0, 10)}`;
     case "presenter": return `presenter: ${e.action}${e.n ? ` ×${e.n}` : ""}${e.ticketId ? ` ${e.ticketId}` : ""}${e.forHost ? ` → ${e.forHost}` : ""}${e.outcome ? ` · ${e.outcome}` : ""}${e.action === "nudge" ? " → the fleet's queue" : ""}`;
     case "replay_done": return `replay done: ${e.done}/${e.requested}`;
+    case "run_refused": return `${e.ticketId} refused — frozen: ${e.reason}`;
+    case "hosted_run": return `${e.ticketId} on hosted ${e.target}: ${e.ok ? `${e.versionId ?? "—"} on ${modelLabel(String(e.model ?? ""))}${e.arm && e.arm !== "none" ? ` · arm ${e.arm}` : ""} · ${e.deltas} deltas · compat ${e.compatStatus}` : `refused (${e.refusal ?? "compat " + String(e.compatStatus)})`}`;
+    case "host_cli": return `zudocs-cli ${e.command} on ${e.forHost}: ${e.status} — ${e.summary}${e.durationMs ? ` (${Math.round(Number(e.durationMs) / 1000)} s)` : ""}`;
+    case "policy_set": return `policy ${e.before} → ${e.after} (${e.source}) by ${e.by}`;
+    case "golden_run": return `golden sets on release #${e.generation}: ${(e.reports as Array<{ tag: string; passed: number; cases: number; met: boolean }>).map((r) => `${r.tag} ${r.passed}/${r.cases}${r.met ? "" : " BELOW the floor"}`).join("; ")}`;
     case "bundle_pulled": return `release #${e.generation} pulled into the exchange${e.sealed ? ` · sealed to key ${String(e.keyId).slice(0, 8)}…` : " · plaintext (dev)"} · ${e.trigger === "nudge" ? "on a nudge" : e.trigger === "reseal" ? "re-sealed to the host's new key" : "on the schedule"}${e.previous ? ` (was #${e.previous})` : ""}`;
     case "pull_failed": return `pull ${e.outcome}: ${e.reason}${e.detail ? ` — ${e.detail}` : ""}`;
     case "pull_conflict": return `generation #${e.generation} answered with another digest; the exchange keeps its row`;

@@ -11,7 +11,7 @@ Everything here depends only on what any customer has: the public npm and PyPI p
 CLI, the public root key, and keys issued in the AirPrompter console. No prompt text is committed. No key
 is ever in this repository, on a command line, or in a log.
 
-## What is here today (phases 1–5)
+## What is here today (phases 1–6)
 
 ```
 infra/             CDK: ZudocsCi (the deploy role), ZudocsDns (the zone), ZudocsSite (landing page, sign-in, budget,
@@ -28,11 +28,16 @@ services/airgap/   the ap-southeast-1 air-gapped host: the offline runtime, the 
 airprompter.config.json   where the prompts live in AirPrompter: identifiers only, never a key
 prompts/           the local registry for `airprompter dev` — ignored; `npm run prompts:seed` fills it
 keys/              public root JWKs the hosts and the verify action pin (dev today, prod at the cutover)
+vendored/          the one bundle in git: the zudocs-ci Agent's placeholder slot, verified weekly with no key (vendored/README.md)
 scripts/           prompts-seed, dev-smoke, dev-proof, desk-proof, eu-host-proof, fleet-proof, airgap (up / down / status / run),
-                   ssm-put-agent-key.sh, cognito-users.sh, account-baseline.sh, check-headers, check-keys
+                   demo-console (the presenter's console acts), demo-dryrun (the nine beats, asserted), demo-reset (reset means
+                   advance), strip.sh (the recorded CLI strips), vendor.sh (the vendoring PR), ci-telemetry-validate,
+                   check-vendored, ssm-put-agent-key.sh, cognito-users.sh, account-baseline.sh, check-headers, check-keys
 docs/              ARCHITECTURE.md, PROMPTS.md (the slots, variables, checks, golden set, models), DESK.md (the us-east host
                    and the app), EU-WEST.md (the daemon host, the approval, the wire), FLEET.md (the puller, the exchange, the
-                   air-gapped host, export/import)
+                   air-gapped host, export/import), strips/ (the recorded terminal strips)
+DEMO.md            the nine-beat script for the presenter: clicks, what the prospect sees, timings, before and after
+RUNBOOK.md         the operator's side: every key and its rotation, the drills, host replacement, the reset, the vendoring PR
 ```
 
 Phase 2 put the prompts in AirPrompter: one Agent, `zudocs-support`, four slots (`support.triage` on Nova Micro;
@@ -64,7 +69,34 @@ exchange, cannot call a model and files every render as a refusal, and exports i
 the eu-west host's import timer carries it to AirPrompter, so the offline instance appears on the fleet page. The desk
 gained the two host cards, the **Nudge the fleet** action (the change-notification placeholder: the puller reads the
 origin now), and the timeline rows; the us-east host's status row is now written every five minutes between runs.
-`docs/FLEET.md` is the tour. Phase 6 adds the demo script and the reset path. See `docs/ARCHITECTURE.md`.
+`docs/FLEET.md` is the tour.
+
+Phase 6 is the story. `DEMO.md` scripts nine beats (twenty minutes; the first four are the five-minute cut) and
+`npm run demo:dryrun` performs every click and console act against the live deployment and asserts what the
+prospect would see; `npm run demo:reset` implements *reset means advance* (two fresh canonical generations, every
+drill undone by moving forward). On the desk: **Run on staging** (AirPrompter's hosted execution with a run key —
+the stream replayed as it arrived, the feedback, and the OpenAI-compatible call with the caller's temperature shown
+ignored beside the version's sealed settings; on dev today the hosted run route answers `internal (500)`, platform
+issue #906, and the panel says so), the **Experiments** panel (per-arm results from the desk's own records, and the
+same customer on the same arm on every host), the ramp plan on the eu-west approval row (one approval for the whole
+plan), the freeze banding every ticket with the SDK's reason (Run stays clickable and answers `423 frozen`),
+one-click `zudocs-cli` drills on the eu-west host
+through Run Command (`policy show`, `rollback`, `unlock`, `status`, `doctor`), the golden set run before a release activates
+on us-east (a failing set leaves it staged under `auto`), and the recorded strips under `docs/strips/`. The weekly
+*Vendored bundle* workflow verifies the committed bundle with no key. See `docs/ARCHITECTURE.md`.
+
+## Present it
+
+```sh
+eval "$(.bin/airprompter login --email you@zudocs.com --base-url https://api-dev.airprompter.com)"
+export AWS_PROFILE=zudocs ZUDOCS_PROOF_PASSWORD='…'
+npm run demo:reset                       # before a session: reset means advance (~4 minutes)
+npm run airgap:up                        # wake the air-gapped host (~6 minutes; optional in the five-minute cut)
+npm run demo:console -- change-words     # every console act of DEMO.md as one command
+npm run demo:dryrun -- --skip-wire       # the rehearsal: every beat performed and asserted (~18 minutes)
+```
+
+`DEMO.md` is the script; `RUNBOOK.md` is the operator's side.
 
 ## Work on the prompts locally
 

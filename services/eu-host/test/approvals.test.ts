@@ -2,7 +2,7 @@
  * The approvals watcher against a fake store and a scripted daemon: a staged generation opens one row, a decision
  * unlocks through the daemon and settles the row, a restart resumes the same row, a replaced store (a new instance
  * staging the same generation) gets a fresh row and the old one is settled, an unlock on the host's shell is seen
- * and settled as superseded, a lost socket during an unlock is transient (the decision stands), a refused unlock is
+ * and settled as superseded, a newer generation staged in place of a pending one settles it superseded, a lost socket during an unlock is transient (the decision stands), a refused unlock is
  * `failed` once and not retried in a loop, two ticks at once share one pass, and a failure inside a pass never
  * throws out of `tick()`.
  *
@@ -221,6 +221,47 @@ test("a staged generation that went away below the active one (a rollback, a res
   assert.equal(await h.watcher.tick(), "superseded");
   assert.equal(h.rows.get("eu-west-1-ec2-g4-i-store1")!.activatedAt, null);
   assert.deepEqual(h.events.map((e) => e.kind), ["release_staged", "release_unstaged"]);
+});
+
+test("staged replaced by newer staged: the next promotion landing while a row is pending settles that row superseded, writes release_unstaged naming the newer generation, and opens the newer generation's row", async () => {
+  const h = harness();
+  h.daemon.generation = 1;
+  h.daemon.staged = 2;
+  assert.equal(await h.watcher.tick(), "opened");
+  assert.equal(await h.watcher.tick(), "waiting");
+  // The console promotes again before anyone decides: the daemon stages 3 in place of 2 (1 still live).
+  h.daemon.staged = 3;
+  assert.equal(await h.watcher.tick(), "opened");
+  const old = h.rows.get(ID)!;
+  assert.equal(old.decision, "superseded", "the row for 2 is not left awaiting an approval that would activate the wrong thing");
+  assert.match(old.outcome!, /generation 3 is staged in its place \(generation 1 is live\)/);
+  assert.equal(old.activatedAt, null, "2 never went live");
+  assert.equal(h.rows.get("eu-west-1-ec2-g3-i-store1")!.decision, "pending", "the newer generation has its own row");
+  assert.deepEqual(h.events.map((e) => e.kind), ["release_staged", "release_unstaged", "release_staged"]);
+  const unstaged = h.events[1]!;
+  assert.equal(unstaged.approvalId, ID);
+  assert.equal(unstaged.generation, 1, "the generation named is the live one");
+  assert.equal(unstaged.replacedBy, 3);
+  assert.deepEqual(h.watcher.current, { approvalId: "eu-west-1-ec2-g3-i-store1", generation: 3, storeId: "i-store1" });
+  // A late click on the old row: the store refuses (settled rows are not approved) and the watcher never unlocks for it.
+  Object.assign(old, { decidedBy: "seth@zudocs.com" });
+  assert.equal(await h.watcher.tick(), "waiting");
+  assert.deepEqual(h.unlocks, [], "nothing unlocked on the superseded row");
+  // The owner approves the newer row: 3 goes live, and the superseded row stays as it was.
+  Object.assign(h.rows.get("eu-west-1-ec2-g3-i-store1")!, { decision: "approved", decidedBy: "seth@zudocs.com" });
+  assert.equal(await h.watcher.tick(), "activated");
+  assert.deepEqual(h.unlocks, [3]);
+  assert.equal(h.rows.get(ID)!.decision, "superseded");
+  // A row already settled `failed` when the newer generation lands: no second settle, no release_unstaged, the new row opens.
+  const r = harness({ unlock: async () => { throw new Refusal("no"); } });
+  r.daemon.staged = 2;
+  await r.watcher.tick();
+  Object.assign(r.rows.get(ID)!, { decision: "approved", decidedBy: "seth@zudocs.com" });
+  assert.equal(await r.watcher.tick(), "failed");
+  r.daemon.staged = 3;
+  assert.equal(await r.watcher.tick(), "opened");
+  assert.equal(r.rows.get(ID)!.decision, "failed", "a failed row keeps its verdict");
+  assert.deepEqual(r.events.map((e) => e.kind), ["release_staged", "approval_failed", "release_staged"]);
 });
 
 test("a lost socket during the unlock is transient: the row stays approved, the next tick unlocks; a daemon refusal settles the row failed once and is not retried in a loop", async () => {

@@ -37,7 +37,7 @@ import { CATALOGUE } from "../../services/desk-api/src/modelCatalogue.js";
 import type { ZudocsConfig } from "./config.js";
 import { TABLE_NAMES, tableNameOf, type AirPrompterIds } from "./desk-stack.js";
 import { EXCHANGE, exchangeBucketName } from "./fleet-names.js";
-import { EU_HOST_LOG_GROUP, EU_HOST_ROLE_NAME, WIRE_CUT_MAX_MINUTES, WIRE_FUNCTION_NAME, readPins, type Pins } from "./shared-host-names.js";
+import { EU_HOST_LOG_GROUP, EU_HOST_NAME_TAG, EU_HOST_ROLE_NAME, WIRE_CUT_MAX_MINUTES, WIRE_FUNCTION_NAME, readPins, type Pins } from "./shared-host-names.js";
 
 export interface SharedHostStackProps extends cdk.StackProps {
   readonly config: ZudocsConfig;
@@ -147,7 +147,7 @@ export class SharedHostStack extends cdk.Stack {
       requireImdsv2: true,
       associatePublicIpAddress: true,
       detailedMonitoring: false,
-      instanceName: "zudocs-eu-host",
+      instanceName: EU_HOST_NAME_TAG,
       blockDevices: [{ deviceName: "/dev/xvda", volume: ec2.BlockDeviceVolume.ebs(8, { volumeType: ec2.EbsDeviceVolumeType.GP3, encrypted: true, deleteOnTermination: true }) }],
       userDataCausesReplacement: true,
     });

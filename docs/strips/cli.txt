@@ -1,0 +1,285 @@
+# The Zudocs CLI strip — airprompter 0.1.0 against dev, 2026-09-19T02:57:19Z, recorded by scripts/strip.sh
+# The Agent key is in the environment (AIRPROMPTER_AGENT_KEY); nothing printed below is a key.
+# Scope: --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev (paths shortened).
+
+$ airprompter keygen --purpose distribution --out <work>/laptop --allow-worktree 
+purpose: distribution
+key id: e338ea8db212d7408dd1b5ca7b71bdb711813483dcbc3a0f910871603a04495b
+private key (0600): <work>/laptop.key.json
+public key: <work>/laptop.pub.json
+register the public key on the environment (Agent › Settings › Distribution key); keep the private key in your secret store — the runtime needs it to open bundles
+(exit 0)
+
+$ airprompter pull --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root ./keys/dev.root.jwk.json --root-url https://dwp5emkmjpv8.cloudfront.net/roots/dev/root.json --base-url https://api-dev.airprompter.com --plaintext --out <work>/current.apbundle 
+out: <work>/current.apbundle
+generation: 5
+release: sha256:979e04ce64e2c3eb018af11efb8cc3135b5a797c9c8bd231c6371da19f03be91
+slots: 4
+payloads: 5
+signed by: c6756cde7f3c0422d67c4984b4e8cb4fc8650156ae0e54c2bf50f09222f9063c
+encryption: none
+recipient key: —
+not after: 2026-12-18T02:58:00.231Z
+warning: plaintext bundle — dev only; never commit it
+(exit 0)
+
+$ airprompter verify <work>/current.apbundle --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root ./keys/dev.root.jwk.json 
+encryption: none
+recipient key: —
+not after: 2026-12-18T02:58:00.231Z
+ok: true
+step: complete
+reason: —
+root: pinned_key, accepted, version 1, expires 2026-12-13T22:03:52.792Z
+manifest: generation 5, release sha256:979e04ce64e2c3eb018af11efb8cc3135b5a797c9c8bd231c6371da19f03be91, 4 slots (0 workflows), 5 payloads, policy auto, lease 3600s → degrade
+signed by: c6756cde7f3c0422d67c4984b4e8cb4fc8650156ae0e54c2bf50f09222f9063c
+(exit 0)
+
+$ airprompter pull --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root ./keys/dev.root.jwk.json --root-url https://dwp5emkmjpv8.cloudfront.net/roots/dev/root.json --base-url https://api-dev.airprompter.com --out <work>/current.apbundle --check --max-behind 1 
+vendored generation: 5
+current generation: 5
+behind: 0
+max behind: 1
+same release: true
+stale: false
+(exit 0)
+
+$ airprompter diff <work>/current.apbundle --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --against <work>/previous.apbundle 
+from generation 4 to 5
+  ~ support.escalate.summary  versionId rev-5 → rev-6; versionOrdinal 5 → 6
+1 slot changed, 3 unchanged
+(exit 0)
+
+$ airprompter apply <work>/previous.apbundle --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root ./keys/dev.root.jwk.json --state-dir <work>/state 
+store: <work>/state/airprompter/agent_1QNnYql4RXq9taZn/dev
+slot: A
+generation: 4
+previous generation: 0
+policy: auto
+update file says: auto
+outcome: activated
+forced downgrade: false
+expired: false
+(exit 0)
+
+$ airprompter apply <work>/current.apbundle --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root ./keys/dev.root.jwk.json --state-dir <work>/state 
+store: <work>/state/airprompter/agent_1QNnYql4RXq9taZn/dev
+slot: B
+generation: 5
+previous generation: 4
+policy: auto
+update file says: auto
+outcome: activated
+forced downgrade: false
+expired: false
+(exit 0)
+
+$ airprompter status --agent agent_1QNnYql4RXq9taZn --environment dev --state-dir <work>/state 
+store: <work>/state/airprompter/agent_1QNnYql4RXq9taZn/dev
+instance: i-eEDGeNVhfwwemMZR
+storage protection: file_key
+note: the store key is a file next to the store; use an OS keystore, KMS or Vault key provider where the host allows it
+active slot: B
+generation: 5
+staged slot: —
+forced downgrade: false
+root version: 1
+root expires: 2026-12-13T22:03:52.792Z
+apply policy: {"value":"auto","source":"manifest","generation":4,"setAt":"2026-09-19T02:58:07.501Z"}
+apply policy: auto — pinned from update 4; a later update may tighten it, never loosen it (airprompter policy set loosens)
+active: slot B, generation 5, release sha256:979e04ce64e2c3eb018af11efb8cc3135b5a797c9c8bd231c6371da19f03be91, 4 slots, policy auto, signed by c6756cde7f3c0422d67c4984b4e8cb4fc8650156ae0e54c2bf50f09222f9063c
+lease: 3600s from the last contact (issued 2026-09-19T02:57:12.022Z; from issue it lapses 2026-09-19T03:57:12.022Z) → degrade
+spool: {"segments":0,"bytes":0,"openSegments":0}
+last upload: —
+daemon: none on this host (SDKs sync in-process)
+(exit 0)
+
+$ airprompter rollback --agent agent_1QNnYql4RXq9taZn --environment dev --state-dir <work>/state 
+via: store
+slot: A
+generation: 4
+previous generation: 5
+forced: true
+outcome: rolled_back
+rolled back to generation 4 (slot A) from 5; a forced downgrade: reported on the next heartbeat, and sync holds generation 5 back; a runtime started from now serves it (a runtime already running in-process does not — use the daemon on a shared host)
+(exit 0)
+
+$ airprompter status --agent agent_1QNnYql4RXq9taZn --environment dev --state-dir <work>/state 
+store: <work>/state/airprompter/agent_1QNnYql4RXq9taZn/dev
+instance: i-eEDGeNVhfwwemMZR
+storage protection: file_key
+note: the store key is a file next to the store; use an OS keystore, KMS or Vault key provider where the host allows it
+active slot: A
+generation: 4
+staged slot: —
+forced downgrade: true
+root version: 1
+root expires: 2026-12-13T22:03:52.792Z
+apply policy: {"value":"auto","source":"manifest","generation":4,"setAt":"2026-09-19T02:58:07.501Z"}
+apply policy: auto — pinned from update 4; a later update may tighten it, never loosen it (airprompter policy set loosens)
+active: slot A, generation 4, release sha256:612dbce6f3817de2104db3b9478e445664e8a9eba8c7b63a950f81ebc08ed3f2, 4 slots, policy auto, signed by c6756cde7f3c0422d67c4984b4e8cb4fc8650156ae0e54c2bf50f09222f9063c
+lease: 3600s from the last contact (issued 2026-09-18T23:54:56.463Z; from issue it lapsed 2026-09-19T00:54:56.463Z) → degrade
+spool: {"segments":0,"bytes":0,"openSegments":0}
+last upload: —
+daemon: none on this host (SDKs sync in-process)
+(exit 0)
+
+$ airprompter unlock --agent agent_1QNnYql4RXq9taZn --environment dev --state-dir <work>/state 
+refused: nothing is staged on this host
+(exit 1)
+
+$ airprompter policy show --agent agent_1QNnYql4RXq9taZn --environment dev --state-dir <work>/state 
+via: store
+apply policy: {"value":"auto","source":"manifest","generation":4,"setAt":"2026-09-19T02:58:07.501Z"}
+pinned: auto (pinned from a signed update; a later update may tighten it, never loosen it)
+(exit 0)
+
+$ airprompter policy set unlock_required --agent agent_1QNnYql4RXq9taZn --environment dev --state-dir <work>/state --by the strip 
+via: store
+previous: {"value":"auto","source":"manifest","generation":4,"setAt":"2026-09-19T02:58:07.501Z"}
+apply policy: {"value":"unlock_required","source":"operator","generation":4,"setAt":"2026-09-19T02:58:21.582Z"}
+policy set to unlock_required on this host (was auto, manifest); a runtime started from now runs under it (a runtime already running in-process does not — use the daemon on a shared host)
+(exit 0)
+
+$ airprompter apply <work>/current.apbundle --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root ./keys/dev.root.jwk.json --state-dir <work>/state 
+note: the update file says auto; this host is pinned to unlock_required (set by an operator) — airprompter policy set changes it
+store: <work>/state/airprompter/agent_1QNnYql4RXq9taZn/dev
+slot: B
+generation: 5
+previous generation: 4
+policy: unlock_required
+update file says: auto
+outcome: staged
+forced downgrade: false
+expired: false
+staged: this environment requires an unlock (airprompter unlock, or the runtime's apply.onStaged hook) before it serves
+(exit 0)
+
+$ airprompter unlock --agent agent_1QNnYql4RXq9taZn --environment dev --state-dir <work>/state --generation 5 
+via: store
+slot: B
+generation: 5
+previous generation: 4
+outcome: activated
+unlocked generation 5 (slot B); a runtime started from now serves it (a runtime already running in-process does not — use the daemon on a shared host)
+(exit 0)
+
+$ airprompter status --agent agent_1QNnYql4RXq9taZn --environment dev --state-dir <work>/state 
+store: <work>/state/airprompter/agent_1QNnYql4RXq9taZn/dev
+instance: i-eEDGeNVhfwwemMZR
+storage protection: file_key
+note: the store key is a file next to the store; use an OS keystore, KMS or Vault key provider where the host allows it
+active slot: B
+generation: 5
+staged slot: —
+forced downgrade: true
+root version: 1
+root expires: 2026-12-13T22:03:52.792Z
+apply policy: {"value":"unlock_required","source":"operator","generation":4,"setAt":"2026-09-19T02:58:21.582Z"}
+apply policy: unlock_required — set by an operator on this host
+active: slot B, generation 5, release sha256:979e04ce64e2c3eb018af11efb8cc3135b5a797c9c8bd231c6371da19f03be91, 4 slots, policy auto, signed by c6756cde7f3c0422d67c4984b4e8cb4fc8650156ae0e54c2bf50f09222f9063c
+lease: 3600s from the last contact (issued 2026-09-19T02:57:12.022Z; from issue it lapses 2026-09-19T03:57:12.022Z) → degrade
+spool: {"segments":0,"bytes":0,"openSegments":0}
+last upload: —
+daemon: none on this host (SDKs sync in-process)
+(exit 0)
+
+$ airprompter apply <work>/previous.apbundle --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root ./keys/dev.root.jwk.json --state-dir <work>/state 
+refused: refused: the update file is generation 4; this host holds 5. A bundle never moves a host backwards — a rollback is `airprompter rollback`, never an older bundle (--force stamps a forced downgrade on evidence instead).
+(exit 1)
+
+$ airprompter apply <work>/previous.apbundle --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root ./keys/dev.root.jwk.json --state-dir <work>/state --force 
+note: the update file says auto; this host is pinned to unlock_required (set by an operator) — airprompter policy set changes it
+store: <work>/state/airprompter/agent_1QNnYql4RXq9taZn/dev
+slot: A
+generation: 4
+previous generation: 5
+policy: unlock_required
+update file says: auto
+outcome: staged
+forced downgrade: true
+expired: false
+staged: this environment requires an unlock (airprompter unlock, or the runtime's apply.onStaged hook) before it serves
+(exit 0)
+
+$ airprompter status --agent agent_1QNnYql4RXq9taZn --environment dev --state-dir <work>/state 
+store: <work>/state/airprompter/agent_1QNnYql4RXq9taZn/dev
+instance: i-eEDGeNVhfwwemMZR
+storage protection: file_key
+note: the store key is a file next to the store; use an OS keystore, KMS or Vault key provider where the host allows it
+active slot: B
+generation: 5
+staged slot: A
+forced downgrade: true
+root version: 1
+root expires: 2026-12-13T22:03:52.792Z
+apply policy: {"value":"unlock_required","source":"operator","generation":4,"setAt":"2026-09-19T02:58:21.582Z"}
+apply policy: unlock_required — set by an operator on this host
+active: slot B, generation 5, release sha256:979e04ce64e2c3eb018af11efb8cc3135b5a797c9c8bd231c6371da19f03be91, 4 slots, policy auto, signed by c6756cde7f3c0422d67c4984b4e8cb4fc8650156ae0e54c2bf50f09222f9063c
+lease: 3600s from the last contact (issued 2026-09-19T02:57:12.022Z; from issue it lapses 2026-09-19T03:57:12.022Z) → degrade
+staged: slot A, generation 4, release sha256:612dbce6f3817de2104db3b9478e445664e8a9eba8c7b63a950f81ebc08ed3f2, 4 slots, policy auto, signed by c6756cde7f3c0422d67c4984b4e8cb4fc8650156ae0e54c2bf50f09222f9063c
+spool: {"segments":0,"bytes":0,"openSegments":0}
+last upload: —
+daemon: none on this host (SDKs sync in-process)
+(exit 0)
+
+$ airprompter policy set auto --agent agent_1QNnYql4RXq9taZn --environment dev --state-dir <work>/state --by the strip 
+via: store
+previous: {"value":"unlock_required","source":"operator","generation":4,"setAt":"2026-09-19T02:58:21.582Z"}
+apply policy: {"value":"auto","source":"operator","generation":4,"setAt":"2026-09-19T02:58:27.256Z"}
+policy set to auto on this host (was unlock_required, operator); a runtime started from now runs under it (a runtime already running in-process does not — use the daemon on a shared host)
+(exit 0)
+
+$ airprompter doctor --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root ./keys/dev.root.jwk.json --base-url https://api-dev.airprompter.com --edge-pointer-url https://dwp5emkmjpv8.cloudfront.net/g/5Mk7g0ejf8RAbeKs3ojhxCJYPM5-IZ_VIalKXNT4I0g/generation.json --state-dir <work>/state 
+ok   source: https://api-dev.airprompter.com answers: generation 5 for agent_1QNnYql4RXq9taZn/dev
+ok   edge_pointer: https://dwp5emkmjpv8.cloudfront.net/g/5Mk7g0ejf8RAbeKs3ojhxCJYPM5-IZ_VIalKXNT4I0g/generation.json: generation 5
+ok   root: ./keys/dev.root.jwk.json: a pinned root public key
+ok   store: <work>/state/airprompter/agent_1QNnYql4RXq9taZn/dev: generation 5, active slot B, staged slot A, written by airprompter-cli
+ok   active_release: slot B verifies: generation 5, release sha256:979e04ce64e2…, 4 slots, signed by c6756cde7f3c0422d67c4984b4e8cb4fc8650156ae0e54c2bf50f09222f9063c
+ok   lease: 3600s from the last contact (from issue it lapses 2026-09-19T03:57:12.022Z) → degrade
+warn key_protection: file_key: the store key is a file next to the store (0600)
+       → use an OS keystore, KMS or Vault key provider where the host allows it (docs/key-handling.md)
+ok   policy_pin: auto (set by an operator on this host)
+ok   spool: 0 unsent segments (0 B, 0 % of the 104857600-byte budget), 0 open
+skip daemon: none on this host (/var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T/airprompter-06254bbf72ee7884.sock): SDKs sync in-process
+doctor: serving, 1 warning
+(exit 0)
+
+$ airprompter export-telemetry --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --state-dir <work>/state --out <work>/laptop.aptelemetry 
+out: <work>/laptop.aptelemetry
+segments: 0
+bytes: 0
+instances: 0
+generation: 5
+moved: nothing
+(exit 0)
+
+$ airprompter telemetry verify --budget 4194304 --sink-absent 
+budget: 4194304
+writers: 2
+quarantine cap: 10485760
+exported cap: 10485760
+bound (budget + writers × 1 MiB + caps): 27262976
+before: 16009 closed segments (6291537 B) + 2 open (797 B) + quarantine 15728981 B + exported 0 B = 22021315 B
+sink absent: no grant, nothing uploaded, the budget alone holds
+evicted: 5338 oldest unsent segments (2097845 B), the abandoned .open from two hours ago reclaimed first; quarantine/ held to its cap (15569 of 37361 oldest files evicted)
+dropped row: {"type":"dropped","v":1,"at":"2026-09-30T05:48:31Z","instanceId":"i-verify00000000","segments":5338,"bytes":2097845}
+after: 10673 closed segments (4194213 B) + 1 open (393 B) + quarantine 9174432 B + exported 0 B = 13369038 B
+invariant: tree 13369038 B ≤ 27262976 B (budget 4194304 + 2 × 1048576 open + quarantine cap 10485760 + exported cap 10485760) — holds
+  ok   closedWithinBudget
+  ok   treeWithinBound
+  ok   droppedRowSaysTheBytes
+  ok   oldestEvictedFirst
+  ok   abandonedOpenReclaimed
+  ok   liveOpenUntouched
+  ok   quarantineWithinCap
+  ok   quarantineOldestEvictedFirst
+  ok   nothingUploaded
+(exit 0)
+
+$ node scripts/ci-telemetry-validate.mjs      # a spool-writer segment through airprompter telemetry validate
+spool-writer (ee2ed19fb62e): 1 segment(s), seg-i-zudocs-ci-writer-29829781-0.ndjson 3 rows
+airprompter telemetry validate → exit 0
+{"segments":[{"path":"<scratch>/airprompter/agent_ci/dev/spool/telemetry/seg-i-zudocs-ci-writer-29829781-0.ndjson","instanceId":"i-zudocs-ci-writer","bytes":1260,"lines":3,"rows":3,"invalid":[],"partialTail":false,"oversize":false,"ok":true}],"ok":true}
+
+# apply.window: see docs/strips/apply-window.txt

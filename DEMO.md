@@ -108,7 +108,7 @@ frozen`, with the reason — no model was called, no cap slot taken (the check r
 so the very first click after the freeze refuses too). Say: *a signed `disable` directive is honoured by the process that syncs the moment the manifest
 verifies — the Lambda stopped before anyone approved anything.* On eu-west the freeze is a generation like any
 other: the daemon verified it and staged it, but the workers attached to the daemon render from the active release
-until it is unlocked (the daemon hands them no standing directives — an SDK gap, filed), so the Approvals section
+until it is unlocked (the daemon hands them no standing directives — airprompter-agent-sdk#51), so the Approvals section
 shows the frozen generation staged: **Approve** it, and the eu-west card reads *frozen: yes* within thirty seconds.
 `npm run demo:console -- unfreeze`: the bar clears, the buttons return, a run answers on us-east; approve the
 unfreeze generation and eu-west lifts it too.
@@ -153,7 +153,7 @@ Each is one command; each prints the refusal as the platform gave it.
   (`status.lastRefusal: model_unavailable`, still serving the previous generation; AirPrompter's fleet page counts
   the instances reporting the model unavailable). **eu-west stages it instead** — the released daemon declares no
   model catalogue (`airprompterd` has no `--models`; the workers' catalogue never reaches the process that syncs —
-  SDK gap, filed), so the Approvals section shows it staged: **do not approve it**; say why. Then `npm run
+  airprompter-agent-sdk#51), so the Approvals section shows it staged: **do not approve it**; say why. Then `npm run
   demo:console -- advance` — the next promotion supersedes the staged row and puts the reply back on a model the
   fleet reports.
 - `npm run demo:console -- drill golden-fail` — a triage version that answers `other`/`low` whatever the ticket
@@ -243,7 +243,7 @@ hosted-staging click, the second split, the dial and the winner. 5:00.
   which pins every host including the Lambda — which nobody can unlock. RUNBOOK.md says why we do not.
 - **The freeze on eu-west needs the approval** of the frozen generation: the released daemon takes the directive
   when it verifies the manifest, but an SDK attached over its socket renders from the daemon's active release and
-  learns nothing of a staged manifest's directives (airprompter-agent-sdk, filed from this beat). The Lambda, which
+  learns nothing of a staged manifest's directives (airprompter-agent-sdk#51). The Lambda, which
   syncs itself, stops at once. The dry run tries the honest path first (sixty seconds without an approval) and
   says which path it took.
 - **10 % is a share of customers.** With twelve seeded customers the candidate holds one or two of them, or none.

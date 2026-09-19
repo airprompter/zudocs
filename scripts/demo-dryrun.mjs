@@ -163,7 +163,7 @@ check(runF.status === 423 && runF.json.error === "frozen", `Run refused: HTTP ${
 let euFrozen = await desk.waitFor("eu-west to honour the freeze without an approval", async () => { const r = await desk.hostRow(EU); return r?.status?.disabled?.agent ? r : null; }, { timeoutMs: 60_000, everyMs: 10_000 }).catch(() => null);
 let freezeApproved = false;
 if (!euFrozen) {
-  say("    eu-west's attached workers still render: the frozen generation is staged, not active — approving it (the daemon hands attached SDKs no standing directives; filed)");
+  say("    eu-west's attached workers still render: the frozen generation is staged, not active — approving it (the daemon hands attached SDKs no standing directives — SDK #51)");
   await approveOnEuWest(frozen.pointer.generation).catch((error) => fail(`approving the frozen generation on eu-west: ${error.message}`));
   freezeApproved = true;
   euFrozen = await desk.waitFor("eu-west to honour the freeze once active", async () => { const r = await desk.hostRow(EU); return r?.status?.disabled?.agent ? r : null; }, { timeoutMs: 90_000, everyMs: 10_000 }).catch(() => null);
@@ -287,7 +287,7 @@ beat(5, "safety nets");
     // The daemon host declares no catalogue (airprompterd has no --models flag; the attached workers' catalogue never
     // reaches the sync), so it cannot refuse: it STAGES the release for approval — a trap the presenter must not spring.
     const euStaged = await desk.waitFor("eu-west to stage the unreported-model release", async () => (await desk.approvals()).find((a) => a.hostId === EU && a.generation === pM.generation && a.decision === "pending") ?? null, { timeoutMs: 120_000 }).catch(() => null);
-    check(euStaged !== null, euStaged ? `eu-west STAGED #${pM.generation} instead of refusing (the daemon declares no models — SDK gap): not approved, superseded by the next promotion` : "eu-west neither refused nor staged the release within two minutes");
+    check(euStaged !== null, euStaged ? `eu-west STAGED #${pM.generation} instead of refusing (the daemon declares no models — SDK #51): not approved, superseded by the next promotion` : "eu-west neither refused nor staged the release within two minutes");
     const fleet = await con.fleet(ENV);
     ok(`AirPrompter's fleet page: ${fleet.summary.modelUnavailable} instance(s) report the model unavailable, ${fleet.summary.refused} refused, ${fleet.summary.staged} staged`);
     // Move past it: a fresh canonical generation.

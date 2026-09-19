@@ -33,6 +33,11 @@ export const TOOLTIPS = {
   nudge: "The change-notification placeholder: one message on a queue the company owns. The puller reads the origin now instead of waiting for its schedule. A nudge can only say \"look\" — pull-and-verify stays the only source of truth.",
   airgap: "A host with no route out: no internet gateway, no NAT. It reads the exchange bucket and the releases table through gateway endpoints, applies each bundle the puller sealed to its key, and cannot call a model — every render it files is a refusal, never an invented answer. Its telemetry leaves by export and arrives by import on eu-west.",
   distributionKey: "The X25519 keypair airprompter keygen generated on the host at first boot. Only the public half left it (to the exchange); the puller seals every bundle to it; the private half opens them and never leaves.",
+  hosted: "Hosted staging: the same prompts run on AirPrompter's own execution with a run key bound to one environment — no store, no model key of ours. The stream is replayed as it arrived; the compatible endpoint shows the caller's temperature ignored beside the version's sealed settings.",
+  hostCli: "The operator's CLI on the eu-west host, through Session Manager's Run Command, targeted by the instance's Name tag: a fixed list of zudocs-cli commands, the CLI's own document back. Nothing typed here reaches a shell.",
+  frozen: "A signed disable directive on the manifest: every host stops rendering the moment it verifies, whoever unlocks. Only the console lifts it.",
+  golden: "The golden set: cases with expected outputs, run against the pinned model on this host before a staged release activates (under auto too). Below the floor, the release stays staged.",
+  policyLocal: "This host's own apply policy, set by an operator through the SDK. auto loosens a pin the console tightened; unlock_required tightens it by hand. The console's setting is advisory once a host is pinned.",
 } as const;
 
 /** A model's answer as a class-name suffix: lower-case letters and dashes only (an answer is data, a class is not). */

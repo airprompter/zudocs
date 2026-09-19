@@ -128,6 +128,15 @@ export interface Store {
   approve(approvalId: string, by: string, at: string): Promise<{ ok: boolean; row: ApprovalRow | null }>;
   /** The host's word after the decision (or after the release moved without one). */
   settleApproval(approvalId: string, settle: { decision: Exclude<ApprovalDecision, "pending" | "approved">; outcome: string; activatedAt?: string | null; at: string }): Promise<ApprovalRow | null>;
+  /** Every run record (the per-arm fold reads them all; the table is one session's worth). */
+  listRuns(): Promise<Array<Record<string, unknown> & { runId: string; ticketId: string }>>;
+  /** Every feedback row. */
+  listAllFeedback(): Promise<Array<{ runId: string; at: string; signals: Record<string, unknown>; by: string; filed: boolean }>>;
+  /**
+   * The reset's clearing: every run, feedback row, approval, timeline event and the day counters, then the seeded
+   * tables replaced. The status rows stay (each host rewrites its own). Counts what it deleted.
+   */
+  reset(customers: Customer[], tickets: Ticket[]): Promise<{ runs: number; feedback: number; approvals: number; events: number; counters: number; customers: number; tickets: number }>;
 }
 
 export const dayOf = (iso: string): string => iso.slice(0, 10);
@@ -144,6 +153,17 @@ export function createStore(client: Pick<DynamoDBDocumentClient, "send">, tables
       ExclusiveStartKey = page.LastEvaluatedKey;
     } while (ExclusiveStartKey);
     return items;
+  };
+  const batchDelete = async (TableName: string, keys: Record<string, unknown>[]): Promise<number> => {
+    for (let i = 0; i < keys.length; i += 25) {
+      let unprocessed: Record<string, unknown[]> | undefined = { [TableName]: keys.slice(i, i + 25).map((Key) => ({ DeleteRequest: { Key } })) };
+      for (let attempt = 0; unprocessed && Object.keys(unprocessed).length > 0; attempt += 1) {
+        if (attempt > 5) throw new Error(`reset: ${TableName} kept returning unprocessed deletes`);
+        const out = await send(new BatchWriteCommand({ RequestItems: unprocessed as any }));
+        unprocessed = out.UnprocessedItems && Object.keys(out.UnprocessedItems).length > 0 ? (out.UnprocessedItems as Record<string, unknown[]>) : undefined;
+      }
+    }
+    return keys.length;
   };
   const batchPut = async (TableName: string, items: Record<string, unknown>[]): Promise<void> => {
     for (let i = 0; i < items.length; i += 25) {
@@ -337,6 +357,21 @@ export function createStore(client: Pick<DynamoDBDocumentClient, "send">, tables
         if (isConditionFailed(error)) return null;
         throw error;
       }
+    },
+    listRuns: () => scanAll<Record<string, unknown> & { runId: string; ticketId: string }>(tables.runs),
+    listAllFeedback: () => scanAll<{ runId: string; at: string; signals: Record<string, unknown>; by: string; filed: boolean }>(tables.feedback),
+    async reset(customers, tickets) {
+      const runs = await batchDelete(tables.runs, (await scanAll<{ runId: string }>(tables.runs)).map((r) => ({ runId: r.runId })));
+      const feedback = await batchDelete(tables.feedback, (await scanAll<{ runId: string; at: string }>(tables.feedback)).map((f) => ({ runId: f.runId, at: f.at })));
+      const approvals = await batchDelete(tables.approvals, (await scanAll<{ approvalId: string }>(tables.approvals)).map((a) => ({ approvalId: a.approvalId })));
+      const events = await batchDelete(tables.events, (await scanAll<{ day: string; sk: string }>(tables.events)).map((e) => ({ day: e.day, sk: e.sk })));
+      // The day counters and the per-host queues; a queued ticket of a cleared inbox has nothing to run.
+      const counters = await batchDelete(tables.counters, (await scanAll<{ pk: string }>(tables.counters)).map((c) => ({ pk: c.pk })));
+      await batchDelete(tables.tickets, (await scanAll<{ ticketId: string }>(tables.tickets)).map((t) => ({ ticketId: t.ticketId })));
+      await batchDelete(tables.customers, (await scanAll<{ customerId: string }>(tables.customers)).map((c) => ({ customerId: c.customerId })));
+      await batchPut(tables.customers, customers as unknown as Record<string, unknown>[]);
+      await batchPut(tables.tickets, tickets.map((t) => ({ ...t, lastRun: null })) as unknown as Record<string, unknown>[]);
+      return { runs, feedback, approvals, events, counters, customers: customers.length, tickets: tickets.length };
     },
   };
 }

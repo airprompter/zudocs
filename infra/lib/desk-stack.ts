@@ -18,6 +18,9 @@
  * - The status tick: every five minutes EventBridge invokes the function with `{ tick: "status" }` — a sync pass and
  *   the status row, so the us-east card never goes stale between runs (phase 5). The presenter's nudge posts to the
  *   fleet's queue in ap-southeast-1 by its fixed name.
+ * - Phase 6: the staging run key's parameter NAME and the hosted run URL (when `airprompter.config.json` names one)
+ *   for "Run on staging", and Run Command on the eu-west instance by its Name tag for the presenter's one-click CLI
+ *   (`zudocs-cli policy show`, `rollback`, `unlock`, `doctor`, `status`) — the function never learns an instance id.
  *
  * Two things a synth cannot catch: the SSM parameter must exist before the first request (the function fails its
  * cold start with the parameter's name otherwise), and Bedrock model access in a fresh account is a per-model
@@ -38,7 +41,7 @@ import { CATALOGUE } from "../../services/desk-api/src/modelCatalogue.js";
 import { ROUTES } from "../../services/desk-api/src/router.js";
 import type { ZudocsConfig } from "./config.js";
 import { DESK_STATUS_TICK_MINUTES, NUDGE_QUEUE_NAME } from "./fleet-names.js";
-import { EU_HOST_ROLE_NAME, WIRE_FUNCTION_NAME } from "./shared-host-names.js";
+import { EU_HOST_NAME_TAG, EU_HOST_ROLE_NAME, WIRE_FUNCTION_NAME } from "./shared-host-names.js";
 import { BUDGET_NAME, type SiteStack } from "./site-stack.js";
 
 export interface DeskStackProps extends cdk.StackProps {
@@ -57,6 +60,9 @@ export interface AirPrompterIds {
   readonly rootUrl: string;
   /** The environment's edge pointer (`…/g/<token>/generation.json`), an identifier; null when the file names none. */
   readonly edgePointerUrl: string | null;
+  /** Hosted staging (D7): the hosted run route's origin (the execution stack's AgentRunUrl) and the environment the run key is bound to; null when the file names none. */
+  readonly hostedRunUrl: string | null;
+  readonly hostedTarget: "dev" | "staging" | "prod";
   readonly organizationId: string;
   readonly agentId: string;
   readonly environment: string;
@@ -97,7 +103,11 @@ export function readAirPrompterIds(root = repoRoot): AirPrompterIds {
   if (jwk.d !== undefined) throw new Error(`${rootPath} carries a private member; keys/ holds public JWKs only`);
   const pointer = typeof file.edgePointerUrl === "string" && file.edgePointerUrl.trim() ? file.edgePointerUrl.trim() : null;
   if (pointer && !/^https:\/\/[^\s/]+\/g\/[A-Za-z0-9_-]+\/generation\.json$/.test(pointer)) throw new Error("airprompter.config.json: edgePointerUrl is not an environment's generation.json URL");
-  return { baseUrl: need("baseUrl"), hostedEnvironment: hosted, rootUrl: need("rootUrl"), edgePointerUrl: pointer, organizationId: need("organizationId"), agentId: need("agentId"), environment: need("environment"), rootJwk: JSON.stringify(jwk) };
+  const hostedRunUrl = typeof file.hostedRunUrl === "string" && file.hostedRunUrl.trim() ? file.hostedRunUrl.trim() : null;
+  if (hostedRunUrl && !/^https:\/\/[^\s/]+$/.test(hostedRunUrl)) throw new Error("airprompter.config.json: hostedRunUrl is an https origin with no path (the execution stack's AgentRunUrl)");
+  const hostedTarget = typeof file.hostedTarget === "string" && file.hostedTarget.trim() ? file.hostedTarget.trim() : "staging";
+  if (!["dev", "staging", "prod"].includes(hostedTarget)) throw new Error("airprompter.config.json: hostedTarget must be dev, staging or prod");
+  return { baseUrl: need("baseUrl"), hostedEnvironment: hosted, rootUrl: need("rootUrl"), edgePointerUrl: pointer, hostedRunUrl, hostedTarget: hostedTarget as "dev" | "staging" | "prod", organizationId: need("organizationId"), agentId: need("agentId"), environment: need("environment"), rootJwk: JSON.stringify(jwk) };
 }
 
 export class DeskStack extends cdk.Stack {
@@ -146,6 +156,9 @@ export class DeskStack extends cdk.Stack {
     });
     const agentKeyParameter = `/zudocs/${airprompter.environment}/agent-key`;
     const parameterArn = this.formatArn({ service: "ssm", resource: "parameter", resourceName: agentKeyParameter.slice(1) });
+    // Hosted staging (phase 6): the run key for the hosted environment, another SecureString under the same key, read by NAME on the first "Run on staging".
+    const runKeyParameter = `/zudocs/${airprompter.hostedTarget}/run-key`;
+    const runKeyParameterArn = this.formatArn({ service: "ssm", resource: "parameter", resourceName: runKeyParameter.slice(1) });
     const wireFunctionArn = `arn:${this.partition}:lambda:${config.regions.sharedHost}:${this.account}:function:${WIRE_FUNCTION_NAME}`;
     // The fleet's nudge queue in ap-southeast-1, by its fixed name (no cross-region reference): the presenter posts to it.
     const nudgeQueueArn = `arn:${this.partition}:sqs:${config.regions.fleet}:${this.account}:${NUDGE_QUEUE_NAME}`;
@@ -176,6 +189,9 @@ export class DeskStack extends cdk.Stack {
         APPROVALS_TABLE: this.tables.approvals.tableName,
         KMS_KEY_ID: this.key.keyArn,
         AGENT_KEY_PARAMETER: agentKeyParameter,
+        ...(airprompter.hostedRunUrl ? { RUN_KEY_PARAMETER: runKeyParameter, AIRPROMPTER_HOSTED_RUN_URL: airprompter.hostedRunUrl, AIRPROMPTER_HOSTED_TARGET: airprompter.hostedTarget } : {}),
+        EU_HOST_REGION: config.regions.sharedHost,
+        EU_HOST_NAME_TAG: EU_HOST_NAME_TAG,
         // The eu-west wire function, by its fixed name (no cross-region reference): the presenter's cut / restore.
         WIRE_FUNCTION_ARN: wireFunctionArn,
         NUDGE_QUEUE_URL: nudgeQueueUrl,
@@ -200,9 +216,13 @@ export class DeskStack extends cdk.Stack {
     }
     // The store's data key: wrap and unwrap under this application's own encryption context, nothing else.
     this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["kms:Encrypt", "kms:Decrypt"], resources: [this.key.keyArn], conditions: { StringEquals: { "kms:EncryptionContext:application": "zudocs-desk" } } }));
-    // The Agent key: one parameter by name, decrypted by SSM on this function's behalf with this key.
-    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:GetParameter"], resources: [parameterArn] }));
-    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["kms:Decrypt"], resources: [this.key.keyArn], conditions: { StringEquals: { "kms:ViaService": `ssm.${this.region}.amazonaws.com`, "kms:EncryptionContext:PARAMETER_ARN": parameterArn } } }));
+    // The Agent key and the staging run key: two parameters by name, decrypted by SSM on this function's behalf with this key.
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:GetParameter"], resources: [parameterArn, runKeyParameterArn] }));
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["kms:Decrypt"], resources: [this.key.keyArn], conditions: { StringEquals: { "kms:ViaService": `ssm.${this.region}.amazonaws.com`, "kms:EncryptionContext:PARAMETER_ARN": [parameterArn, runKeyParameterArn] } } }));
+    // The presenter's one-click CLI on the eu-west host (phase 6): Run Command's shell document on the one instance that carries the host's Name tag, and the invocation reads.
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:SendCommand"], resources: [`arn:${this.partition}:ssm:${config.regions.sharedHost}::document/AWS-RunShellScript`] }));
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:SendCommand"], resources: [`arn:${this.partition}:ec2:${config.regions.sharedHost}:${this.account}:instance/*`], conditions: { StringEquals: { "ssm:resourceTag/Name": EU_HOST_NAME_TAG } } }));
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:ListCommandInvocations", "ssm:GetCommandInvocation"], resources: ["*"] }));
     // Bedrock: exactly the catalogue's models — the foundation models in any region a cross-region profile fans out to, and our profiles here.
     const foundationModels = [...new Set(Object.values(CATALOGUE).map((m) => m.foundationModelId))].map((id) => `arn:${this.partition}:bedrock:*::foundation-model/${id}`);
     const profiles = Object.values(CATALOGUE).filter((m) => m.bedrockId !== m.foundationModelId).map((m) => this.formatArn({ service: "bedrock", resource: "inference-profile", resourceName: m.bedrockId }));

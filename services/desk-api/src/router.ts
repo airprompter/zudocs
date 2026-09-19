@@ -11,7 +11,7 @@
  * ```
  */
 
-export type RouteName = "list_tickets" | "get_ticket" | "run_ticket" | "escalate_ticket" | "feedback" | "state" | "events" | "list_approvals" | "approve" | "presenter" | "healthz";
+export type RouteName = "list_tickets" | "get_ticket" | "run_ticket" | "escalate_ticket" | "hosted_run" | "feedback" | "state" | "events" | "arms" | "list_approvals" | "approve" | "presenter" | "healthz";
 
 export interface Route {
   method: "GET" | "POST";
@@ -25,9 +25,11 @@ export const ROUTES: readonly Route[] = Object.freeze([
   { method: "GET", pattern: "/tickets/{ticketId}", name: "get_ticket" },
   { method: "POST", pattern: "/tickets/{ticketId}/run", name: "run_ticket" },
   { method: "POST", pattern: "/tickets/{ticketId}/escalate", name: "escalate_ticket" },
+  { method: "POST", pattern: "/tickets/{ticketId}/hosted-run", name: "hosted_run" },
   { method: "POST", pattern: "/runs/{runId}/feedback", name: "feedback" },
   { method: "GET", pattern: "/state", name: "state" },
   { method: "GET", pattern: "/events", name: "events" },
+  { method: "GET", pattern: "/arms", name: "arms" },
   { method: "GET", pattern: "/approvals", name: "list_approvals" },
   { method: "POST", pattern: "/approvals/{approvalId}/approve", name: "approve" },
   { method: "POST", pattern: "/presenter/{action}", name: "presenter" },

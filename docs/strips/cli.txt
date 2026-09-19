@@ -1,0 +1,134 @@
+# The Zudocs CLI strip — airprompter 0.1.0 against dev, 2026-09-19T01:27:44Z, recorded by scripts/strip.sh
+# The Agent key is in the environment (AIRPROMPTER_AGENT_KEY); nothing printed below is a key.
+# Scope: --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev (paths shortened).
+
+$ airprompter keygen --purpose distribution --out /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/laptop --allow-worktree
+purpose: distribution
+key id: e51316d660ebbf11594a8499c4ec20504f8faadddec75dac65f37cbdefa89680
+private key (0600): /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T/zudocs-strip-W2Pejm/laptop.key.json
+public key: /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T/zudocs-strip-W2Pejm/laptop.pub.json
+register the public key on the environment (Agent › Settings › Distribution key); keep the private key in your secret store — the runtime needs it to open bundles
+(exit 0)
+
+$ airprompter pull --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root /Users/ghost/code/zudocs/keys/dev.root.jwk.json --root-url https://dwp5emkmjpv8.cloudfront.net/roots/dev/root.json --base-url https://api-dev.airprompter.com --plaintext --out /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/current.apbundle
+out: <work>/current.apbundle
+generation: 4
+release: sha256:612dbce6f3817de2104db3b9478e445664e8a9eba8c7b63a950f81ebc08ed3f2
+slots: 4
+payloads: 5
+signed by: c6756cde7f3c0422d67c4984b4e8cb4fc8650156ae0e54c2bf50f09222f9063c
+encryption: none
+recipient key: —
+not after: 2026-12-18T01:27:52.075Z
+warning: plaintext bundle — dev only; never commit it
+(exit 0)
+
+$ airprompter verify /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/current.apbundle --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root /Users/ghost/code/zudocs/keys/dev.root.jwk.json
+encryption: none
+recipient key: —
+not after: 2026-12-18T01:27:52.075Z
+ok: true
+step: complete
+reason: —
+root: pinned_key, accepted, version 1, expires 2026-12-13T22:03:52.792Z
+manifest: generation 4, release sha256:612dbce6f3817de2104db3b9478e445664e8a9eba8c7b63a950f81ebc08ed3f2, 4 slots (0 workflows), 5 payloads, policy auto, lease 3600s → degrade
+signed by: c6756cde7f3c0422d67c4984b4e8cb4fc8650156ae0e54c2bf50f09222f9063c
+(exit 0)
+
+$ airprompter pull --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root /Users/ghost/code/zudocs/keys/dev.root.jwk.json --root-url https://dwp5emkmjpv8.cloudfront.net/roots/dev/root.json --base-url https://api-dev.airprompter.com --out /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/current.apbundle --check --max-behind 1
+vendored generation: 4
+current generation: 4
+behind: 0
+max behind: 1
+same release: true
+stale: false
+(exit 0)
+
+# (no earlier generation in the cache yet: diff --against and the forced downgrade need a second strip run)
+
+$ airprompter apply /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/current.apbundle --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root /Users/ghost/code/zudocs/keys/dev.root.jwk.json --state-dir /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/state
+store: /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T/zudocs-strip-W2Pejm/state/airprompter/agent_1QNnYql4RXq9taZn/dev
+slot: A
+generation: 4
+previous generation: 0
+policy: auto
+update file says: auto
+outcome: activated
+forced downgrade: false
+expired: false
+(exit 0)
+
+$ airprompter status --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --state-dir /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/state
+usage: Unknown option '--hosted-environment'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "--hosted-environment"
+(exit 2)
+
+$ airprompter unlock --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --state-dir /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/state
+usage: Unknown option '--hosted-environment'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "--hosted-environment"
+(exit 2)
+
+$ airprompter policy show --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --state-dir /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/state
+usage: Unknown option '--hosted-environment'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "--hosted-environment"
+(exit 2)
+
+$ airprompter policy set unlock_required --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --state-dir /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/state --by the strip
+usage: Unknown option '--hosted-environment'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "--hosted-environment"
+(exit 2)
+
+$ airprompter policy set auto --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --state-dir /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/state --by the strip
+usage: Unknown option '--hosted-environment'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "--hosted-environment"
+(exit 2)
+
+$ airprompter doctor --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --root /Users/ghost/code/zudocs/keys/dev.root.jwk.json --base-url https://api-dev.airprompter.com --edge-pointer-url https://dwp5emkmjpv8.cloudfront.net/g/5Mk7g0ejf8RAbeKs3ojhxCJYPM5-IZ_VIalKXNT4I0g/generation.json --state-dir /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/state
+ok   source: https://api-dev.airprompter.com answers: generation 4 for agent_1QNnYql4RXq9taZn/dev
+ok   edge_pointer: https://dwp5emkmjpv8.cloudfront.net/g/5Mk7g0ejf8RAbeKs3ojhxCJYPM5-IZ_VIalKXNT4I0g/generation.json: generation 4
+ok   root: ./keys/dev.root.jwk.json: a pinned root public key
+ok   store: /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T/zudocs-strip-W2Pejm/state/airprompter/agent_1QNnYql4RXq9taZn/dev: generation 4, active slot A, written by airprompter-cli
+ok   active_release: slot A verifies: generation 4, release sha256:612dbce6f381…, 4 slots, signed by c6756cde7f3c0422d67c4984b4e8cb4fc8650156ae0e54c2bf50f09222f9063c
+warn lease: the lease (3600s) lapsed from issue at 2026-09-19T00:54:56.463Z → degrade; only a runtime or daemon in contact renews it
+       → a runtime with no contact serves this release degraded: restore the source (above) or apply a fresh release
+warn key_protection: file_key: the store key is a file next to the store (0600)
+       → use an OS keystore, KMS or Vault key provider where the host allows it (docs/key-handling.md)
+ok   policy_pin: auto (pinned from update 4)
+ok   spool: 0 unsent segments (0 B, 0 % of the 104857600-byte budget), 0 open
+skip daemon: none on this host (/var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T/airprompter-1397708aba435944.sock): SDKs sync in-process
+doctor: serving, 2 warnings
+(exit 0)
+
+$ airprompter export-telemetry --org 2f5d9ebe-0030-4fe8-8fe9-53b1b7db181b --agent agent_1QNnYql4RXq9taZn --environment dev --hosted-environment dev --state-dir /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/state --out /var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T//zudocs-strip-W2Pejm/laptop.aptelemetry
+out: <work>/laptop.aptelemetry
+segments: 0
+bytes: 0
+instances: 0
+generation: 4
+moved: nothing
+(exit 0)
+
+$ airprompter telemetry verify --budget 1048576 --sink-absent
+budget: 1048576
+writers: 2
+quarantine cap: 10485760
+exported cap: 10485760
+bound (budget + writers × 1 MiB + caps): 24117248
+before: 4003 closed segments (1573179 B) + 2 open (797 B) + quarantine 15728981 B + exported 0 B = 17302957 B
+sink absent: no grant, nothing uploaded, the budget alone holds
+evicted: 1336 oldest unsent segments (525059 B), the abandoned .open from two hours ago reclaimed first; quarantine/ held to its cap (12455 of 37361 oldest files evicted)
+dropped row: {"type":"dropped","v":1,"at":"2026-09-21T20:10:54Z","instanceId":"i-verify00000000","segments":1336,"bytes":525059}
+after: 2669 closed segments (1048640 B) + 1 open (393 B) + quarantine 10485426 B + exported 0 B = 11534459 B
+invariant: tree 11534459 B ≤ 24117248 B (budget 1048576 + 2 × 1048576 open + quarantine cap 10485760 + exported cap 10485760) — VIOLATED
+  FAIL closedWithinBudget
+  ok   treeWithinBound
+  ok   droppedRowSaysTheBytes
+  ok   oldestEvictedFirst
+  ok   abandonedOpenReclaimed
+  ok   liveOpenUntouched
+  ok   quarantineWithinCap
+  ok   quarantineOldestEvictedFirst
+  ok   nothingUploaded
+(exit 1)
+
+$ node scripts/ci-telemetry-validate.mjs      # a spool-writer segment through airprompter telemetry validate
+spool-writer (ee2ed19fb62e): 1 segment(s), seg-i-zudocs-ci-writer-29829688-0.ndjson 3 rows
+airprompter telemetry validate → exit 0
+{"segments":[{"path":"<scratch>/airprompter/agent_ci/dev/spool/telemetry/seg-i-zudocs-ci-writer-29829688-0.ndjson","instanceId":"i-zudocs-ci-writer","bytes":1260,"lines":3,"rows":3,"invalid":[],"partialTail":false,"oversize":false,"ok":true}],"ok":true}
+
+# apply.window: see docs/strips/apply-window.txt

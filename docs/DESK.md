@@ -43,6 +43,26 @@ Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack
 - **judge** — `JudgeResult.score` and the task pass/fail counts.
 - **feedback row** — what `ap.feedback` accepted.
 
+### Phase 6 on the desk
+
+- `POST /tickets/{id}/hosted-run` (`hosted.ts`): the ticket through AirPrompter's hosted execution on staging —
+  `ManagedAgent.stream` with the deltas' arrival offsets, `feedback` on the run's reference, one OpenAI-compatible
+  call with `temperature 1.9` / `top_p 0.1` the release ignores, beside the catalogue's sealed `inference`. The run
+  key is read from SSM by NAME on the first call and held in memory; a refusal is recorded in the route's words.
+- `GET /arms` (`arms.ts`): the per-arm fold of the runs and feedback tables (runs by host, judge mean, cost mean,
+  checks, thumbs) and the stickiness table (per customer, the arm each host served). `GET /approvals` rows carry the
+  ramp plan this host read from the same generation.
+- Presenter actions: `host_cli` (an allowlisted `zudocs-cli` line on the eu-west host through Run Command by Name
+  tag; the CLI's document comes back and lands on the timeline), `policy` (`ap.setApplyPolicy`), `golden`
+  (`ap.golden()` on the active release; counts only), `reset` (clear runs, feedback, approvals, events, counters;
+  re-seed), `replay` up to 30.
+- `/state` carries `frozen` (the manifest's `disable` directive as `status().disabled.agent`, with `lastRefusal`)
+  and a run on a frozen host answers `423 frozen` before the cap is taken; `features.hosted` and `features.hostCli`
+  say what the presenter panel may offer.
+- The SDK starts with `golden.invoke` (a caller with no wrapper — the hook runs inside the boot sync), so every
+  staged release's golden sets run against the pinned model before the apply decision; below the floor the release
+  stays staged under `auto` and `status().golden` says so.
+
 ### Honest notes
 
 - `telemetry.uploadSink` is honoured by the resident uploader; on `on_invoke` the flush posts under the grant

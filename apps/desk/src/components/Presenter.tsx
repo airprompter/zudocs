@@ -3,30 +3,37 @@
  * this host, a heartbeat / upload / sync now, a re-seed of the inbox, "run this ticket on eu-west now" (the other
  * host's queue), the wire: cut (the eu-west host loses AirPrompter and Bedrock, keeps the desk's tables; a rule
  * restores it in 15 minutes whatever happens) and restore — and the nudge: one message on the fleet's queue, so the
- * puller reads the origin now instead of on its schedule. Every button is an API call; the result lands as a
- * notice and on the timeline. The day's cap is read from the counter.
+ * puller reads the origin now instead of on its schedule. Phase 6 adds the drills: the operator's CLI on the eu-west
+ * host (policy show / set, rollback, unlock, status, doctor — the CLI's own document shown below the buttons), this
+ * host's own apply policy (an operator's act on the SDK), the golden set run now, and the reset's clearing step.
+ * Every button is an API call; the result lands as a notice and on the timeline. The day's cap is read from the counter.
  *
  * @example
  * ```tsx
- * <Presenter state={state} busy={busy} selectedTicketId="T-1041" onAction={(action, body) => api.presenter(action, body)} environment="dev" agentId="agent_…" />
+ * <Presenter state={state} busy={busy} selectedTicketId="T-1041" onAction={(action, body) => api.presenter(action, body)} environment="dev" agentId="agent_…" cliOutput={null} />
  * ```
  */
 import type { State } from "../api";
-import { TOOLTIPS } from "../format";
+import { TOOLTIPS, clock } from "../format";
 
-export function Presenter({ state, busy, selectedTicketId, onAction, environment, agentId }: { state: State | null; busy: string | null; selectedTicketId: string | null; onAction: (action: string, body?: Record<string, unknown>) => void; environment: string; agentId: string }) {
+export interface CliOutput { command: string; summary: string; document: unknown; stdout: string; status: string; at: string }
+
+export function Presenter({ state, busy, selectedTicketId, onAction, environment, agentId, cliOutput }: { state: State | null; busy: string | null; selectedTicketId: string | null; onAction: (action: string, body?: Record<string, unknown>) => void; environment: string; agentId: string; cliOutput: CliOutput | null }) {
   const cap = state?.cap;
   const disabled = busy !== null;
   // "Run this ticket there now" is for hosts that run tickets: the daemon host. The puller pulls; the air-gapped host has no model.
   const others = (state?.hosts ?? []).filter((h) => h.kind === "daemon").map((h) => h.hostId);
   const wire = state?.features?.wire ?? false;
   const nudge = state?.features?.nudge ?? false;
+  const hostCli = state?.features?.hostCli ?? false;
+  const policy = state?.host.status?.applyPolicy as { effective?: string; source?: string } | undefined;
   return (
     <section className="presenter">
       <div className="pane-title"><h2>Presenter</h2><span className="muted" title={TOOLTIPS.cap}>{cap ? `${cap.used.toLocaleString()} / ${cap.cap.toLocaleString()} runs today` : "—"}</span></div>
       <div className="button-row">
         <button type="button" className="button secondary" disabled={disabled} onClick={() => onAction("replay", { n: 5 })}>Replay 5</button>
         <button type="button" className="button secondary" disabled={disabled} onClick={() => onAction("replay", { n: 12 })}>Replay 12</button>
+        <button type="button" className="button secondary" disabled={disabled} onClick={() => onAction("replay", { n: 30 })}>Replay 30</button>
         {others.map((hostId) => (
           <button key={hostId} type="button" className="button secondary" disabled={disabled || !selectedTicketId} onClick={() => selectedTicketId && onAction("enqueue", { ticketId: selectedTicketId, host: hostId })}>Run {selectedTicketId ?? "…"} on {hostId.split("/")[0]}</button>
         ))}
@@ -49,6 +56,31 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
           <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("restore_wire")}>Restore the wire</button>
         </div>
       ) : null}
+      {hostCli ? (
+        <div className="button-row" title={TOOLTIPS.hostCli}>
+          <span className="muted fine">eu-west shell:</span>
+          <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "policy show" })}>policy show</button>
+          <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "status" })}>status</button>
+          <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "doctor" })}>doctor</button>
+          <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "unlock" })}>unlock</button>
+          <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Roll the eu-west host back to its previous release? A step below the stored generation is a forced downgrade the fleet page reports; the host is held back until something newer is promoted.")) onAction("host_cli", { command: "rollback" }); }}>rollback</button>
+          <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "policy set auto" })}>policy set auto</button>
+          <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "policy set unlock_required" })}>policy set unlock_required</button>
+        </div>
+      ) : null}
+      {cliOutput ? (
+        <div className="cli-output">
+          <p className="fine"><strong>zudocs-cli {cliOutput.command}</strong> · {cliOutput.status} · {clock(cliOutput.at)} — {cliOutput.summary}</p>
+          <pre className="output cli">{cliOutput.stdout.trim().slice(0, 4000) || "(no output)"}</pre>
+        </div>
+      ) : null}
+      <div className="button-row" title={TOOLTIPS.policyLocal}>
+        <span className="muted fine">this host: policy {policy?.effective ?? "—"} ({policy?.source ?? "—"})</span>
+        <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("policy", { value: "auto" })}>set auto</button>
+        <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("policy", { value: "unlock_required" })}>set unlock_required</button>
+        <button type="button" className="chip-button" disabled={disabled} title={TOOLTIPS.golden} onClick={() => onAction("golden")}>Golden set now</button>
+        <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Clear every run, feedback row, approval, timeline event and the day counters, and re-seed the inbox? This is the reset script's last step.")) onAction("reset"); }}>Reset records</button>
+      </div>
       <p className="muted fine">AirPrompter {environment} · {agentId}{state ? ` · this container ${state.host.instanceId.slice(0, 12)} (${state.host.invocations} inv)` : ""}</p>
     </section>
   );

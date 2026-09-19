@@ -2,7 +2,7 @@
   "name": "zudocs",
   "version": "0.1.0",
   "private": true,
-  "description": "Zudocs: a fictional documentation company whose support desk runs on AirPrompter prompts. Reference deployment of the public Agent SDK across three AWS regions.",
+  "description": "Zudocs: a fictional documentation company whose support desk runs on AirPrompter prompts. Reference deployment of the public Agent SDK across three AWS regions, with the demonstration script, its dry run and its reset.",
   "license": "BSD-3-Clause",
   "type": "module",
   "engines": {
@@ -32,7 +32,14 @@
     "fleet:proof": "node scripts/fleet-proof.mjs",
     "airgap:up": "node scripts/airgap.mjs up",
     "airgap:down": "node scripts/airgap.mjs down",
-    "airgap:status": "node scripts/airgap.mjs status"
+    "airgap:status": "node scripts/airgap.mjs status",
+    "demo:console": "node scripts/demo-console.mjs",
+    "demo:dryrun": "node scripts/demo-dryrun.mjs",
+    "demo:reset": "node scripts/demo-reset.mjs",
+    "demo:strip": "bash scripts/strip.sh",
+    "vendor": "bash scripts/vendor.sh",
+    "check-vendored": "node scripts/check-vendored.mjs vendored/zudocs-ci.dev.apbundle",
+    "ci:telemetry-validate": "node scripts/ci-telemetry-validate.mjs"
   },
   "dependencies": {
     "@airprompter/agent-sdk": "0.2.14"
@@ -45,6 +52,7 @@
     "@aws-sdk/client-dynamodb": "^3.1135.0",
     "@aws-sdk/client-ec2": "^3.1135.0",
     "@aws-sdk/client-ec2-instance-connect": "^3.1135.0",
+    "@aws-sdk/client-lambda": "^3.1135.0",
     "@aws-sdk/client-s3": "^3.1135.0",
     "@aws-sdk/client-sqs": "^3.1135.0",
     "@aws-sdk/client-ssm": "^3.1135.0",

@@ -17,9 +17,11 @@ export function ReleaseBar({ state }: { state: State | null }) {
   if (!state) return <div className="release muted">Reading the fleet…</div>;
   const s = releaseSummary(state.hosts);
   if (s.generation === null) return <div className="release muted">No host has reported yet.</div>;
+  const frozen = state.frozen?.frozen ?? false;
   return (
-    <div className={`release${s.refusal || s.failing ? " release-bad" : ""}`} title={TOOLTIPS.release}>
+    <div className={`release${s.refusal || s.failing || frozen ? " release-bad" : ""}`} title={TOOLTIPS.release}>
       <strong>release #{s.generation}</strong>
+      {frozen ? <span className="refusal" title={TOOLTIPS.frozen}>FROZEN — every Run refuses: {state.frozen?.reason}</span> : null}
       <span>active on {s.activeOn}/{s.total} host{s.total === 1 ? "" : "s"}</span>
       {s.staged ? <span className="staged">staged #{s.staged.generation} awaiting approval ({s.staged.hosts.join(", ")})</span> : null}
       {s.refusal ? <span className="refusal">refused: {s.refusal}</span> : null}

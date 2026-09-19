@@ -40,6 +40,23 @@ export interface Step {
   error: { name: string; message: string } | null;
 }
 export interface Run { runId: string; ticketId: string; customerId: string; at: string; by: string; host: string; kind: "run" | "escalate"; generation: number; applyState: string; steps: Step[]; triage: { category: string | null; priority: string | null; summary: string | null } | null; reply: string | null; handoff: string | null; durationMs: number; capUsed: number; ok: boolean; feedback?: Array<{ at: string; signals: Record<string, unknown>; by: string; filed: boolean }> }
+/** A hosted staging run (phase 6): the stream as it arrived, the feedback, the compat call beside the catalogue's sealed settings; refusals in the route's words. */
+export interface HostedRefusal { code: string; status: number; message: string; detail?: string }
+export interface HostedRun {
+  runId: string; ticketId: string; customerId: string; at: string; by: string; host: string; kind: "hosted"; target: string; runUrl: string; subjectHash: string | null;
+  catalogue: { generation: number; releaseDigest: string; slot: { tag: string; model: string; inference: Record<string, unknown> | null; variables: string[] } | null; experiments: Array<{ experimentId: string; tag: string | null; arms: string[] }> };
+  stream: { deltas: Array<{ atMs: number; text: string }>; firstByteMs: number | null; result: { runId: string; runRef: string; output: string; model: string; versionId: string; arm: string; generation: number; usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number }; latencyMs: number; priceMicros: number; priceBookRevision: string; stopReason: string; source: string } | null; refusal: HostedRefusal | null };
+  feedback: { accepted: boolean; attributedTo: Record<string, unknown> | null; refusal: HostedRefusal | null } | null;
+  compat: { request: { url: string; model: string; temperature: number; top_p: number; max_tokens: number; variables: string[] }; response: { status: number; runRef: string | null; runId: string | null; model: string | null; finishReason: string | null; usage: Record<string, unknown> | null; text: string | null; error: Record<string, unknown> | null }; ignored: string[] } | null;
+  durationMs: number; ok: boolean; gaps: string[];
+}
+export type AnyRun = Run | HostedRun;
+export const isHostedRun = (run: AnyRun): run is HostedRun => run.kind === "hosted";
+/** The per-arm fold of the desk's own records (`GET /arms`) and the ramp plans this host walks. */
+export interface ArmSummary { tag: string; arm: string; versionId: string; model: string; runs: number; hosts: Record<string, number>; judgeMean: number | null; judged: number; costMeanUsd: number | null; costed: number; checksPassed: number; checksFailed: number; latencyMeanMs: number | null; errors: number; feedback: { up: number; down: number; accepted: number; edited: number } }
+export interface Stickiness { customerId: string; tag: string; arms: Record<string, string>; consistent: boolean }
+export interface Ramp { experimentId: string; tag: string | null; arms: string[]; weightBps: number[]; step: number; nextStepAt: string | null; plan: Array<{ notBefore: string; weightBps: number[] }>; readBy?: string }
+export interface Arms { arms: ArmSummary[]; stickiness: Stickiness[]; ramps: Ramp[]; readAt: string; runsRead: number }
 export interface HostStatus {
   hostId: string;
   region: string;
@@ -70,16 +87,19 @@ export interface HostStatus {
   /** The eu-west host's import timer: the air-gapped host's exports carried to AirPrompter. */
   imports?: { lastPassAt: string; objects: number; pending: number; imported: number; last: Record<string, unknown> | null } | null;
 }
-export interface State { host: { hostId: string; region: string; sdk: string; instanceId: string; startedAt: string; invocations: number; coldStart: boolean; status: Record<string, any>; healthz: Record<string, any>; models: string[]; stateDir: string }; hosts: HostStatus[]; cap: { day: string; used: number; cap: number }; airprompter: { baseUrl: string; environment: string; agentId: string }; features?: { wire: boolean; nudge: boolean } }
+export interface State { host: { hostId: string; region: string; sdk: string; instanceId: string; startedAt: string; invocations: number; coldStart: boolean; status: Record<string, any>; healthz: Record<string, any>; models: string[]; stateDir: string }; hosts: HostStatus[]; cap: { day: string; used: number; cap: number }; airprompter: { baseUrl: string; environment: string; agentId: string }; features?: { wire: boolean; nudge: boolean; hosted?: boolean; hostCli?: boolean }; hosted?: { target: string; runUrl: string } | null; frozen?: { frozen: boolean; reason: string | null }; hostCliCommands?: string[] }
 export interface TimelineEvent { at: string; kind: string; host: string; id?: string; [key: string]: unknown }
 export type ApprovalDecision = "pending" | "approved" | "activated" | "superseded" | "failed";
-export interface Approval { approvalId: string; hostId: string; generation: number; releaseDigest: string | null; stagedAt: string; unlockRequest: { requestedBy: string; requestedAt: string; expiresAt: string; note?: string } | null; decision: ApprovalDecision; decidedBy: string | null; decidedAt: string | null; activatedAt: string | null; outcome: string | null; updatedAt: string }
+export interface Approval { approvalId: string; hostId: string; generation: number; releaseDigest: string | null; stagedAt: string; unlockRequest: { requestedBy: string; requestedAt: string; expiresAt: string; note?: string } | null; decision: ApprovalDecision; decidedBy: string | null; decidedAt: string | null; activatedAt: string | null; outcome: string | null; updatedAt: string; ramps?: Ramp[] }
 
 export interface Api {
   tickets(): Promise<{ tickets: Ticket[] }>;
-  ticket(ticketId: string): Promise<{ ticket: Ticket; runs: Run[] }>;
+  ticket(ticketId: string): Promise<{ ticket: Ticket; runs: AnyRun[] }>;
   runTicket(ticketId: string): Promise<{ run: Run; cap: State["cap"] }>;
   escalateTicket(ticketId: string): Promise<{ run: Run; cap: State["cap"] }>;
+  /** Hosted staging: the record comes back with the route's refusals inside it (a 502 still carries the record). */
+  hostedRun(ticketId: string): Promise<{ run: HostedRun }>;
+  arms(): Promise<Arms>;
   feedback(runId: string, step: string, signals: Record<string, unknown>): Promise<{ filed: boolean; message: string }>;
   state(): Promise<State>;
   events(since: string | null): Promise<{ events: TimelineEvent[] }>;
@@ -104,19 +124,21 @@ export function createApi(baseUrl: string, tokenOf: () => Promise<string | null>
     return parsed as T;
   };
   // A run whose model refused answers 502 WITH the record (ok: false): the record is what the desk shows.
-  const runOrRecord = async (path: string): Promise<{ run: Run; cap: State["cap"] }> => {
+  const runOrRecord = async <T extends { run: unknown }>(path: string): Promise<T> => {
     try {
-      return await call("POST", path, {});
+      return await call<T>("POST", path, {});
     } catch (error) {
-      if (error instanceof ApiError && error.status === 502 && typeof error.body.run === "object" && error.body.run !== null) return error.body as unknown as { run: Run; cap: State["cap"] };
+      if (error instanceof ApiError && error.status === 502 && typeof error.body.run === "object" && error.body.run !== null) return error.body as unknown as T;
       throw error;
     }
   };
   return {
     tickets: () => call("GET", "/tickets"),
     ticket: (ticketId) => call("GET", `/tickets/${encodeURIComponent(ticketId)}`),
-    runTicket: (ticketId) => runOrRecord(`/tickets/${encodeURIComponent(ticketId)}/run`),
-    escalateTicket: (ticketId) => runOrRecord(`/tickets/${encodeURIComponent(ticketId)}/escalate`),
+    runTicket: (ticketId) => runOrRecord<{ run: Run; cap: State["cap"] }>(`/tickets/${encodeURIComponent(ticketId)}/run`),
+    escalateTicket: (ticketId) => runOrRecord<{ run: Run; cap: State["cap"] }>(`/tickets/${encodeURIComponent(ticketId)}/escalate`),
+    hostedRun: (ticketId) => runOrRecord<{ run: HostedRun }>(`/tickets/${encodeURIComponent(ticketId)}/hosted-run`),
+    arms: () => call("GET", "/arms"),
     feedback: (runId, step, signals) => call("POST", `/runs/${encodeURIComponent(runId)}/feedback`, { step, signals }),
     state: () => call("GET", "/state"),
     events: (since) => call("GET", `/events${since ? `?since=${encodeURIComponent(since)}` : ""}`),

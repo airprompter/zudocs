@@ -116,6 +116,45 @@ test("IAM: exactly the catalogue's models, one SSM parameter by ARN, KMS under e
   assert.deepEqual((role!.Properties.ManagedPolicyArns as unknown[]).length, 1, "only the basic execution policy is managed; the deny policy arrives through the budget action");
 });
 
+test("phase 6: the staging run key is a second parameter by ARN under the same key; Run Command reaches the eu-west instance by its Name tag only; the environment names the run URL and never a key", () => {
+  const { desk } = synth();
+  const [policy] = Object.values(desk.findResources("AWS::IAM::Policy") as Resources);
+  const statements = policy!.Properties.PolicyDocument.Statement as Array<{ Action: string | string[]; Resource: unknown; Condition?: unknown }>;
+  const actionsOf = (st: { Action: string | string[] }) => (Array.isArray(st.Action) ? st.Action : [st.Action]);
+  const ssm = statements.find((st) => actionsOf(st).includes("ssm:GetParameter"))!;
+  const resources = JSON.stringify(ssm.Resource);
+  assert.ok(resources.includes(":parameter/zudocs/dev/agent-key") && resources.includes(":parameter/zudocs/staging/run-key"), "both parameters, by ARN, nothing wider");
+  assert.equal((resources.match(/:parameter\//g) ?? []).length, 2);
+  const viaSsm = statements.find((st) => actionsOf(st).includes("kms:Decrypt") && !actionsOf(st).includes("kms:Encrypt"))!;
+  const context = JSON.stringify((viaSsm.Condition as any).StringEquals["kms:EncryptionContext:PARAMETER_ARN"]);
+  assert.ok(context.includes("parameter/zudocs/staging/run-key"), "SSM may decrypt the run key parameter for this function too");
+  const sendCommand = statements.filter((st) => actionsOf(st).includes("ssm:SendCommand"));
+  assert.equal(sendCommand.length, 2, "the shell document, and instances by tag");
+  const document = sendCommand.find((st) => JSON.stringify(st.Resource).includes("document/AWS-RunShellScript"))!;
+  assert.ok(JSON.stringify(document.Resource).includes(":ssm:eu-west-1::document/AWS-RunShellScript"), "the one document, in the host's region");
+  assert.equal(document.Condition, undefined);
+  const instances = sendCommand.find((st) => JSON.stringify(st.Resource).includes(":instance/"))!;
+  assert.ok(JSON.stringify(instances.Resource).includes(":ec2:eu-west-1:111122223333:instance/*"));
+  assert.deepEqual(instances.Condition, { StringEquals: { "ssm:resourceTag/Name": "zudocs-eu-host" } }, "only the instance that carries the host's Name tag — the desk never learns an id");
+  const reads = statements.find((st) => actionsOf(st).includes("ssm:GetCommandInvocation"))!;
+  assert.deepEqual(actionsOf(reads).sort(), ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"]);
+  assert.ok(!statements.some((st) => actionsOf(st).some((a) => /ssm:StartSession|ssm:PutParameter|ec2:/.test(a))), "no session, no parameter writes, no EC2 control");
+  const [fn] = Object.values(desk.findResources("AWS::Lambda::Function", { Properties: { FunctionName: "zudocs-desk-api" } }) as Resources);
+  const env = fn!.Properties.Environment.Variables as Record<string, string>;
+  assert.equal(env.RUN_KEY_PARAMETER, "/zudocs/staging/run-key", "a name, never a key");
+  assert.equal(env.AIRPROMPTER_HOSTED_RUN_URL, "https://run.example");
+  assert.equal(env.AIRPROMPTER_HOSTED_TARGET, "staging");
+  assert.equal(env.EU_HOST_REGION, "eu-west-1");
+  assert.equal(env.EU_HOST_NAME_TAG, "zudocs-eu-host");
+  assert.ok(!Object.values(env).some((v) => /^apr_|^apa_/.test(v)));
+  // Without a run URL in the file, the hosted variables are absent and the desk says "not configured" instead of guessing.
+  const { desk: bare } = synthAll(undefined, {}, { ...IDS, hostedRunUrl: null });
+  const [bareFn] = Object.values(bare.findResources("AWS::Lambda::Function", { Properties: { FunctionName: "zudocs-desk-api" } }) as Resources);
+  const bareEnv = bareFn!.Properties.Environment.Variables as Record<string, string>;
+  assert.equal(bareEnv.RUN_KEY_PARAMETER, undefined);
+  assert.equal(bareEnv.AIRPROMPTER_HOSTED_RUN_URL, undefined);
+});
+
 test("tables: eight, on-demand, encrypted, destroyable (demo data); the runs table has the byTicket index; events expire by TTL", () => {
   const { desk } = synth();
   const tables = Object.values(desk.findResources("AWS::DynamoDB::Table") as Resources);

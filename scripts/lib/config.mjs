@@ -34,6 +34,17 @@ export function readConfig(env = process.env) {
   config.models = env.AIRPROMPTER_MODELS ? env.AIRPROMPTER_MODELS.split(",").map((m) => m.trim()).filter(Boolean) : file.models ?? [];
   if (!Array.isArray(config.models) || config.models.length === 0) throw new Error("config: models is empty (the models this application can call, as the provider names them)");
   for (const key of ["environment", "hostedEnvironment"]) if (!["dev", "staging", "prod"].includes(config[key])) throw new Error(`config: ${key} must be dev, staging or prod`);
+  // Phase 6: hosted staging (the run route's origin, an identifier), the CI vendoring agent, and the canonical pins the reset advances from.
+  const runUrl = env.AIRPROMPTER_HOSTED_RUN_URL ?? file.hostedRunUrl ?? "";
+  config.hostedRunUrl = typeof runUrl === "string" && runUrl.trim() ? runUrl.trim() : null;
+  config.hostedTarget = typeof file.hostedTarget === "string" && file.hostedTarget.trim() ? file.hostedTarget.trim() : "staging";
+  if (!["dev", "staging", "prod"].includes(config.hostedTarget)) throw new Error("config: hostedTarget must be dev, staging or prod");
+  config.ciAgentId = typeof file.ciAgentId === "string" && file.ciAgentId.trim() ? file.ciAgentId.trim() : null;
+  const canonical = typeof file.canonical === "object" && file.canonical !== null ? file.canonical : {};
+  config.canonical = Object.freeze(Object.fromEntries(Object.entries(canonical).filter(([tag]) => !tag.startsWith("$")).map(([tag, pin]) => {
+    if (typeof pin?.versionId !== "string" || typeof pin?.model !== "string") throw new Error(`config: canonical.${tag} needs versionId and model`);
+    return [tag, Object.freeze({ versionId: pin.versionId, model: pin.model })];
+  })));
   return Object.freeze(config);
 }
 

@@ -38,6 +38,22 @@ exports to AirPrompter; the desk's two new cards, the nudge, and the us-east sta
 The full plan, its reviewers' findings and the demo script live with the AirPrompter team; the phases land here
 one pull request at a time.
 
+## Phase 6: the story
+
+The desk gained the presenter's drills (a hosted staging run through AirPrompter's execution with a run key read
+from SSM by name; an allowlisted `zudocs-cli` command on the eu-west host through Run Command targeted by the
+instance's Name tag; this host's own apply policy through the SDK; the golden set on demand; the reset's clearing
+step), the per-arm fold of its own records (`GET /arms`) with the stickiness table, the ramp plan on an approval
+row (read by us-east from the same signed manifest), and the freeze as the SDK reports it (a `disable` directive:
+every run refuses with HTTP 423 before a cap slot is taken). The us-east host runs golden sets before activating a
+staged release (`golden.invoke`, T34) — a failing set leaves the release staged under `auto`. The scripts:
+`demo-console` (the console's acts over the workspace API with a session token), `demo-dryrun` (the nine beats
+asserted against the live deployment), `demo-reset` (reset means advance), `strip.sh` (the recorded CLI drills,
+scanned for anything key-shaped), `vendor.sh` (the vendoring pull request from the `zudocs-ci` Agent — a separate
+Agent with one placeholder slot, so the one committed bundle carries no Zudocs prompt), and the weekly *Vendored
+bundle* workflow (credential-less: `verify`, the verify action pinned by commit, `telemetry validate`, the tests
+that start the real SDK against the `/testing` kit). DEMO.md and RUNBOOK.md are the two faces.
+
 ## Invariants
 
 - Only public packages, the released CLI, the public root key, keys from the console.
@@ -52,4 +68,7 @@ one pull request at a time.
 - The console stages; the customer activates. Under `unlock_required` a release goes live only through the desk's
   Approvals page (the owner) or an operator's `unlock` on the host — never through AirPrompter.
 - Reset means advance: generations are monotonic, a rollback is a forced downgrade held back until something newer
-  is promoted, a tightened policy is loosened only on the host.
+  is promoted, a tightened policy is loosened only on the host. `npm run demo:reset` is that rule as a script.
+- The one bundle in git is the `zudocs-ci` Agent's placeholder (`vendored/`, `scripts/check-vendored.mjs`); the
+  strips under `docs/strips/` are scanned for anything key-shaped before they are written.
+- Nothing typed on the desk reaches a shell: the host CLI is an allowlist of exact command lines.

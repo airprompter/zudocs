@@ -1,0 +1,73 @@
+# The credential-less drills, weekly and on every change to the vendored bundle: no secret exists in this
+# repository's GitHub settings (the owner's rule), so the job runs exactly what a checkout can prove on its own —
+# the released CLI downloaded from its GitHub release and checked against the pinned digest, `airprompter verify` of
+# the bundle committed under vendored/ (the zudocs-ci Agent's one placeholder slot, signed by AirPrompter dev)
+# against the pinned public dev root, the verify GitHub action pinned by full commit SHA (it has no
+# hosted-environment input yet, so on a dev bundle it refuses root_scope_mismatch — recorded, not hidden:
+# airprompter/airprompter-agent-sdk#50; it gates at the prod cutover, where the default root is the right one),
+# `airprompter telemetry validate` over a segment the SDK repository's spool-writer example wrote, and the
+# repository's own tests (which start the real SDK against the `/testing` kit's FakeControlPlane). What needs a key —
+# `pull --check --max-behind` against the live release — is the owner's drill (RUNBOOK.md), never CI's.
+name: Vendored bundle
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays 06:17 UTC
+  pull_request:
+    paths:
+      - "vendored/**"
+      - "keys/**"
+      - ".github/workflows/vendored.yml"
+      - "scripts/ci-telemetry-validate.mjs"
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CLI_TAG: cli/v0.1.0
+  CLI_ASSET: airprompter-linux-x64
+  # The release's own .sha256 for that asset, pinned here so a re-cut release is a review, never a surprise.
+  CLI_SHA256: 9af99ed0091c7d899ba1a046bc5e614e0c4bd52af7da24eeac490018e550eb63
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: The released CLI, checked against the pinned digest before it runs
+        run: |
+          curl -fsSL --retry 5 -o "$RUNNER_TEMP/airprompter" "https://github.com/airprompter/airprompter-agent-sdk/releases/download/${CLI_TAG}/${CLI_ASSET}"
+          echo "${CLI_SHA256}  $RUNNER_TEMP/airprompter" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/airprompter"
+          "$RUNNER_TEMP/airprompter" --version
+      - name: The identifiers (never a key) from airprompter.config.json
+        id: ids
+        run: |
+          node -e 'const c=JSON.parse(require("fs").readFileSync("airprompter.config.json","utf8")); for (const [k,v] of Object.entries({org:c.organizationId,agent:c.ciAgentId,environment:c.environment,hosted:c.hostedEnvironment})) console.log(`${k}=${v}`)' >> "$GITHUB_OUTPUT"
+      - name: airprompter verify — the vendored bundle against the pinned dev root
+        run: |
+          "$RUNNER_TEMP/airprompter" verify vendored/zudocs-ci.dev.apbundle --org "${{ steps.ids.outputs.org }}" --agent "${{ steps.ids.outputs.agent }}" --environment "${{ steps.ids.outputs.environment }}" --hosted-environment "${{ steps.ids.outputs.hosted }}" --root keys/dev.root.jwk.json --json | tee "$RUNNER_TEMP/verify.json"
+          node -e 'const j=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").pop()); if (!j.ok) { console.log("refused at", j.step, j.reason); process.exit(1); } console.log("ok: generation", j.manifest.generation, "release", j.manifest.releaseDigest, "expires", j.notAfter, "days left", j.daysLeft)' "$RUNNER_TEMP/verify.json"
+      - name: The vendored bundle names the CI agent's placeholder slot only (no Zudocs prompt is ever vendored)
+        run: node scripts/check-vendored.mjs vendored/zudocs-ci.dev.apbundle "$RUNNER_TEMP/verify.json"
+      - name: The verify GitHub action (pinned by SHA; refuses dev bundles until it takes a hosted environment — SDK #50)
+        id: action
+        continue-on-error: true
+        uses: airprompter/airprompter-agent-sdk/action/verify@ee2ed19fb62e38aa4808c7d67e312dafa7164481 # cli/v0.1.0
+        with:
+          bundle: vendored/zudocs-ci.dev.apbundle
+          org: ${{ steps.ids.outputs.org }}
+          agent: ${{ steps.ids.outputs.agent }}
+          environment: ${{ steps.ids.outputs.environment }}
+          root: keys/dev.root.jwk.json
+          binary: ${{ runner.temp }}/airprompter
+          verify-signature: "false"
+      - name: What the action said
+        run: echo "verify action outcome=${{ steps.action.outcome }} ok=${{ steps.action.outputs.ok }} (a dev bundle is refused root_scope_mismatch until airprompter-agent-sdk#50 lands; the step above is the gate)"
+      - run: npm ci --no-audit --no-fund
+      - name: airprompter telemetry validate — a spool-writer segment
+        run: AIRPROMPTER_CLI="$RUNNER_TEMP/airprompter" node scripts/ci-telemetry-validate.mjs
+      - name: The repository's tests (the desk API starts the real SDK against the /testing kit's FakeControlPlane)
+        run: npm test

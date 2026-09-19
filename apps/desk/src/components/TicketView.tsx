@@ -1,21 +1,26 @@
 /**
- * One ticket and what the desk did with it: the customer's message, the Run and Escalate buttons, then every run
- * newest first — a triage card, the reply card (version badge, arm badge, "Why this text", the checks strip,
- * latency / tokens / usage source / cost, the judge score, the feedback row), and for an escalation the summary
- * and the hand-off note. A step the model refused shows the SDK's error class and the message, in place of an
- * answer.
+ * One ticket and what the desk did with it: the customer's message, the Run, Escalate and (when the deployment
+ * names a run key) Run-on-staging buttons — greyed with the SDK's own reason while the environment is frozen —
+ * then every run newest first: a triage card, the reply card (version badge, arm badge, "Why this text", the
+ * checks strip, latency / tokens / usage source / cost, the judge score, the feedback row), for an escalation the
+ * summary and the hand-off note, and for a hosted staging run the stream replayed at the cadence it really had, the
+ * `done` frame's facts, the feedback answer, and the compatible-endpoint request beside the catalogue's sealed
+ * settings. A step the model refused shows the SDK's error class and the message, in place of an answer; a hosted
+ * step the route refused shows the route's code and status, in place of an answer.
  *
  * @example
  * ```tsx
- * <TicketView ticket={ticket} runs={runs} busy={null} onRun={run} onEscalate={escalate} onFeedback={feedback} />
+ * <TicketView ticket={ticket} runs={runs} busy={null} frozen={null} hosted={null} onRun={run} onEscalate={escalate} onHosted={hosted} onFeedback={feedback} />
  * ```
  */
-import { useState } from "react";
-import type { Run, Step, Ticket } from "../api";
+import { useEffect, useState } from "react";
+import { isHostedRun, type AnyRun, type HostedRun, type Run, type Step, type Ticket } from "../api";
 import { TOOLTIPS, armLabel, clock, latency, modelLabel, money, score, slug, tokens, versionBadge } from "../format";
 import { WhyThisText } from "./WhyThisText";
 
-export function TicketView({ ticket, runs, busy, onRun, onEscalate, onFeedback }: { ticket: Ticket; runs: Run[]; busy: string | null; onRun: () => void; onEscalate: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
+export function TicketView({ ticket, runs, busy, frozen, hosted, onRun, onEscalate, onHosted, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; hosted: { target: string; runUrl: string } | null; onRun: () => void; onEscalate: () => void; onHosted: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
+  const isFrozen = frozen?.frozen ?? false;
+  const disabled = busy !== null || isFrozen;
   return (
     <div className="ticket-view">
       <section className="ticket-card">
@@ -25,16 +30,101 @@ export function TicketView({ ticket, runs, busy, onRun, onEscalate, onFeedback }
             <h1>{ticket.subject}</h1>
             <p className="muted">{ticket.customer?.name ?? ticket.customerId} · <span className={`chip tier-${ticket.customer?.tier ?? "unknown"}`}>{ticket.customer?.tier ?? "—"}</span> {ticket.customer ? `· ${ticket.customer.seats} seats · since ${ticket.customer.since}` : ""}</p>
           </div>
-          <div className="actions">
-            <button type="button" className="button" disabled={busy !== null} onClick={onRun}>{busy === "run" ? "Running…" : "Run"}</button>
-            <button type="button" className="button secondary" disabled={busy !== null} onClick={onEscalate}>{busy === "escalate" ? "Escalating…" : "Escalate"}</button>
+          <div className="actions" title={isFrozen ? `frozen: ${frozen?.reason ?? ""}` : undefined}>
+            <button type="button" className="button" disabled={disabled} onClick={onRun}>{busy === "run" ? "Running…" : "Run"}</button>
+            <button type="button" className="button secondary" disabled={disabled} onClick={onEscalate}>{busy === "escalate" ? "Escalating…" : "Escalate"}</button>
+            {hosted ? <button type="button" className="button secondary" disabled={disabled} onClick={onHosted} title={TOOLTIPS.hosted}>{busy === "hosted" ? "Running on staging…" : `Run on ${hosted.target} (hosted)`}</button> : null}
           </div>
         </div>
+        {isFrozen ? <p className="problem fine">Frozen from the console — this host refuses to render: {frozen?.reason}. Unfreeze in AirPrompter; the next sync lifts it.</p> : null}
         <blockquote className="ticket-body">{ticket.body}</blockquote>
       </section>
       {runs.length === 0 ? <p className="muted centre-note">No runs yet. Run sends this ticket through the promoted prompts on this host.</p> : null}
-      {runs.map((run) => <RunPanel key={run.runId} run={run} busy={busy} onFeedback={onFeedback} />)}
+      {runs.map((run) => (isHostedRun(run) ? <HostedPanel key={run.runId} run={run} /> : <RunPanel key={run.runId} run={run} busy={busy} onFeedback={onFeedback} />))}
     </div>
+  );
+}
+
+/**
+ * The stream, replayed: the deltas the route sent, each shown at the offset it arrived at — a recording, and the
+ * panel says so — then the `done` frame's facts and the compatible-endpoint call beside the sealed settings.
+ */
+function HostedPanel({ run }: { run: HostedRun }) {
+  const deltas = run.stream.deltas;
+  const [shown, setShown] = useState(0);
+  const [replaying, setReplaying] = useState(false);
+  useEffect(() => {
+    if (!replaying) return;
+    if (shown >= deltas.length) { setReplaying(false); return; }
+    const wait = shown === 0 ? 0 : Math.min(3000, Math.max(0, deltas[shown]!.atMs - deltas[shown - 1]!.atMs));
+    const timer = setTimeout(() => setShown((n) => n + 1), wait);
+    return () => clearTimeout(timer);
+  }, [replaying, shown, deltas]);
+  const result = run.stream.result;
+  const inference = run.catalogue.slot?.inference ?? null;
+  const total = deltas.length ? deltas[deltas.length - 1]!.atMs : 0;
+  return (
+    <section className={`run hosted${run.ok ? "" : " run-failed"}`}>
+      <div className="run-head">
+        <span className="muted">Hosted run on {run.target} · {clock(run.at)} · via {run.runUrl.replace("https://", "")} · by {run.by} · {latency(run.durationMs)} end to end · release #{run.catalogue.generation}</span>
+      </div>
+      {run.gaps.length ? <p className="problem fine">{run.gaps.map((g, i) => <span key={i}>{g}<br /></span>)}</p> : null}
+      <article className="step">
+        <header className="step-head">
+          <h3>Stream</h3>
+          {result ? <>
+            <span className="badge version" title={TOOLTIPS.version}>{versionBadge(run.catalogue.slot?.tag ?? "support.reply", result.versionId, result.generation)}</span>
+            <span className="badge model">{modelLabel(result.model)}</span>
+            <span className={`badge arm${result.arm !== "none" ? " arm-live" : ""}`} title={TOOLTIPS.arm}>{armLabel(result.arm)}</span>
+          </> : <span className="badge model">no run</span>}
+          {deltas.length ? <button type="button" className="link" onClick={() => { setShown(0); setReplaying(true); }}>{replaying ? "Replaying…" : shown ? "Replay the stream again" : "Replay the stream"}</button> : null}
+        </header>
+        {run.stream.refusal ? <p className="problem">the run route refused: {run.stream.refusal.code} (HTTP {run.stream.refusal.status}) — {run.stream.refusal.message}{run.stream.refusal.detail ? ` · ${run.stream.refusal.detail}` : ""}</p> : (
+          <>
+            <pre className="output reply">{deltas.slice(0, shown || (replaying ? 0 : deltas.length)).map((d) => d.text).join("")}{replaying && shown < deltas.length ? "▍" : ""}</pre>
+            <p className="muted fine">{deltas.length} deltas over {latency(total)} as the route sent them (first byte {latency(run.stream.firstByteMs)} after the request); the replay keeps their spacing — a recording, not an animation.</p>
+          </>
+        )}
+        {result ? (
+          <dl className="metrics">
+            <div><dt>latency</dt><dd>{latency(result.latencyMs)}</dd></div>
+            <div><dt>tokens</dt><dd>{result.usage.inputTokens.toLocaleString()} in · {result.usage.outputTokens.toLocaleString()} out</dd></div>
+            <div><dt>price</dt><dd>{money(result.priceMicros / 1_000_000)} <span className="muted">· book {result.priceBookRevision}</span></dd></div>
+            <div><dt>stop</dt><dd>{result.stopReason}</dd></div>
+            <div><dt>source</dt><dd>{result.source}</dd></div>
+            <div><dt>feedback</dt><dd>{run.feedback ? (run.feedback.accepted ? `thumbs up accepted · ${String((run.feedback.attributedTo as { arm?: string } | null)?.arm ?? "")}` : `refused: ${run.feedback.refusal?.code ?? "?"}`) : "—"}</dd></div>
+          </dl>
+        ) : null}
+        <p className="muted fine">subject hash {run.subjectHash ? `${run.subjectHash.slice(0, 16)}…` : "—"} (the customer id never leaves the desk)</p>
+      </article>
+      {run.compat ? (
+        <article className="step">
+          <header className="step-head"><h3>OpenAI-compatible endpoint</h3><span className="badge model">{run.compat.request.model}</span><span className={`badge ${run.compat.response.status === 200 ? "version" : "arm"}`}>HTTP {run.compat.response.status}</span></header>
+          <div className="side-by-side">
+            <div>
+              <p className="eyebrow">The request (what the caller asked)</p>
+              <dl className="kv">
+                <div><dt>temperature</dt><dd>{run.compat.request.temperature} <span className="refusal">ignored</span></dd></div>
+                <div><dt>top_p</dt><dd>{run.compat.request.top_p} <span className="refusal">ignored</span></dd></div>
+                <div><dt>max_tokens</dt><dd>{run.compat.request.max_tokens}</dd></div>
+                <div><dt>variables</dt><dd>{run.compat.request.variables.join(", ") || "—"} <span className="muted">via airprompter.variables</span></dd></div>
+              </dl>
+            </div>
+            <div>
+              <p className="eyebrow">The run's settings (sealed on the version)</p>
+              {inference ? (
+                <dl className="kv">
+                  {Object.entries(inference).map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{String(v)}</dd></div>)}
+                </dl>
+              ) : <p className="muted fine">no inference block on the catalogue</p>}
+              <p className="muted fine">from the hosted catalogue (GET …/slots): the response carries no inference block; the release owns these, never the caller.</p>
+            </div>
+          </div>
+          {run.compat.response.error ? <p className="problem fine">the endpoint answered: {JSON.stringify(run.compat.response.error)}</p> : <pre className="output">{run.compat.response.text ?? ""}</pre>}
+          <p className="muted fine">answer model {run.compat.response.model ?? "—"} · finish {run.compat.response.finishReason ?? "—"} · runRef {run.compat.response.runRef ? `${run.compat.response.runRef.slice(0, 12)}…` : "—"} · runId {run.compat.response.runId ?? "—"}</p>
+        </article>
+      ) : null}
+    </section>
   );
 }
 

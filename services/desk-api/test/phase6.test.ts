@@ -3,9 +3,10 @@
  * deltas with their offsets, the feedback, the compat request beside the catalogue's sealed inference, a refusal
  * recorded in the route's words and never retried); the host CLI's allowlist, its JSON-line reading and its
  * Run Command polling over fake ports; the per-arm fold with the stickiness table; and the handler's new paths —
- * a frozen host refuses a run with the SDK's reason before the cap is taken, `host_cli` refuses anything off the
- * allowlist, `policy` goes through `setApplyPolicy`, `golden` reports counts only, `reset` clears and re-seeds,
- * `/arms` folds the desk's own records, and an approval row carries the ramp plan this host read.
+ * a frozen host refuses a run inside the invoke (after its sync pass) before the cap is taken, `host_cli` refuses
+ * anything off the allowlist and hands itself a job whose answer lands on the timeline, `policy` goes through
+ * `setApplyPolicy`, `golden` reports counts only, `reset` clears and re-seeds, `/arms` folds the desk's own records,
+ * `/state` and `/approvals` answer after a sync pass, and an approval row carries the ramp plan this host read.
  *
  * @example
  * ```sh
@@ -16,7 +17,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer } from "aws-lambda";
 import { foldArms } from "../src/arms.js";
-import { createHandler, frozenOf, summariseCli } from "../src/handler.js";
+import { FROZEN_REASON, createHandler, frozenOf, summariseCli } from "../src/handler.js";
 import { HOST_CLI_COMMANDS, documentOf, isHostCliCommand, runHostCli } from "../src/hostCli.js";
 import { COMPAT_IGNORED, compatChatUrl, createHostedClient, hostedConfigured, hostedRun, type HostedPorts } from "../src/hosted.js";
 import type { Host } from "../src/runtime.js";
@@ -99,6 +100,8 @@ test("hosted: the stream's deltas keep their offsets, the feedback lands, and th
   assert.deepEqual(record.catalogue.experiments, [{ experimentId: "exp_1", tag: "support.reply", arms: ["control", "candidate"] }]);
   assert.equal(record.compat?.request.temperature, 1.9);
   assert.deepEqual(record.compat?.ignored, [...COMPAT_IGNORED]);
+  assert.equal("max_tokens" in compatCalls[0]!.body, false, "no cap on the request: the version's sealed cap is the one that applies");
+  assert.equal(record.stream.firstByteMs !== null && record.stream.firstByteMs >= 0 && record.stream.firstByteMs < 200, true, "the first byte's offset counts from the POST, not from the client's start");
   assert.equal(record.compat?.response.runRef, "ref_2");
   assert.equal(record.compat?.response.text, "Dear customer");
   assert.equal(compatCalls.length, 1);
@@ -150,11 +153,11 @@ test("hosted: an unreadable run key parameter is a start refusal that names the 
 
 test("host CLI: the allowlist is closed, the JSON line is the last stdout line, polling ends on a terminal status", async () => {
   assert.equal(isHostCliCommand("policy show"), true);
-  assert.equal(isHostCliCommand("policy set auto"), true);
-  assert.equal(isHostCliCommand("policy set auto; rm -rf /"), false);
+  assert.equal(isHostCliCommand("policy set auto"), false, "inert on a daemon started with --apply-policy: not a drill");
+  assert.equal(isHostCliCommand("policy show; rm -rf /"), false);
   assert.equal(isHostCliCommand("constructor"), false, "prototype names are not commands");
   assert.equal(isHostCliCommand("apply"), false, "apply --force is a laptop drill, never a one-click");
-  for (const line of Object.values(HOST_CLI_COMMANDS)) assert.match(line, /^zudocs-cli [a-z_ ]+( --by desk)? --json$/, line);
+  for (const line of Object.values(HOST_CLI_COMMANDS)) assert.match(line, /^zudocs-cli [a-z ]+ --json$/, line);
   assert.deepEqual(documentOf('policy: unlock_required\n{"via":"daemon","applyPolicy":{"effective":"unlock_required"}}\n'), { via: "daemon", applyPolicy: { effective: "unlock_required" } });
   assert.equal(documentOf("not json"), null);
   const polls: string[] = [];
@@ -174,7 +177,9 @@ test("host CLI: the allowlist is closed, the JSON line is the last stdout line, 
   const none = await runHostCli({ region: "eu-west-1", nameTag: "zudocs-eu-host", send: async () => ({ commandId: "cmd-2" }), poll: async () => null, sleep: async () => undefined, now: (() => { let t = 0; return () => (t += 60_000); })() }, "status", 10);
   assert.equal(none.status, "NoInstance");
   assert.equal(summariseCli("rollback", { generation: 3, previousGeneration: 4, forced: true }), "generation 3 live (was 4) — a forced downgrade, stamped on evidence");
+  assert.equal(summariseCli("rollback", { via: "daemon", generation: 3, forced: true }), "generation 3 live — a forced downgrade, stamped on evidence", "the daemon's answer carries no previous generation");
   assert.equal(summariseCli("unlock", { ok: false, error: "not_staged" }), "refused: not_staged");
+  assert.equal(summariseCli("unlock", { via: "daemon", generation: null }), "nothing was staged; nothing activated");
 });
 
 // --- arms ---------------------------------------------------------------------------------------------------------------
@@ -239,7 +244,7 @@ function fakeHost(options: { frozen?: boolean; ramps?: unknown[] } = {}) {
   const status = () => ({ generation: state.generation, stagedGeneration: null, applyState: "active", variables: { sources: ["customer_tier"], unsourced: [] }, heartbeat: { lastAt: null, nextAt: null, intervalSeconds: 60, lastRefusal: null }, storageProtection: "kms", source: "store", applyPolicy: { effective: state.policy, source: state.source, manifestSaid: "auto" }, lastSyncOutcome: "unchanged", disabled: { agent: state.frozen, slots: [], arms: [] }, lastRefusal: state.frozen ? "disabled: frozen from the console" : null, ramps: options.ramps ?? [] });
   const ap: any = {
     instanceId: "i-fake", generation: state.generation, status, healthz: () => ({ ok: true, status: "ok", reasons: [] }),
-    invoke: async (fn: () => Promise<unknown>) => fn(),
+    invoke: async (fn: () => Promise<unknown>) => { calls.push("invoke"); return fn(); },
     prompt: () => ({ variables: () => [], renderAsync: async () => { throw new Error("not rendered in this test"); } }),
     setApplyPolicy: async (value: string, input: { by?: string }) => { calls.push(`setApplyPolicy:${value}:${input.by}`); state.policy = value; state.source = "operator"; return { effective: value, source: "operator", manifestSaid: "auto" }; },
     golden: async (o: { tag?: string }) => { calls.push(`golden:${o.tag ?? "*"}`); return [{ tag: "support.triage", arm: "control", setId: "gs", model: "amazon.nova-micro", cases: 5, passed: 1, failed: 4, passBps: 2000, minPassBps: 8000, meetsThreshold: false, results: [{ caseId: "billing-double-charge", ok: false, failed: ["category"] }, { caseId: "other-dark-mode", ok: true, failed: [] }] }]; },
@@ -260,37 +265,45 @@ function fakeHost(options: { frozen?: boolean; ramps?: unknown[] } = {}) {
 const event = (method: string, rawPath: string, body?: unknown): APIGatewayProxyEventV2WithJWTAuthorizer => ({ version: "2.0", routeKey: "$default", rawPath, rawQueryString: "", headers: {}, requestContext: { accountId: "1", apiId: "a", domainName: "d", domainPrefix: "d", http: { method, path: rawPath, protocol: "HTTP/1.1", sourceIp: "1.1.1.1", userAgent: "t" }, requestId: "r", routeKey: "$default", stage: "$default", time: "", timeEpoch: 0, authorizer: { principalId: "p", integrationLatency: 0, jwt: { claims: { email: "seth@zudocs.com" }, scopes: [] } } }, isBase64Encoded: false, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) } as any);
 const parse = (r: any) => ({ status: r.statusCode as number, body: JSON.parse(r.body) as any });
 
-test("handler: a frozen host refuses a run with the SDK's reason, takes no cap slot, and /state says frozen", async () => {
+test("handler: a frozen host refuses a run inside the invoke (after the sync), takes no cap slot, and /state syncs first and says frozen", async () => {
   const host = fakeHost({ frozen: true });
   const handler = createHandler(async () => host);
   const run = parse(await handler(event("POST", "/tickets/T-1/run")));
   assert.equal(run.status, 423);
   assert.equal(run.body.error, "frozen");
-  assert.match(run.body.message, /disabled: frozen from the console/);
+  assert.equal(run.body.reason, FROZEN_REASON, "a fixed reason: lastRefusal may name another refusal entirely");
+  assert.ok(host.calls.includes("invoke"), "the check ran inside the invoke, after its sync pass");
   assert.equal(host.store.used, 0, "the cap is not taken for a refused run");
   assert.equal(host.store.events[0]?.kind, "run_refused");
+  host.calls.length = 0;
   const state = parse(await handler(event("GET", "/state")));
-  assert.deepEqual(state.body.frozen, { frozen: true, reason: "disabled: frozen from the console" });
+  assert.deepEqual(state.body.frozen, { frozen: true, reason: FROZEN_REASON });
+  assert.deepEqual(host.calls, ["invoke"], "/state answers after a sync pass, so every warm container tells the same story");
   assert.deepEqual(state.body.features, { wire: true, nudge: false, hosted: false, hostCli: true });
   assert.deepEqual(frozenOf(fakeHost()), { frozen: false, reason: null });
 });
 
-test("handler: host_cli takes the allowlist only, policy goes through setApplyPolicy, golden reports counts, reset clears", async () => {
+test("handler: host_cli takes the allowlist only and runs as a job whose answer lands on the timeline; policy goes through setApplyPolicy, golden reports counts, reset clears", async () => {
   const host = fakeHost();
   const handler = createHandler(async () => host);
-  const bad = parse(await handler(event("POST", "/presenter/host_cli", { command: "policy set auto && cat /etc/passwd" })));
+  const bad = parse(await handler(event("POST", "/presenter/host_cli", { command: "policy show && cat /etc/passwd" })));
   assert.equal(bad.status, 400);
   assert.equal(bad.body.error, "no_such_command");
-  const show = parse(await handler(event("POST", "/presenter/host_cli", { command: "policy show" })));
-  assert.equal(show.status, 200);
-  assert.equal(show.body.summary, "in force unlock_required (local); the console says auto — advisory here");
-  assert.equal(host.store.events.at(-1)?.kind, "host_cli");
-  assert.equal(host.store.events.at(-1)?.forHost, "eu-west-1/ec2");
-  assert.deepEqual(host.calls, ["host_cli:policy show"]);
+  const noName = parse(await handler(event("POST", "/presenter/host_cli", { command: "policy show" })));
+  assert.equal(noName.status, 501, "no function name, no self-invoke");
+  assert.equal(noName.body.error, "no_self_invoke");
+  // The job itself (what the self-invoke delivers): the CLI's document on the timeline.
+  await handler({ hostCli: { command: "policy show", by: "seth@zudocs.com", requestedAt: "2026-09-19T00:00:00Z" } });
+  const row = host.store.events.at(-1)!;
+  assert.equal(row.kind, "host_cli");
+  assert.equal(row.forHost, "eu-west-1/ec2");
+  assert.equal(row.summary, "in force unlock_required (local); the console says auto — advisory here");
+  assert.equal((row.document as any).applyPolicy.manifestSaid, "auto", "the CLI's own document rides on the row");
+  assert.deepEqual(host.calls.filter((c) => c.startsWith("host_cli")), ["host_cli:policy show"]);
   const policy = parse(await handler(event("POST", "/presenter/policy", { value: "auto" })));
   assert.equal(policy.status, 200);
   assert.match(policy.body.message, /already auto/);
-  assert.equal(host.calls.at(-1), "setApplyPolicy:auto:seth@zudocs.com");
+  assert.equal(host.calls.filter((c) => c.startsWith("setApplyPolicy")).at(-1), "setApplyPolicy:auto:seth@zudocs.com");
   const tightened = parse(await handler(event("POST", "/presenter/policy", { value: "unlock_required" })));
   assert.match(tightened.body.message, /auto → unlock_required \(operator\)/);
   const badPolicy = parse(await handler(event("POST", "/presenter/policy", { value: "whatever" })));

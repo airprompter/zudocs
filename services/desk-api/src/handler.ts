@@ -27,7 +27,7 @@ import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyResultV2, Context } from "aws-lambda";
 import { normalizeFeedback } from "@airprompter/agent-sdk";
 import { foldArms } from "./arms.js";
-import { HOST_CLI_COMMANDS, isHostCliCommand } from "./hostCli.js";
+import { HOST_CLI_COMMANDS, isHostCliCommand, type HostCliCommand } from "./hostCli.js";
 import { hostedConfigured, hostedRun } from "./hosted.js";
 import { MODELS } from "./modelCatalogue.js";
 import { match } from "./router.js";
@@ -43,10 +43,15 @@ const json = (statusCode: number, body: unknown): APIGatewayProxyResultV2 => ({ 
 export interface ReplayJob {
   replay: { n: number; by: string; ticketIds?: string[] };
 }
+/** A host-CLI job the function hands itself: one allowlisted command on the eu-west host; the result lands on the timeline. */
+export interface HostCliJob {
+  hostCli: { command: HostCliCommand; by: string; requestedAt: string };
+}
 
 export const REPLAY_MAX = 30;
 
 const isReplay = (event: unknown): event is ReplayJob => typeof event === "object" && event !== null && "replay" in event;
+const isHostCliJob = (event: unknown): event is HostCliJob => typeof event === "object" && event !== null && "hostCli" in event;
 /** The scheduled status tick: not a request, not a replay. */
 export const isStatusTick = (event: unknown): boolean => typeof event === "object" && event !== null && (event as { tick?: unknown }).tick === "status";
 
@@ -67,14 +72,23 @@ const readBody = (event: APIGatewayProxyEventV2WithJWTAuthorizer): Record<string
   }
 };
 
-/** The freeze as this host sees it: the manifest's `disable` directive on the whole agent, with the SDK's own reason line. */
+/** The freeze as this host sees it: the manifest's `disable` directive on the whole agent (`status().disabled.agent`). */
+export const FROZEN_REASON = "the release's manifest carries a disable directive for this agent — frozen from the console";
 export function frozenOf(host: Pick<Host, "ap">): { frozen: boolean; reason: string | null } {
   const status = host.ap.status();
   if (!status.disabled?.agent) return { frozen: false, reason: null };
-  return { frozen: true, reason: status.lastRefusal ?? "the release's manifest carries a disable directive for this agent (frozen from the console)" };
+  return { frozen: true, reason: FROZEN_REASON };
 }
 
-export type DeskHandler = (event: APIGatewayProxyEventV2WithJWTAuthorizer | ReplayJob, context?: Context) => Promise<APIGatewayProxyResultV2 | void>;
+/** Thrown inside the invoke, after its sync pass, so a run is refused by the release this container just verified — before a cap slot is taken. */
+class FrozenError extends Error {
+  constructor() {
+    super(FROZEN_REASON);
+    this.name = "FrozenError";
+  }
+}
+
+export type DeskHandler = (event: APIGatewayProxyEventV2WithJWTAuthorizer | ReplayJob | HostCliJob, context?: Context) => Promise<APIGatewayProxyResultV2 | void>;
 
 /** The handler over a host provider — the real cold-start memo in production, a fake host in tests. */
 export const createHandler = (hostOf: () => Promise<Host>): DeskHandler => async (event, context) => {
@@ -84,13 +98,17 @@ export const createHandler = (hostOf: () => Promise<Host>): DeskHandler => async
   } catch (error) {
     const e = error as Error & { code?: string };
     console.log(JSON.stringify({ source: "desk", event: "host_start_failed", name: e.name, code: e.code ?? null, message: e.message }));
-    if (isReplay(event) || isStatusTick(event)) return;
+    if (isReplay(event) || isHostCliJob(event) || isStatusTick(event)) return;
     return json(503, { error: "host_unavailable", name: e.name, code: e.code ?? null, message: e.message });
   }
   host.invocations += 1;
   try {
     if (isReplay(event)) {
       await replay(host, event, context);
+      return;
+    }
+    if (isHostCliJob(event)) {
+      await hostCliJob(host, event);
       return;
     }
     if (isStatusTick(event)) {
@@ -134,21 +152,27 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
     case "escalate_ticket": {
       const ticket = await store.getTicket(params.ticketId!);
       if (!ticket) return { statusCode: 404, body: { error: "no_such_ticket" } };
-      const frozen = frozenOf(host);
-      if (frozen.frozen) {
-        await store.appendEvent({ at: new Date().toISOString(), kind: "run_refused", host: env.hostId, ticketId: ticket.ticketId, reason: frozen.reason, by });
-        return { statusCode: 423, body: { error: "frozen", message: `this host refuses to render: ${frozen.reason}. Unfreeze from the console; the next sync lifts it.`, reason: frozen.reason } };
-      }
       const day = dayOf(new Date().toISOString());
-      const slot = await store.takeRunSlot(day, env.dailyRunCap);
-      if (!slot.ok) {
+      // Inside the invoke, after its sync pass: the freeze this container just verified refuses before a cap slot is
+      // taken; then the slot, atomically; then the run. A refusal answers as itself, not as a run.
+      const outcome = await ap.invoke(async (): Promise<{ kind: "run"; record: Awaited<ReturnType<typeof runTicket>>; used: number } | { kind: "cap"; used: number }> => {
+        if (frozenOf(host).frozen) throw new FrozenError();
+        const slot = await store.takeRunSlot(day, env.dailyRunCap);
+        if (!slot.ok) return { kind: "cap", used: slot.used };
+        return { kind: "run", record: await runTicket(host, ticket, { by, kind: name === "run_ticket" ? "run" : "escalate", capUsed: slot.used }), used: slot.used };
+      }).catch(async (error: unknown) => {
+        if (!(error instanceof FrozenError)) throw error;
+        await store.appendEvent({ at: new Date().toISOString(), kind: "run_refused", host: env.hostId, ticketId: ticket.ticketId, reason: FROZEN_REASON, by });
+        return { kind: "frozen" as const, used: 0 };
+      });
+      if (outcome.kind === "frozen") return { statusCode: 423, body: { error: "frozen", message: `this host refuses to render: ${FROZEN_REASON}. Unfreeze from the console; the next sync lifts it.`, reason: FROZEN_REASON } };
+      if (outcome.kind === "cap") {
         // `capDay`, not `day`: the events table's partition key is `day` and the reader does not return it.
-        await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, capDay: day, cap: env.dailyRunCap, used: slot.used, by });
-        return { statusCode: 429, body: { error: "daily_cap", message: `this host refuses past ${env.dailyRunCap} runs per UTC day; ${slot.used} were used on ${day}. Nothing was simulated.`, cap: env.dailyRunCap, used: slot.used, day } };
+        await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, capDay: day, cap: env.dailyRunCap, used: outcome.used, by });
+        return { statusCode: 429, body: { error: "daily_cap", message: `this host refuses past ${env.dailyRunCap} runs per UTC day; ${outcome.used} were used on ${day}. Nothing was simulated.`, cap: env.dailyRunCap, used: outcome.used, day } };
       }
-      const record = await ap.invoke(() => runTicket(host, ticket, { by, kind: name === "run_ticket" ? "run" : "escalate", capUsed: slot.used }));
       await host.writeStatus();
-      return { statusCode: record.ok ? 200 : 502, body: { run: record, cap: { used: slot.used, cap: env.dailyRunCap, day } } };
+      return { statusCode: outcome.record.ok ? 200 : 502, body: { run: outcome.record, cap: { used: outcome.used, cap: env.dailyRunCap, day } } };
     }
     case "hosted_run": {
       const ticket = await store.getTicket(params.ticketId!);
@@ -186,6 +210,9 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       return { statusCode: 200, body: { filed: true, signals: accepted, container: outcome.container, message: outcome.container === "same" ? "filed on the run's window; it leaves with the next upload" : "filed on this container against the same prompt version and arm (the run was served by another container of this host); it leaves with the next upload" } };
     }
     case "state": {
+      // A sync pass first (on_invoke: one pointer read when nothing changed): several containers stay warm behind the
+      // API, and the one answering this poll must know the freeze, the generation and the ramp the others do.
+      await ap.invoke(async () => undefined);
       const day = dayOf(new Date().toISOString());
       const [hosts, used] = await Promise.all([store.listStatus(), store.readRunSlots(day)]);
       return {
@@ -209,6 +236,7 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       return { statusCode: 200, body: { events } };
     }
     case "list_approvals": {
+      await ap.invoke(async () => undefined);
       const approvals = await store.listApprovals(50);
       // The ramp plan a staged release carries: this host applied the same generation under `auto` and read it from the
       // signed manifest, so the page can show what one approval on eu-west unlocks — every step of the plan, no check-in.
@@ -341,15 +369,18 @@ async function presenter(host: Host, action: string, body: Record<string, unknow
       return { statusCode: 202, body: { action, messageId, sentAt, message: "the fleet was nudged: the puller reads the origin on its next invocation (within seconds) and the timeline shows the pull" } };
     }
     case "host_cli": {
-      // One allowlisted `zudocs-cli` command on the eu-west host; the CLI's own document comes back and lands on the timeline.
+      // One allowlisted `zudocs-cli` command on the eu-west host, as a job this function hands itself (the HTTP API caps
+      // an integration at 30 s; Run Command's dispatch plus `doctor` can take a minute): the CLI's own document lands on
+      // the timeline as a `host_cli` row, which the presenter panel shows.
       if (!env.wireFunctionArn) return { statusCode: 501, body: { error: "no_eu_host", message: "the eu-west stack (ZudocsSharedHost) is not deployed: no host to run the CLI on" } };
       const command = body.command;
       if (!isHostCliCommand(command)) return { statusCode: 400, body: { error: "no_such_command", message: `the desk runs exactly these on the host: ${Object.keys(HOST_CLI_COMMANDS).join(", ")}`, commands: Object.keys(HOST_CLI_COMMANDS) } };
-      const result = await host.hostCli(command, command === "doctor" ? 120 : 90);
-      const doc = result.document ?? {};
-      const summary = summariseCli(command, doc);
-      await store.appendEvent({ at: at(), kind: "host_cli", host: env.hostId, forHost: `${env.euHost.region}/ec2`, command, line: result.line, status: result.status, instanceId: result.instanceId, summary, by });
-      return { statusCode: result.status === "Success" ? 200 : 502, body: { action, ...result, summary, message: result.status === "Success" ? `${result.line} on ${result.instanceId ?? "the host"}: ${summary}` : `${result.line} ${result.status.toLowerCase()} on ${result.instanceId ?? "the host"}${result.stderr ? `: ${result.stderr.slice(0, 200)}` : ""}` } };
+      if (!env.functionName) return { statusCode: 501, body: { error: "no_self_invoke", message: "the host CLI needs the function's own name (AWS_LAMBDA_FUNCTION_NAME)" } };
+      const requestedAt = at();
+      const job: HostCliJob = { hostCli: { command, by, requestedAt } };
+      await new LambdaClient({ region: env.region }).send(new InvokeCommand({ FunctionName: env.functionName, InvocationType: "Event", Payload: Buffer.from(JSON.stringify(job)) }));
+      await store.appendEvent({ at: requestedAt, kind: "presenter", host: env.hostId, action, by, command, forHost: `${env.euHost.region}/ec2` });
+      return { statusCode: 202, body: { action, command, line: HOST_CLI_COMMANDS[command], requestedAt, message: `zudocs-cli ${command} queued for the eu-west host; the timeline shows the CLI's answer when it lands (seconds; doctor takes up to a minute)` } };
     }
     case "policy": {
       // This host's own apply policy: an operator's act on the SDK (`setApplyPolicy`) — `auto` loosens a pin the console tightened, `unlock_required` tightens it by hand.
@@ -382,6 +413,21 @@ async function presenter(host: Host, action: string, body: Record<string, unknow
   }
 }
 
+/** The host-CLI job: run the command through Run Command, put the CLI's document on the timeline (never a key — the CLI prints none). */
+async function hostCliJob(host: Host, job: HostCliJob): Promise<void> {
+  const { store, env } = host;
+  const { command, by, requestedAt } = job.hostCli;
+  let result: Awaited<ReturnType<Host["hostCli"]>>;
+  try {
+    result = await host.hostCli(command, command === "doctor" ? 120 : 90);
+  } catch (error) {
+    await store.appendEvent({ at: new Date().toISOString(), kind: "host_cli", host: env.hostId, forHost: `${env.euHost.region}/ec2`, command, line: HOST_CLI_COMMANDS[command], status: "Failed", instanceId: null, summary: `Run Command could not be sent: ${(error as Error).message.slice(0, 200)}`, document: null, stdout: "", requestedAt, by });
+    return;
+  }
+  const summary = summariseCli(command, result.document ?? {});
+  await store.appendEvent({ at: new Date().toISOString(), kind: "host_cli", host: env.hostId, forHost: `${env.euHost.region}/ec2`, command, line: result.line, status: result.status, instanceId: result.instanceId, summary, document: result.document, stdout: result.stdout.slice(0, 4000), stderr: result.stderr.slice(0, 1000), durationMs: result.durationMs, requestedAt, by });
+}
+
 /** One line from the CLI's document, per command — what the notice and the timeline row say. */
 export function summariseCli(command: string, doc: Record<string, unknown>): string {
   if (doc.ok === false) return `refused: ${String(doc.error ?? doc.reason ?? "")}`.trim();
@@ -389,13 +435,10 @@ export function summariseCli(command: string, doc: Record<string, unknown>): str
   switch (command) {
     case "policy show":
       return policy ? `in force ${policy.effective ?? policy.value} (${policy.source})${policy.manifestSaid && policy.manifestSaid !== policy.effective ? `; the console says ${policy.manifestSaid} — advisory here` : ""}` : "no policy document";
-    case "policy set auto":
-    case "policy set unlock_required":
-      return policy ? `now ${policy.effective ?? policy.value} (${policy.source}); was ${String((doc.previous as { effective?: string; value?: string } | undefined)?.effective ?? (doc.previous as { value?: string } | undefined)?.value ?? "?")}` : "set";
     case "rollback":
-      return `generation ${String(doc.generation)} live (was ${String(doc.previousGeneration)})${doc.forced ? " — a forced downgrade, stamped on evidence" : ""}`;
+      return `generation ${String(doc.generation ?? "?")} live${doc.previousGeneration !== undefined ? ` (was ${String(doc.previousGeneration)})` : ""}${doc.forced ? " — a forced downgrade, stamped on evidence" : ""}`;
     case "unlock":
-      return `generation ${String(doc.generation)} activated (was ${String(doc.previousGeneration)})`;
+      return doc.generation === null || doc.generation === undefined ? "nothing was staged; nothing activated" : `generation ${String(doc.generation)} activated${doc.previousGeneration !== undefined ? ` (was ${String(doc.previousGeneration)})` : ""}`;
     case "status":
       return `generation ${String(doc.generation)}${doc.stagedSlot ? " · a release is staged" : ""}${doc.forcedDowngrade ? " · forced downgrade" : ""} · ${String(doc.storageProtection)}`;
     case "doctor": {

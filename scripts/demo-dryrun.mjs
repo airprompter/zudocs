@@ -64,11 +64,18 @@ const badge = (step) => (step ? `${step.tag.replace(/^support\./, "")} ${step.ve
 const runTicket = async (ticketId) => desk.api("POST", `/tickets/${ticketId}/run`);
 const syncEast = async () => (await desk.api("POST", "/presenter/sync")).json;
 const eventsOfKind = async (since, kind, host) => (await desk.eventsSince(since)).filter((e) => e.kind === kind && (!host || e.host === host));
+/** One allowlisted zudocs-cli command on eu-west: the API queues it; the CLI's document lands on the timeline. */
+async function hostCli(command, { timeoutMs = 150_000 } = {}) {
+  const since = new Date().toISOString();
+  const queued = await desk.api("POST", "/presenter/host_cli", { command });
+  if (queued.status !== 202) return { status: `HTTP ${queued.status}`, summary: queued.json.message ?? JSON.stringify(queued.json).slice(0, 200), document: null };
+  return desk.waitFor(`zudocs-cli ${command} to answer`, async () => (await eventsOfKind(since, "host_cli", EAST)).find((e) => e.command === command) ?? null, { timeoutMs, everyMs: 5_000 });
+}
 
 /** The eu-west approval for a generation: wait for the pending row, approve, wait for the activation. */
 async function approveOnEuWest(generation, { timeoutMs = 180_000 } = {}) {
   const pending = await desk.waitFor(`eu-west to stage #${generation}`, async () => (await desk.approvals()).find((a) => a.hostId === EU && a.generation === generation && a.decision === "pending") ?? null, { timeoutMs });
-  ok(`eu-west staged #${generation} at ${pending.stagedAt} — the Approvals page shows it${pending.ramps?.length ? ` with the ramp plan (${pending.ramps.map((r) => `${r.tag}: ${r.plan.map((p) => `${(p.weightBps[1] ?? 0) / 100} %`).join(" → ")}`).join("; ")})` : ""}`);
+  ok(`eu-west staged #${generation} at ${pending.stagedAt} — the Approvals page shows it${pending.ramps?.length ? ` with the ramp plan (${pending.ramps.map((r) => `${r.tag}: ${r.plan.map((p) => `${(p.weightBps[Math.max(0, r.arms.indexOf("candidate"))] ?? 0) / 100} %`).join(" → ")}`).join("; ")})` : ""}`);
   const decided = await desk.api("POST", `/approvals/${encodeURIComponent(pending.approvalId)}/approve`, {});
   check(decided.status === 200 && decided.json.already === false, `Approve clicked: ${decided.json.message}`);
   const activated = await desk.waitFor(`eu-west to activate #${generation}`, async () => (await desk.approvals()).find((a) => a.approvalId === pending.approvalId && a.decision === "activated") ?? null, { timeoutMs: 120_000 });
@@ -150,16 +157,27 @@ const stateF = await desk.waitFor("us-east to report frozen", async () => { cons
 ok(`release bar: FROZEN — ${stateF.frozen.reason}`);
 const runF = await runTicket("T-1042");
 check(runF.status === 423 && runF.json.error === "frozen", `Run refused: HTTP ${runF.status} ${runF.json.error} — ${runF.json.message}`);
-const euFrozen = await desk.waitFor("eu-west to honour the freeze", async () => { const r = await desk.hostRow(EU); return r?.status?.disabled?.agent ? r : null; }, { timeoutMs: 150_000, everyMs: 10_000 }).catch(() => null);
-check(euFrozen !== null, euFrozen ? `eu-west honours the freeze without an approval (disabled.agent on its row at ${euFrozen.writtenAt})` : "eu-west never reported the freeze on its row");
+// eu-west: the daemon verifies the frozen generation and takes its directive, but an SDK attached over the socket
+// renders from the ACTIVE release — the directive reaches the workers only when the frozen generation is unlocked
+// (SDK issue: the daemon hands attached clients no standing directives). Try the honest path first, then approve.
+let euFrozen = await desk.waitFor("eu-west to honour the freeze without an approval", async () => { const r = await desk.hostRow(EU); return r?.status?.disabled?.agent ? r : null; }, { timeoutMs: 60_000, everyMs: 10_000 }).catch(() => null);
+let freezeApproved = false;
+if (!euFrozen) {
+  say("    eu-west's attached workers still render: the frozen generation is staged, not active — approving it (the daemon hands attached SDKs no standing directives; filed)");
+  await approveOnEuWest(frozen.pointer.generation).catch((error) => fail(`approving the frozen generation on eu-west: ${error.message}`));
+  freezeApproved = true;
+  euFrozen = await desk.waitFor("eu-west to honour the freeze once active", async () => { const r = await desk.hostRow(EU); return r?.status?.disabled?.agent ? r : null; }, { timeoutMs: 90_000, everyMs: 10_000 }).catch(() => null);
+}
+check(euFrozen !== null, euFrozen ? `eu-west honours the freeze ${freezeApproved ? "once the frozen generation is active (approved on the desk)" : "without an approval"} (disabled.agent on its row at ${euFrozen.writtenAt})` : "eu-west never reported the freeze on its row");
 const unfrozen = await con.freeze({ environment: ENV, frozen: false, notes: "Zudocs demo, beat 3: unfreeze" });
 await syncEast();
 const stateU = await desk.waitFor("us-east to report unfrozen", async () => { const s = await desk.state(); return !s.frozen?.frozen ? s : null; }, { timeoutMs: 60_000, everyMs: 3_000 });
 ok(`unfrozen (generation ${unfrozen.pointer.generation}); the Run buttons are back`);
 const runU = await runTicket("T-1042");
 check(runU.status === 200, `T-1042 runs again: ${badge(replyStep(runU.json.run))}`);
+if (freezeApproved) await approveOnEuWest(unfrozen.pointer.generation).catch((error) => fail(`approving the unfreeze generation on eu-west: ${error.message}`));
 const euUnfrozen = await desk.waitFor("eu-west to lift the freeze", async () => { const r = await desk.hostRow(EU); return r && !r.status?.disabled?.agent ? r : null; }, { timeoutMs: 150_000, everyMs: 10_000 }).catch(() => null);
-check(euUnfrozen !== null, "eu-west lifted the freeze too (the standing directive follows the latest verified manifest)");
+check(euUnfrozen !== null, `eu-west lifted the freeze too${freezeApproved ? " (the unfreeze generation approved)" : " (the standing directive follows the latest verified manifest)"}`);
 {
   const refused = await eventsOfKind(since3, "run_refused", EAST);
   check(refused.length >= 1, `the timeline shows ${refused.length} refused run(s) while frozen`);
@@ -178,6 +196,7 @@ const sync4 = await syncEast();
 check(sync4.generation === exp.pointer.generation, `us-east took the split on its next invoke (#${sync4.generation})`);
 const approval4 = await approveOnEuWest(exp.pointer.generation);
 check((approval4.pending.ramps ?? []).some((r) => r.tag === e1.tag && r.plan.length === 3), "the Approvals page showed the whole ramp plan on that one approval");
+const sinceReplay1 = new Date().toISOString();
 const replay = await desk.api("POST", "/presenter/replay", { n: 30 });
 check(replay.status === 202, `Replay 30 on us-east: ${replay.json.message}`);
 for (const id of ["T-1041", "T-1043", "T-1044", "T-1045"]) {
@@ -185,7 +204,7 @@ for (const id of ["T-1041", "T-1043", "T-1044", "T-1045"]) {
   if (q.status !== 202) fail(`enqueue ${id} on eu-west: ${q.json.message}`);
 }
 ok("four tickets queued on eu-west (its worker takes the queue within ten seconds)");
-const replayDone = await desk.waitFor("the replay to finish", async () => (await eventsOfKind(since4, "replay_done", EAST))[0] ?? null, { timeoutMs: 330_000, everyMs: 10_000 });
+const replayDone = await desk.waitFor("the replay to finish", async () => (await eventsOfKind(sinceReplay1, "replay_done", EAST))[0] ?? null, { timeoutMs: 330_000, everyMs: 10_000 });
 check(replayDone.done >= 12, `replay done: ${replayDone.done}/${replayDone.requested} runs`);
 await desk.waitFor("eu-west to run its queue", async () => ((await eventsOfKind(since4, "ticket_run", EU)).length >= 4 ? true : null), { timeoutMs: 240_000, everyMs: 10_000 }).catch(() => fail("eu-west ran fewer than four queued tickets in four minutes"));
 const arms4 = (await desk.api("GET", "/arms")).json;
@@ -209,8 +228,9 @@ try {
   ok(`second experiment ${expT.experiment.experimentId} on ${expT.experiment.tag} at ${expT.experiment.weightBps / 100} %, generation ${expT.pointer.generation} — independent of the reply split`);
   await syncEast();
   await approveOnEuWest(expT.pointer.generation);
+  const sinceReplay2 = new Date().toISOString();
   const replay2 = await desk.api("POST", "/presenter/replay", { n: 12 });
-  const done2 = await desk.waitFor("the second replay", async () => (await eventsOfKind(since4, "replay_done", EAST))[1] ?? null, { timeoutMs: 240_000, everyMs: 10_000 });
+  const done2 = await desk.waitFor("the second replay", async () => (await eventsOfKind(sinceReplay2, "replay_done", EAST))[0] ?? null, { timeoutMs: 240_000, everyMs: 10_000 });
   ok(`Replay 12 (${replay2.status}): ${done2.done} runs`);
   const armsT = (await desk.api("GET", "/arms")).json;
   const triageArms = armsT.arms.filter((a) => a.tag === "support.triage" && a.arm !== "none");
@@ -232,8 +252,9 @@ const dialed = await con.experiments.weights({ environment: ENV, experimentId: e
 check(dialed.experiment.weightBps === 5000, `dialled to ${dialed.experiment.weightBps / 100} % (generation ${dialed.pointer.generation})`);
 await syncEast();
 await approveOnEuWest(dialed.pointer.generation);
+const sinceReplay3 = new Date().toISOString();
 const replay3 = await desk.api("POST", "/presenter/replay", { n: 12 });
-await desk.waitFor("the third replay", async () => (await eventsOfKind(since4, "replay_done", EAST))[2] ?? null, { timeoutMs: 240_000, everyMs: 10_000 });
+await desk.waitFor("the third replay", async () => (await eventsOfKind(sinceReplay3, "replay_done", EAST))[0] ?? null, { timeoutMs: 240_000, everyMs: 10_000 });
 const arms50 = (await desk.api("GET", "/arms")).json;
 const cand50 = arms50.stickiness.filter((s) => s.tag === "support.reply" && Object.values(s.arms).includes("candidate")).length;
 ok(`at 50 % (replay ${replay3.status}): ${cand50} of ${arms50.stickiness.filter((s) => s.tag === "support.reply").length} customers on the candidate`);
@@ -263,10 +284,12 @@ beat(5, "safety nets");
     const syncM = await syncEast();
     const eastRefused = /model_unavailable|model/.test(String(syncM.outcome ?? "")) || syncM.applyState === "refused" || (await desk.state()).host.status.lastRefusal;
     check(!!eastRefused, `us-east refused #${pM.generation}: sync ${syncM.outcome}, applyState ${syncM.applyState}, lastRefusal ${(await desk.state()).host.status.lastRefusal}`);
-    const euRef = await desk.waitFor("eu-west to refuse the release", async () => { const r = await desk.hostRow(EU); return r?.status?.lastRefusal && Number(r.status.generation) < pM.generation ? r : null; }, { timeoutMs: 120_000, everyMs: 10_000 }).catch(() => null);
-    check(euRef !== null, euRef ? `eu-west refused it too: ${euRef.status.lastRefusal} (still serving #${euRef.status.generation})` : "eu-west did not report a refusal within two minutes");
+    // The daemon host declares no catalogue (airprompterd has no --models flag; the attached workers' catalogue never
+    // reaches the sync), so it cannot refuse: it STAGES the release for approval — a trap the presenter must not spring.
+    const euStaged = await desk.waitFor("eu-west to stage the unreported-model release", async () => (await desk.approvals()).find((a) => a.hostId === EU && a.generation === pM.generation && a.decision === "pending") ?? null, { timeoutMs: 120_000 }).catch(() => null);
+    check(euStaged !== null, euStaged ? `eu-west STAGED #${pM.generation} instead of refusing (the daemon declares no models — SDK gap): not approved, superseded by the next promotion` : "eu-west neither refused nor staged the release within two minutes");
     const fleet = await con.fleet(ENV);
-    ok(`AirPrompter's fleet page: ${fleet.summary.modelUnavailable} instance(s) report the model unavailable, ${fleet.summary.refused} refused`);
+    ok(`AirPrompter's fleet page: ${fleet.summary.modelUnavailable} instance(s) report the model unavailable, ${fleet.summary.refused} refused, ${fleet.summary.staged} staged`);
     // Move past it: a fresh canonical generation.
     const vA = await con.newVersion({ tag: "support.escalate.summary", inference: (c) => ({ ...c, maxOutputTokens: Number(c.maxOutputTokens ?? 400) + 1 }), message: "Beat 5: past the refused release" });
     const sealedA = await con.seal({ environment: ENV, pins: canonicalPins(config, { "support.escalate.summary": { versionId: vA.versionId }, "support.reply": { versionId: vC.versionId } }), notes: "Zudocs demo, beat 5: past the refused release" });
@@ -297,11 +320,11 @@ beat(5, "safety nets");
 }
 {
   // The host's shell, one click: policy show, then rollback (a forced downgrade), then the next promotion carries it forward.
-  const shown = await desk.api("POST", "/presenter/host_cli", { command: "policy show" });
-  const pol = shown.json.document?.applyPolicy;
-  check(shown.status === 200 && pol?.effective === "unlock_required" && pol?.manifestSaid === "auto", `zudocs-cli policy show on eu-west: ${shown.json.summary}`);
-  const rolled = await desk.api("POST", "/presenter/host_cli", { command: "rollback" });
-  check(rolled.status === 200 && rolled.json.document?.forced === true, `zudocs-cli rollback on eu-west: ${rolled.json.summary}`);
+  const shown = await hostCli("policy show");
+  const pol = shown.document?.applyPolicy;
+  check(shown.status === "Success" && pol?.effective === "unlock_required" && pol?.manifestSaid === "auto", `zudocs-cli policy show on eu-west (via Run Command, on the timeline): ${shown.summary}`);
+  const rolled = await hostCli("rollback");
+  check(rolled.status === "Success" && rolled.document?.forced === true, `zudocs-cli rollback on eu-west: ${rolled.summary}`);
   const held = await desk.waitFor("eu-west to report the forced downgrade", async () => { const r = await desk.hostRow(EU); return r?.status?.forcedDowngrade ? r : null; }, { timeoutMs: 90_000, everyMs: 5_000 }).catch(() => null);
   check(held !== null, held ? `eu-west card: forced downgrade, serving #${held.status.generation}` : "eu-west never reported the forced downgrade");
   const fleet = await con.fleet(ENV);
@@ -313,7 +336,7 @@ beat(5, "safety nets");
   await landEverywhere(pA3.generation);
   ok(`the next promotion (#${pA3.generation}) carried eu-west forward — held back until something newer was promoted`);
 }
-say("    apply --force and apply.window are laptop drills: docs/strips/apply-force.txt and docs/strips/apply-window.txt (--strips records them now)");
+say("    apply --force and apply.window are laptop drills: docs/strips/cli.txt (the forced downgrade) and docs/strips/apply-window.txt (--strips records them now)");
 
 // --- Beat 6: your data, your variables ----------------------------------------------------------------------------------------------
 beat(6, "your data, your variables");

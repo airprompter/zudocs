@@ -34,7 +34,7 @@ function describe(e: TimelineEvent): string {
     case "replay_done": return `replay done: ${e.done}/${e.requested}`;
     case "run_refused": return `${e.ticketId} refused — frozen: ${e.reason}`;
     case "hosted_run": return `${e.ticketId} on hosted ${e.target}: ${e.ok ? `${e.versionId ?? "—"} on ${modelLabel(String(e.model ?? ""))}${e.arm && e.arm !== "none" ? ` · arm ${e.arm}` : ""} · ${e.deltas} deltas · compat ${e.compatStatus}` : `refused (${e.refusal ?? "compat " + String(e.compatStatus)})`}`;
-    case "host_cli": return `zudocs-cli ${e.command} on ${e.forHost}: ${e.status} — ${e.summary}`;
+    case "host_cli": return `zudocs-cli ${e.command} on ${e.forHost}: ${e.status} — ${e.summary}${e.durationMs ? ` (${Math.round(Number(e.durationMs) / 1000)} s)` : ""}`;
     case "policy_set": return `policy ${e.before} → ${e.after} (${e.source}) by ${e.by}`;
     case "golden_run": return `golden sets on release #${e.generation}: ${(e.reports as Array<{ tag: string; passed: number; cases: number; met: boolean }>).map((r) => `${r.tag} ${r.passed}/${r.cases}${r.met ? "" : " BELOW the floor"}`).join("; ")}`;
     case "bundle_pulled": return `release #${e.generation} pulled into the exchange${e.sealed ? ` · sealed to key ${String(e.keyId).slice(0, 8)}…` : " · plaintext (dev)"} · ${e.trigger === "nudge" ? "on a nudge" : e.trigger === "reseal" ? "re-sealed to the host's new key" : "on the schedule"}${e.previous ? ` (was #${e.previous})` : ""}`;

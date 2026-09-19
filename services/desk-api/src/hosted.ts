@@ -38,15 +38,16 @@ export interface HostedRefusal {
 }
 
 export interface HostedStreamRecord {
-  /** Each delta's offset from the first byte (ms) and its length; the text is assembled into `output`. */
+  /** Each delta's offset from the first byte (ms) and its text. */
   deltas: Array<{ atMs: number; text: string }>;
+  /** The first byte's offset from the POST (ms) — the route's time to first token, not the client's start. */
   firstByteMs: number | null;
   result: ManagedRunResult | null;
   refusal: HostedRefusal | null;
 }
 
 export interface HostedCompatRecord {
-  request: { url: string; model: string; temperature: number; top_p: number; max_tokens: number; variables: string[] };
+  request: { url: string; model: string; temperature: number; top_p: number; variables: string[] };
   response: { status: number; runRef: string | null; runId: string | null; model: string | null; finishReason: string | null; usage: Record<string, unknown> | null; text: string | null; error: Record<string, unknown> | null };
   /** The response carries no inference block; the slot's sealed settings (the catalogue) are what the run used. */
   ignored: string[];
@@ -192,8 +193,9 @@ export async function hostedRun(input: { ports: HostedPorts; client: HostedClien
   record.subjectHash = agent.subjectHashFor(ticket.customerId, TAGS.reply) ?? null;
   const values: Record<string, string> = customer?.tier === "enterprise" ? { ticket: ticket.body, tone: "formal" } : { ticket: ticket.body };
 
-  // 1. The stream, with every delta's arrival offset.
+  // 1. The stream, with every delta's arrival offset; the first byte's offset counts from the POST itself.
   try {
+    const posted = now();
     const stream = await agent.stream(TAGS.reply, values, { subject: ticket.customerId, metadata: { ticketId: ticket.ticketId, host: env.hostId } });
     let first: number | null = null;
     for await (const delta of stream) {
@@ -201,7 +203,7 @@ export async function hostedRun(input: { ports: HostedPorts; client: HostedClien
       if (first === null) first = t;
       record.stream.deltas.push({ atMs: t - first, text: delta });
     }
-    record.stream.firstByteMs = first === null ? null : first - started;
+    record.stream.firstByteMs = first === null ? null : first - posted;
     record.stream.result = await stream.result;
   } catch (error) {
     record.stream.refusal = refusalOf(error);
@@ -221,10 +223,12 @@ export async function hostedRun(input: { ports: HostedPorts; client: HostedClien
 
   // 3. The compatible endpoint, with parameters the caller has no say over.
   const url = compatChatUrl(env.hosted.runUrl, agentId);
-  const request = { url, model: `slot:${TAGS.reply}`, temperature: 1.9, top_p: 0.1, max_tokens: 300, variables: Object.keys(values).filter((v) => v !== "ticket").concat(customer ? ["customer_tier"] : []) };
+  // No max_tokens either: the version seals its own output cap and the route applies that, so a cap on the request
+  // would only look like a setting that took.
+  const request = { url, model: `slot:${TAGS.reply}`, temperature: 1.9, top_p: 0.1, variables: Object.keys(values).filter((v) => v !== "ticket").concat(customer ? ["customer_tier"] : []) };
   try {
     const apiKey = await client.key();
-    const body = { model: request.model, temperature: request.temperature, top_p: request.top_p, max_tokens: request.max_tokens, messages: [{ role: "user", content: ticket.body }], airprompter: { variables: { ...(customer ? { customer_tier: customer.tier } : {}), ...(values.tone ? { tone: values.tone } : {}) }, ...(record.subjectHash ? { subjectHash: record.subjectHash } : {}), metadata: { ticketId: ticket.ticketId, host: env.hostId, via: "openai-compatible" } } };
+    const body = { model: request.model, temperature: request.temperature, top_p: request.top_p, messages: [{ role: "user", content: ticket.body }], airprompter: { variables: { ...(customer ? { customer_tier: customer.tier } : {}), ...(values.tone ? { tone: values.tone } : {}) }, ...(record.subjectHash ? { subjectHash: record.subjectHash } : {}), metadata: { ticketId: ticket.ticketId, host: env.hostId, via: "openai-compatible" } } };
     const response = await fetchImpl(url, { method: "POST", headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json", accept: "application/json" }, body: JSON.stringify(body) });
     const text = await response.text();
     let parsed: Record<string, unknown> = {};

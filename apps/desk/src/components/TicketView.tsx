@@ -1,7 +1,7 @@
 /**
  * One ticket and what the desk did with it: the customer's message, the Run, Escalate and (when the deployment
- * names a run key) Run-on-staging buttons — greyed with the SDK's own reason while the environment is frozen —
- * then every run newest first: a triage card, the reply card (version badge, arm badge, "Why this text", the
+ * names a run key) Run-on-staging buttons — with a red band while the environment is frozen (Run stays clickable:
+ * the click answers the SDK's refusal, `HTTP 423 frozen`, and that is the beat) — then every run newest first: a triage card, the reply card (version badge, arm badge, "Why this text", the
  * checks strip, latency / tokens / usage source / cost, the judge score, the feedback row), for an escalation the
  * summary and the hand-off note, and for a hosted staging run the stream replayed at the cadence it really had, the
  * `done` frame's facts, the feedback answer, and the compatible-endpoint request beside the catalogue's sealed
@@ -20,7 +20,7 @@ import { WhyThisText } from "./WhyThisText";
 
 export function TicketView({ ticket, runs, busy, frozen, hosted, onRun, onEscalate, onHosted, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; hosted: { target: string; runUrl: string } | null; onRun: () => void; onEscalate: () => void; onHosted: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
   const isFrozen = frozen?.frozen ?? false;
-  const disabled = busy !== null || isFrozen;
+  const disabled = busy !== null;
   return (
     <div className="ticket-view">
       <section className="ticket-card">
@@ -36,7 +36,7 @@ export function TicketView({ ticket, runs, busy, frozen, hosted, onRun, onEscala
             {hosted ? <button type="button" className="button secondary" disabled={disabled} onClick={onHosted} title={TOOLTIPS.hosted}>{busy === "hosted" ? "Running on staging…" : `Run on ${hosted.target} (hosted)`}</button> : null}
           </div>
         </div>
-        {isFrozen ? <p className="problem fine">Frozen from the console — this host refuses to render: {frozen?.reason}. Unfreeze in AirPrompter; the next sync lifts it.</p> : null}
+        {isFrozen ? <p className="problem fine">Frozen from the console — this host refuses to render: {frozen?.reason}. Run answers HTTP 423; unfreeze in AirPrompter and the next sync lifts it.</p> : null}
         <blockquote className="ticket-body">{ticket.body}</blockquote>
       </section>
       {runs.length === 0 ? <p className="muted centre-note">No runs yet. Run sends this ticket through the promoted prompts on this host.</p> : null}
@@ -56,7 +56,7 @@ function HostedPanel({ run }: { run: HostedRun }) {
   useEffect(() => {
     if (!replaying) return;
     if (shown >= deltas.length) { setReplaying(false); return; }
-    const wait = shown === 0 ? 0 : Math.min(3000, Math.max(0, deltas[shown]!.atMs - deltas[shown - 1]!.atMs));
+    const wait = shown === 0 ? 0 : Math.max(0, deltas[shown]!.atMs - deltas[shown - 1]!.atMs);
     const timer = setTimeout(() => setShown((n) => n + 1), wait);
     return () => clearTimeout(timer);
   }, [replaying, shown, deltas]);
@@ -82,7 +82,7 @@ function HostedPanel({ run }: { run: HostedRun }) {
         {run.stream.refusal ? <p className="problem">the run route refused: {run.stream.refusal.code} (HTTP {run.stream.refusal.status}) — {run.stream.refusal.message}{run.stream.refusal.detail ? ` · ${run.stream.refusal.detail}` : ""}</p> : (
           <>
             <pre className="output reply">{deltas.slice(0, shown || (replaying ? 0 : deltas.length)).map((d) => d.text).join("")}{replaying && shown < deltas.length ? "▍" : ""}</pre>
-            <p className="muted fine">{deltas.length} deltas over {latency(total)} as the route sent them (first byte {latency(run.stream.firstByteMs)} after the request); the replay keeps their spacing — a recording, not an animation.</p>
+            <p className="muted fine">{deltas.length} deltas over {latency(total)} as the route sent them (first byte {latency(run.stream.firstByteMs)} after the POST); the replay keeps every gap as recorded — a recording, not an animation.</p>
           </>
         )}
         {result ? (
@@ -106,7 +106,6 @@ function HostedPanel({ run }: { run: HostedRun }) {
               <dl className="kv">
                 <div><dt>temperature</dt><dd>{run.compat.request.temperature} <span className="refusal">ignored</span></dd></div>
                 <div><dt>top_p</dt><dd>{run.compat.request.top_p} <span className="refusal">ignored</span></dd></div>
-                <div><dt>max_tokens</dt><dd>{run.compat.request.max_tokens}</dd></div>
                 <div><dt>variables</dt><dd>{run.compat.request.variables.join(", ") || "—"} <span className="muted">via airprompter.variables</span></dd></div>
               </dl>
             </div>
@@ -117,7 +116,7 @@ function HostedPanel({ run }: { run: HostedRun }) {
                   {Object.entries(inference).map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{String(v)}</dd></div>)}
                 </dl>
               ) : <p className="muted fine">no inference block on the catalogue</p>}
-              <p className="muted fine">from the hosted catalogue (GET …/slots): the response carries no inference block; the release owns these, never the caller.</p>
+              <p className="muted fine">from the hosted catalogue (GET …/slots): the response carries no inference block; the release owns these — temperature, top-p and the output cap — never the caller.</p>
             </div>
           </div>
           {run.compat.response.error ? <p className="problem fine">the endpoint answered: {JSON.stringify(run.compat.response.error)}</p> : <pre className="output">{run.compat.response.text ?? ""}</pre>}

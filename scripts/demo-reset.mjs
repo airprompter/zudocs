@@ -3,8 +3,10 @@
  * Reset means advance. After a session the fleet holds whatever the beats left: an experiment, a freeze, a pinned
  * policy, a forced downgrade, a queue of nudges, a cut wire, a day's records. Nothing is restored — generations are
  * monotonic, a tightened pin loosens only on the host, a rollback holds a host back until something newer lands —
- * so the reset moves forward: it ends the experiments, lifts the freeze, puts the policies back where the drills
- * changed them, purges the nudge queue, restores the wire, promotes TWO fresh canonical generations (the
+ * so the reset moves forward: it ends the experiments, lifts the freeze, puts the us-east host's policy back to
+ * `auto` (an operator's act through the SDK; the eu-west daemon's policy is its unit's flag, which no drill changes),
+ * waits for a replay in flight, purges the nudge queue (then waits the minute SQS asks for before the next message),
+ * restores the wire, promotes TWO fresh canonical generations (the
  * escalation summary's output cap +1 and +2: real changes, so each seals to a new digest) and approves each on
  * eu-west so every store holds two releases (a rollback needs a previous one), nudges the fleet after each, clears
  * the desk's records and re-seeds the inbox, resets the day counter, bumps the desk Lambda's `STATE_EPOCH` (new
@@ -70,7 +72,7 @@ say("2. freeze");
   else { const { pointer } = await con.freeze({ environment: ENV, frozen: false, notes: "Zudocs reset: unfrozen" }); did(`unfrozen (generation ${pointer.generation})`); }
 }
 
-// --- 3. policies back where the drills changed them --------------------------------------------------------------------
+// --- 3. the us-east host's policy (the one a drill can loosen or tighten) --------------------------------------------
 say("3. policies");
 {
   const state = await desk.state();
@@ -78,14 +80,22 @@ say("3. policies");
   if (east?.effective === "auto") found(`us-east: auto (${east.source})`);
   else if (dryRun) found(`us-east: would set auto (now ${east?.effective} ${east?.source})`);
   else { const r = await desk.api("POST", "/presenter/policy", { value: "auto" }); did(`us-east: ${r.json.message ?? JSON.stringify(r.json).slice(0, 200)}`); }
-  if (state.features?.hostCli) {
-    const shown = await desk.api("POST", "/presenter/host_cli", { command: "policy show" });
-    const effective = shown.json.document?.applyPolicy?.effective ?? shown.json.document?.applyPolicy?.value ?? null;
-    if (shown.status !== 200) found(`eu-west: policy show ${shown.json.status ?? shown.status} — ${String(shown.json.message ?? "").slice(0, 160)}`);
-    else if (effective === "unlock_required") found(`eu-west: unlock_required (${shown.json.document?.applyPolicy?.source})`);
-    else if (dryRun) found(`eu-west: would set unlock_required (now ${effective})`);
-    else { const r = await desk.api("POST", "/presenter/host_cli", { command: "policy set unlock_required" }); did(`eu-west: ${r.json.summary ?? r.json.message}`); }
-  } else found("eu-west: no host CLI on this deployment");
+  found("eu-west: the daemon runs --apply-policy unlock_required (its unit's flag); no drill changes it, nothing to put back");
+}
+
+// --- 3b. a replay in flight keeps writing runs for up to five minutes: let it finish before the tables are cleared ------
+say("3b. runs in flight");
+{
+  const recent = await desk.eventsSince(new Date(Date.now() - 6 * 60_000).toISOString());
+  const queued = recent.filter((e) => e.kind === "presenter" && e.action === "replay");
+  const done = recent.filter((e) => e.kind === "replay_done");
+  if (queued.length <= done.length) found("no replay in flight");
+  else if (dryRun) found(`would wait for ${queued.length - done.length} replay(s) in flight`);
+  else {
+    const before = done.length;
+    await desk.waitFor("the replay in flight to finish", async () => ((await desk.eventsSince(new Date(Date.now() - 12 * 60_000).toISOString())).filter((e) => e.kind === "replay_done").length > before ? true : null), { timeoutMs: 330_000, everyMs: 10_000 }).catch(() => found("the replay did not report done within five and a half minutes; going on"));
+    did("the replay in flight finished");
+  }
 }
 
 // --- 4. the nudge queue and the wire --------------------------------------------------------------------------------
@@ -97,7 +107,8 @@ say("4. the nudge queue and the wire");
   else {
     try {
       await new SQSClient({ region: fleetRegion }).send(new PurgeQueueCommand({ QueueUrl: fleet.NudgeQueueUrl }));
-      did(`purged ${fleet.NudgeQueueUrl.split("/").pop()}`);
+      did(`purged ${fleet.NudgeQueueUrl.split("/").pop()}; waiting 60 s (a message sent within a minute of a purge may be deleted with it)`);
+      await sleep(60_000);
     } catch (error) {
       if (error.name === "PurgeQueueInProgress") found("a purge is already in progress (one per minute)");
       else throw error;
@@ -119,11 +130,24 @@ const promoted = [];
 const approveOnEuWest = async (generation) => {
   const euRow = await desk.hostRow(EU);
   if (!euRow) { found("eu-west has no status row; nothing to approve"); return null; }
-  const pending = await desk.waitFor(`eu-west to stage #${generation}`, async () => (await desk.approvals()).find((a) => a.hostId === EU && a.generation === generation && a.decision === "pending") ?? null, { timeoutMs: 180_000 });
+  if (Date.now() - Date.parse(euRow.writtenAt) > 15 * 60_000) { found(`eu-west's row is ${Math.round((Date.now() - Date.parse(euRow.writtenAt)) / 60_000)} min old (the host is down or replacing itself); not waiting for its approval`); return null; }
+  // Either the pending row appears, or the host is already at the generation (an operator's unlock, a window, or a
+  // row settled by the worker): both are "done".
+  const found_ = await desk.waitFor(`eu-west to stage #${generation}`, async () => {
+    const row = (await desk.approvals()).find((a) => a.hostId === EU && a.generation === generation);
+    if (row?.decision === "pending") return { pending: row };
+    if (row && ["approved", "activated", "superseded"].includes(row.decision)) return { settled: row };
+    const host = await desk.hostRow(EU);
+    if (Number(host?.status?.generation) >= generation) return { live: host };
+    return null;
+  }, { timeoutMs: 180_000 });
+  if (found_.live) { found(`eu-west already serves #${found_.live.status.generation}`); return null; }
+  if (found_.settled) { found(`eu-west's row for #${generation} is already ${found_.settled.decision}`); return found_.settled; }
+  const pending = found_.pending;
   const decided = await desk.api("POST", `/approvals/${encodeURIComponent(pending.approvalId)}/approve`, {});
   did(`approved #${generation} on eu-west (${decided.json.already ? "already decided" : "decided now"})`);
-  const activated = await desk.waitFor(`eu-west to activate #${generation}`, async () => (await desk.approvals()).find((a) => a.approvalId === pending.approvalId && a.decision === "activated") ?? null, { timeoutMs: 120_000 });
-  did(`eu-west activated #${generation} at ${activated.activatedAt}`);
+  const activated = await desk.waitFor(`eu-west to activate #${generation}`, async () => (await desk.approvals()).find((a) => a.approvalId === pending.approvalId && ["activated", "superseded"].includes(a.decision)) ?? null, { timeoutMs: 120_000 });
+  did(`eu-west ${activated.decision} #${generation} at ${activated.activatedAt ?? activated.updatedAt}`);
   return activated;
 };
 for (const step of [1, 2]) {

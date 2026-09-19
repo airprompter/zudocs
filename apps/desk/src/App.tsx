@@ -17,7 +17,7 @@ import { Approvals } from "./components/Approvals";
 import { Experiments } from "./components/Experiments";
 import { HostCards } from "./components/HostCards";
 import { Inbox } from "./components/Inbox";
-import { Presenter } from "./components/Presenter";
+import { Presenter, type CliOutput } from "./components/Presenter";
 import { ReleaseBar } from "./components/ReleaseBar";
 import { TicketView } from "./components/TicketView";
 import { Timeline } from "./components/Timeline";
@@ -25,12 +25,19 @@ import { mergeEvents } from "./format";
 
 export interface Notice { tone: "info" | "warn" | "error"; text: string }
 
+/** The newest host-CLI answer on the timeline (the job writes it there), for the presenter panel. */
+function newestCli(events: TimelineEvent[]): CliOutput | null {
+  const row = [...events].reverse().find((e) => e.kind === "host_cli");
+  if (!row) return null;
+  return { command: String(row.command ?? ""), summary: String(row.summary ?? ""), document: row.document ?? null, stdout: String(row.stdout ?? ""), status: String(row.status ?? ""), at: row.at };
+}
+
 export function App({ api, config, who, onSignOut }: { api: Api; config: DeskConfig; who: string; onSignOut: () => void }) {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [runs, setRuns] = useState<AnyRun[]>([]);
   const [arms, setArms] = useState<Arms | null>(null);
-  const [cliOutput, setCliOutput] = useState<{ command: string; summary: string; document: unknown; stdout: string; status: string; at: string } | null>(null);
+
   const [state, setState] = useState<State | null>(null);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
   const [approvals, setApprovals] = useState<Approval[]>([]);
@@ -133,21 +140,8 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
     await loadEvents();
   });
   const presenter = (action: string, body?: Record<string, unknown>) => act(action, async () => {
-    let result: Record<string, unknown>;
-    try {
-      result = await api.presenter(action, body);
-    } catch (error) {
-      // A host CLI command the host refused (exit 1) answers 502 with the CLI's own document: show it, it is the drill.
-      if (action === "host_cli" && error instanceof ApiError && error.status === 502 && typeof error.body.line === "string") {
-        setCliOutput({ command: String(body?.command ?? ""), summary: String(error.body.summary ?? error.body.message ?? ""), document: error.body.document ?? null, stdout: String(error.body.stdout ?? ""), status: String(error.body.status ?? "Failed"), at: new Date().toISOString() });
-        say("warn", error.message);
-        await loadEvents();
-        return;
-      }
-      throw error;
-    }
+    const result = await api.presenter(action, body);
     say("info", typeof result.message === "string" ? result.message : `${action}: done`);
-    if (action === "host_cli") setCliOutput({ command: String(body?.command ?? ""), summary: String(result.summary ?? ""), document: result.document ?? null, stdout: String(result.stdout ?? ""), status: String(result.status ?? ""), at: new Date().toISOString() });
     await Promise.all([loadState(), loadEvents(), action === "seed" || action === "reset" ? loadTickets() : Promise.resolve(), action === "reset" || action === "replay" ? loadArms() : Promise.resolve(), action === "reset" ? loadApprovals() : Promise.resolve()]);
     if (action === "seed" || action === "reset") { setRuns([]); if (action === "reset") { setEvents([]); lastEventAt.current = null; } }
   });
@@ -178,7 +172,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
         <aside className="side">
           <Approvals approvals={approvals} busy={busy} onApprove={approve} />
           <HostCards state={state} />
-          <Presenter state={state} busy={busy} selectedTicketId={selectedId} onAction={presenter} environment={config.environment} agentId={config.agentId} cliOutput={cliOutput} />
+          <Presenter state={state} busy={busy} selectedTicketId={selectedId} onAction={presenter} environment={config.environment} agentId={config.agentId} cliOutput={newestCli(events)} />
           <Timeline events={events} />
         </aside>
       </div>

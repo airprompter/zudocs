@@ -47,7 +47,7 @@ export interface HostedRun {
   catalogue: { generation: number; releaseDigest: string; slot: { tag: string; model: string; inference: Record<string, unknown> | null; variables: string[] } | null; experiments: Array<{ experimentId: string; tag: string | null; arms: string[] }> };
   stream: { deltas: Array<{ atMs: number; text: string }>; firstByteMs: number | null; result: { runId: string; runRef: string; output: string; model: string; versionId: string; arm: string; generation: number; usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number }; latencyMs: number; priceMicros: number; priceBookRevision: string; stopReason: string; source: string } | null; refusal: HostedRefusal | null };
   feedback: { accepted: boolean; attributedTo: Record<string, unknown> | null; refusal: HostedRefusal | null } | null;
-  compat: { request: { url: string; model: string; temperature: number; top_p: number; max_tokens: number; variables: string[] }; response: { status: number; runRef: string | null; runId: string | null; model: string | null; finishReason: string | null; usage: Record<string, unknown> | null; text: string | null; error: Record<string, unknown> | null }; ignored: string[] } | null;
+  compat: { request: { url: string; model: string; temperature: number; top_p: number; variables: string[] }; response: { status: number; runRef: string | null; runId: string | null; model: string | null; finishReason: string | null; usage: Record<string, unknown> | null; text: string | null; error: Record<string, unknown> | null }; ignored: string[] } | null;
   durationMs: number; ok: boolean; gaps: string[];
 }
 export type AnyRun = Run | HostedRun;

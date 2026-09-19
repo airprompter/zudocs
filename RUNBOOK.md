@@ -10,7 +10,7 @@ name — never argv, never git, never a log, never a GitHub secret.
 | Secret | Lives | Written by | Read by | Rotate |
 |---|---|---|---|---|
 | Agent key, dev (`zudocs-support`) | SSM SecureString `/zudocs/dev/agent-key` in us-east-1 (`alias/zudocs-desk`), eu-west-1 and ap-southeast-1 (`alias/aws/ssm`); the owner's `~/.config/zudocs/dev.env` (0600) | `scripts/ssm-put-agent-key.sh` from the env file, per region | us-east: the desk Lambda at cold start; eu-west: `zudocs-agent-key` into `/etc/airprompter/airprompterd.env` at every daemon start; ap-southeast: the puller at cold start | mint a second key in the console (two live per target), put it in all three regions, restart the daemon (`sudo systemctl restart airprompterd` through Run Command) and bump the desk Lambda's `STATE_EPOCH` (a new container reads the new value), revoke the old one |
-| Staging run key (`agent_run`, staging) | SSM SecureString `/zudocs/staging/run-key` in us-east-1 (`alias/zudocs-desk`); the put-parameter document the console script wrote, 0600 | the owner: mint in the console (Settings › Keys › run key, target staging) or the phase-6 script, then `aws ssm put-parameter --cli-input-json file://…` | the desk Lambda on the first *Run on staging* | mint, put, bump `STATE_EPOCH`, revoke |
+| Staging run key (`agent_run`, staging) | SSM SecureString `/zudocs/staging/run-key` in us-east-1 (`alias/zudocs-desk`) only | the owner: mint in the console (Settings › Keys › run key, target staging), write the put-parameter document to a 0600 temp file outside any repository, `aws ssm put-parameter --cli-input-json file://…`, delete the file | the desk Lambda on the first *Run on staging* | mint, put, bump `STATE_EPOCH`, revoke |
 | CI vendoring agent's key (`zudocs-ci`, dev) | the owner's `~/.config/zudocs/ci.env` (0600) only — never SSM, never CI | the console | `scripts/vendor.sh` on the owner's laptop | mint, replace the file, revoke |
 | Session token (`airprompter login`) | the environment for the length of a terminal | `airprompter login` (password from `AIRPROMPTER_PASSWORD`) | `demo:console`, `demo:dryrun`, `demo:reset`, `prompts:seed` | expires in about an hour; log in again |
 | Proof user's password (`proof@zudocs.com`) | the owner's password store; `ZUDOCS_PROOF_PASSWORD` in the environment | `scripts/cognito-users.sh proof` | the proofs, the dry run, the reset (they sign in through the `proof` client) | `cognito-users.sh proof` again with a new password |
@@ -49,11 +49,14 @@ node scripts/strips/apply-window.mjs --state-dir ./window             # apply.wi
 ```
 
 On the eu-west host the same commands run as the daemon's user through `zudocs-cli` (`sudo zudocs-cli status
---json`, `doctor`, `unlock`, `rollback`, `policy show|set`) — through Session Manager's Run Command from a laptop
+--json`, `doctor`, `unlock`, `rollback`, `policy show`) — through Session Manager's Run Command from a laptop
 (`npm run eu:proof -- --cli "policy show"`), or one click on the desk's presenter panel (the *eu-west shell* row:
-`policy show`, `status`, `doctor`, `unlock`, `rollback`, `policy set auto|unlock_required` — an allowlist; the
-Lambda's role may run Run Command's shell document only on the instance carrying the `zudocs-eu-host` Name tag).
-`apply` is not on the host's list: the daemon owns that store, and a second writer is not a drill.
+`policy show`, `status`, `doctor`, `unlock`, `rollback` — an allowlist; the API queues the command as a job the
+Lambda hands itself and the CLI's document lands on the timeline, because the HTTP API caps an integration at 30 s;
+the Lambda's role may run Run Command's shell document only on the instance carrying the `zudocs-eu-host` Name
+tag). Not on the list: `apply` (the daemon owns that store; a second writer is not a drill) and `policy set` (the
+daemon runs with `--apply-policy unlock_required`, a local policy the CLI's `policy set` does not loosen — the
+loosening drill is the us-east host's own `setApplyPolicy`, the presenter's *set auto*).
 
 The console's acts (`npm run demo:console -- <act>`): `board`, `change-words`, `experiment start|triage|dial
 <pct>|winner|end|read`, `freeze|unfreeze`, `drill seal-placeholder|model-required|golden-fail`, `advance`,
@@ -73,9 +76,9 @@ demo:dryrun -- --hosted` after the fix lands; the assertion becomes the full run
 
 ## Replacing a host
 
-- **us-east (Lambda)**: nothing to replace; a new container is a new store. `STATE_EPOCH` (the reset bumps it; CI
-  puts the stack's value back on the next deploy, which is also a new container) forces every container to start
-  from an empty state directory.
+- **us-east (Lambda)**: nothing to replace; a new container is a new store. `STATE_EPOCH` (the reset bumps it
+  through `UpdateFunctionConfiguration`; a later deploy that touches the function puts the stack's value back, which
+  is also a new container) forces every container to start from an empty state directory.
 - **eu-west**: any change under `services/eu-host/` or to its `pins.json` replaces the instance on the next deploy
   (`CONTRIBUTING.md`). A fresh instance is a fresh store: its first release lands **staged** under
   `unlock_required` — approve it on the desk (`npm run eu:proof -- --approve` proves it). The sticky flags from a
@@ -89,14 +92,16 @@ demo:dryrun -- --hosted` after the fix lands; the assertion becomes the full run
 
 `npm run demo:reset` (session token, `ZUDOCS_PROOF_PASSWORD`, `AWS_PROFILE=zudocs`; `--dry-run` says what it would
 do). In order: end every live experiment (roll back to the control — a new generation without the split), unfreeze,
-put the policies back (us-east `setApplyPolicy("auto")` through the SDK; eu-west `policy set unlock_required` on
-the host when a drill loosened it), purge the nudge queue, restore the wire, promote two fresh canonical
+put the us-east host's policy back to `auto` (`setApplyPolicy` through the SDK; the eu-west daemon's policy is its
+unit's flag and no drill changes it), wait for a replay in flight, purge the nudge queue and wait the minute SQS asks
+for, restore the wire, promote two fresh canonical
 generations (the canonical pins in `airprompter.config.json` › `canonical`, the escalation summary's output cap +1
 each time — a real change, so each seals to a new digest; a store then holds two releases and `rollback` has
 somewhere to go) and approve each on eu-west, nudging the fleet after each, clear the desk's runs, feedback,
 approvals, events and counters and re-seed the inbox, bump the desk Lambda's `STATE_EPOCH`, then wait until every
 reporting status row is at the last generation (the air-gapped host counts only while it is up). Idempotent:
-every step reads first and says *found* or *did*. Twenty sessions ≈ 160 generations.
+every step reads first and says *found* or *did*; an eu-west row already at the generation, or already settled,
+counts as done. Twenty sessions ≈ 160 generations.
 
 What it does not do, on purpose: restore an old generation (anti-rollback), loosen a pin from the console (a
 manifest may only tighten), or delete the organisation's rollout results (thumbs filed during a session stay).
@@ -114,7 +119,8 @@ git checkout -b vendor/gen-N && git add vendored/ && git commit                 
 gh pr create --body-file <the diff block>            # the Vendored bundle workflow runs on the PR
 ```
 
-The weekly workflow (`.github/workflows/vendored.yml`, Mondays 06:17 UTC and on every change under `vendored/`)
+The vendored bundle expires (`notAfter`, 90 days from the pull): the weekly job goes red the week it does — that is the
+point — and `npm run vendor` on a fresh pull request is the fix. The weekly workflow (`.github/workflows/vendored.yml`, Mondays 06:17 UTC and on every change under `vendored/`)
 downloads the released CLI (digest pinned in the workflow), runs `airprompter verify … --hosted-environment dev`
 against `keys/dev.root.jwk.json`, checks the bundle is the CI agent's, runs the verify GitHub action pinned by
 commit (`continue-on-error` until it accepts a hosted environment — SDK #50 — the direct verify step is the gate),
@@ -134,6 +140,9 @@ on-demand tables, one `t4g.micro`, two Lambdas and the desk's CloudFront — Bud
 - us-east stays *staged* after a promotion: the golden set failed (the card's *golden* line); `advance`.
 - eu-west shows *forced downgrade*: a rollback drill; the next promotion carries it forward (`advance`, approve).
 - eu-west shows *staged* and nobody approved: the Approvals section; a fresh instance always starts this way.
+  After the model-required drill the staged row is the release no worker can serve — do not approve it; `advance`.
+- us-east answers `502 no_verified_release` on every run: a fresh container booted while the golden-failing release
+  was promoted and has nothing active; `advance`, then **Sync now**.
 - The puller says `agent_key_unreadable`: the ap-southeast-1 parameter is missing (`ssm-put-agent-key.sh` with
   `AWS_REGION=ap-southeast-1 ZUDOCS_SSM_KEY_ID=alias/aws/ssm`).
 - *Run on staging* answers `hosted_not_configured`: the stack has no run URL (`airprompter.config.json`) or the

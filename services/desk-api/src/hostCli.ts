@@ -4,12 +4,15 @@
  * Session Manager's Run Command, targeted by the instance's Name tag — the desk never learns an instance id and
  * never opens a shell. The command's own JSON document comes back as the CLI printed it; the CLI prints no key at
  * any verbosity (its own rule), and the allowlist takes no arguments from the request beyond the command's name,
- * so nothing typed on the desk reaches a shell. `policy set` is the one command with a value, and it is one of two.
+ * so nothing typed on the desk reaches a shell.
  *
- * What the drills use: `policy show` ("the console says auto, this host says pinned: unlock_required"), `policy set`
- * (the operator's loosening — the only way a pin loosens), `rollback` (a forced downgrade the fleet page reports),
- * `unlock` (the operator's activation), `status` and `doctor` (what the host says about itself, `file_key` and all).
- * `apply --force` needs a bundle file on the host and is a laptop drill in `docs/strips/` instead.
+ * What the drills use: `policy show` ("the console says auto, this host says unlock_required — local"), `rollback` (a
+ * forced downgrade the fleet page reports), `unlock` (the operator's activation), `status` and `doctor` (what the host
+ * says about itself, `file_key` and all). Not on the list: `policy set` — the daemon runs with `--apply-policy
+ * unlock_required`, a local policy no `policy set` loosens (the operator's loosening is the us-east host's own
+ * `setApplyPolicy`, a presenter action of its own); and `apply --force`, which needs a bundle file on the host and is a
+ * laptop drill in `docs/strips/` instead. The command runs as a job the function hands itself; the answer lands on
+ * the timeline (the HTTP API caps an integration at 30 s and `doctor` can take a minute).
  *
  * @example
  * ```ts
@@ -24,13 +27,11 @@ export const HOST_CLI_COMMANDS: Readonly<Record<HostCliCommand, string>> = Objec
   "status": "zudocs-cli status --json",
   "doctor": "zudocs-cli doctor --json",
   "policy show": "zudocs-cli policy show --json",
-  "policy set auto": "zudocs-cli policy set auto --by desk --json",
-  "policy set unlock_required": "zudocs-cli policy set unlock_required --by desk --json",
   "unlock": "zudocs-cli unlock --json",
   "rollback": "zudocs-cli rollback --json",
 });
 
-export type HostCliCommand = "status" | "doctor" | "policy show" | "policy set auto" | "policy set unlock_required" | "unlock" | "rollback";
+export type HostCliCommand = "status" | "doctor" | "policy show" | "unlock" | "rollback";
 
 export const isHostCliCommand = (value: unknown): value is HostCliCommand => typeof value === "string" && Object.prototype.hasOwnProperty.call(HOST_CLI_COMMANDS, value);
 

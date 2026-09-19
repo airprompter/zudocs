@@ -16,11 +16,13 @@ import type { Approval, Ramp } from "../api";
 import { TOOLTIPS, ago, clock, slotShort } from "../format";
 
 const pct = (bps: number) => `${Math.round(bps / 100)} %`;
+/** The candidate arm's index in the manifest's arm order (control first by the platform's rule; found by name, not assumed). */
+const candidateIndex = (arms: string[]) => Math.max(0, arms.indexOf("candidate"));
 function RampLine({ ramps }: { ramps: Ramp[] | undefined }) {
   if (!ramps?.length) return null;
   return (
     <p className="fine ramp">
-      {ramps.map((r) => <span key={r.experimentId}><strong>{r.tag ? slotShort(r.tag) : "every slot"} experiment</strong>: {r.arms.map((arm, i) => `${arm} ${pct(r.weightBps[i] ?? 0)}`).join(" · ")} · plan {r.plan.map((p) => pct(p.weightBps[1] ?? 0)).join(" → ")} · </span>)}
+      {ramps.map((r) => <span key={r.experimentId}><strong>{r.tag ? slotShort(r.tag) : "every slot"} experiment</strong>: {r.arms.map((arm, i) => `${arm} ${pct(r.weightBps[i] ?? 0)}`).join(" · ")} · plan {r.plan.map((p) => pct(p.weightBps[candidateIndex(r.arms)] ?? 0)).join(" → ")} · </span>)}
       <span className="muted">one approval unlocks the whole plan; the host walks it on its own clock (read by {ramps[0]!.readBy ?? "us-east"} from the same signed manifest)</span>
     </p>
   );

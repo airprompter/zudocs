@@ -45,7 +45,10 @@ mkdir -p "$CACHE"
 TMP="${TMPDIR:-/tmp}"; WORK="$(mktemp -d "${TMP%/}/zudocs-strip-XXXXXX")"
 STATE="$WORK/state"
 OUT="$STRIPS/cli.txt"
+# Two scopes: the commands that take a root (pull, verify, apply, diff, doctor) also take --hosted-environment; the
+# store commands (status, unlock, rollback, policy) take the agent and environment only.
 SCOPE=(--org "$ORG" --agent "$AGENT" --environment "$ENV" --hosted-environment "$HOSTED")
+STORE=(--agent "$AGENT" --environment "$ENV")
 
 : > "$OUT"
 say() { printf '%s\n' "$*" | tee -a "$OUT"; }
@@ -78,24 +81,24 @@ else
   say "# (no earlier generation in the cache yet: diff --against and the forced downgrade need a second strip run)"
 fi
 run apply "$WORK/current.apbundle" "${SCOPE[@]}" --root "$KEYS" --state-dir "$STATE"
-run status "${SCOPE[@]}" --state-dir "$STATE"
+run status "${STORE[@]}" --state-dir "$STATE"
 if [ -f "$WORK/previous.apbundle" ]; then
-  run rollback "${SCOPE[@]}" --state-dir "$STATE"
-  run status "${SCOPE[@]}" --state-dir "$STATE"
+  run rollback "${STORE[@]}" --state-dir "$STATE"
+  run status "${STORE[@]}" --state-dir "$STATE"
 fi
-run unlock "${SCOPE[@]}" --state-dir "$STATE"
-run policy show "${SCOPE[@]}" --state-dir "$STATE"
-run policy set unlock_required "${SCOPE[@]}" --state-dir "$STATE" --by "the strip"
+run unlock "${STORE[@]}" --state-dir "$STATE"
+run policy show "${STORE[@]}" --state-dir "$STATE"
+run policy set unlock_required "${STORE[@]}" --state-dir "$STATE" --by "the strip"
 if [ -f "$WORK/previous.apbundle" ]; then
   # Under unlock_required the newer bundle stages; the operator's unlock names the generation a change ticket would.
   run apply "$WORK/current.apbundle" "${SCOPE[@]}" --root "$KEYS" --state-dir "$STATE"
-  run unlock "${SCOPE[@]}" --state-dir "$STATE" --generation "$GEN"
-  run status "${SCOPE[@]}" --state-dir "$STATE"
+  run unlock "${STORE[@]}" --state-dir "$STATE" --generation "$GEN"
+  run status "${STORE[@]}" --state-dir "$STATE"
   run apply "$WORK/previous.apbundle" "${SCOPE[@]}" --root "$KEYS" --state-dir "$STATE"
   run apply "$WORK/previous.apbundle" "${SCOPE[@]}" --root "$KEYS" --state-dir "$STATE" --force
-  run status "${SCOPE[@]}" --state-dir "$STATE"
+  run status "${STORE[@]}" --state-dir "$STATE"
 fi
-run policy set auto "${SCOPE[@]}" --state-dir "$STATE" --by "the strip"
+run policy set auto "${STORE[@]}" --state-dir "$STATE" --by "the strip"
 run doctor "${SCOPE[@]}" --root "$KEYS" --base-url "$BASE" --edge-pointer-url "$POINTER" --state-dir "$STATE"
 run export-telemetry "${SCOPE[@]}" --state-dir "$STATE" --out "$WORK/laptop.aptelemetry"
 run telemetry verify --budget 4194304 --sink-absent

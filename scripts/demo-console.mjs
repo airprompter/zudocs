@@ -21,13 +21,13 @@
  * npm run demo:console -- drill seal-placeholder      # beat 5: the seal refuses {{region_note}}
  * npm run demo:console -- drill model-required        # beat 5: a required model no host reports — sealed, promoted, refused by every host
  * npm run demo:console -- drill golden-fail           # beat 5: a triage version the golden set refuses — staged on us-east, not activated
- * npm run demo:console -- advance                     # a fresh canonical generation (the summary's cap +1): the reset's move
+ * npm run demo:console -- advance                     # a fresh generation from the current pins (the summary's cap +1); past a drill
  * npm run demo:console -- staging promote             # hosted staging: the dev pins sealed for staging and promoted
  * ```
  */
 import { readConfig, secretFromEnv } from "./lib/config.mjs";
 import { createConsole, withPin } from "./lib/console.mjs";
-import { BEATS, RAMP, canonicalPins, releaseLine } from "./lib/demo.mjs";
+import { BEATS, RAMP, releaseLine } from "./lib/demo.mjs";
 
 const args = process.argv.slice(2);
 const command = args[0] ?? "board";
@@ -165,12 +165,17 @@ switch (command) {
     break;
   }
   case "advance": {
-    const v = await con.newVersion({ tag: "support.escalate.summary", inference: (current) => ({ ...current, maxOutputTokens: Number(current.maxOutputTokens ?? 400) + 1 }), message: "Reset means advance: the summary's cap +1" });
+    // A fresh generation from where the environment IS (the current pins, the summary's cap +1) — after beat 4 the
+    // reply is the winner's version and stays so; the reset, not this, goes back to the canonical pins.
+    const v = await con.newVersion({ tag: "support.escalate.summary", inference: (current) => ({ ...current, maxOutputTokens: Number(current.maxOutputTokens ?? 400) + 1 }), message: "Advance: the summary's cap +1" });
     say(`  support.escalate.summary: version ${v.versionId} (cap ${v.inference?.maxOutputTokens})`);
-    const pins = canonicalPins(config, { "support.escalate.summary": { versionId: v.versionId } });
-    const release = describeSeal(await con.seal({ environment: ENV, pins, notes: `Zudocs reset: a fresh canonical generation (summary cap ${v.inference?.maxOutputTokens})` }));
+    const current = (await con.pins(ENV)).map(({ tag, versionId, model }) => ({ tag, versionId, model }));
+    // A pin on a model this fleet does not report (the model-required drill) goes back to its canonical pin; the rest stay.
+    const healed = current.map((p) => (config.models.includes(p.model) || !config.canonical[p.tag] ? p : { tag: p.tag, ...config.canonical[p.tag] }));
+    const pins = withPin(healed, "support.escalate.summary", { versionId: v.versionId });
+    const release = describeSeal(await con.seal({ environment: ENV, pins, notes: `Zudocs demo: advance (summary cap ${v.inference?.maxOutputTokens})` }));
     if (!release) process.exit(1);
-    const pointer = await con.promote({ environment: ENV, releaseDigest: release.releaseDigest, notes: "Zudocs reset: advance" });
+    const pointer = await con.promote({ environment: ENV, releaseDigest: release.releaseDigest, notes: "Zudocs demo: advance" });
     say(`  promoted: ${ENV} is at generation ${pointer.generation}`);
     break;
   }

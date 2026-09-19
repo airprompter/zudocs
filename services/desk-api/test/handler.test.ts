@@ -128,7 +128,7 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
       golden: async () => ({ text: "{}", outputTokens: 2 }),
     },
     hosted: null,
-    hostCli: async (command) => { calls.push(`host_cli:${command}`); return { command, line: `zudocs-cli ${command} --json`, status: "Success" as const, instanceId: "i-eu", document: command === "policy show" ? { via: "daemon", applyPolicy: { effective: "unlock_required", source: "local", manifestSaid: "auto" } } : command === "rollback" ? { generation: 3, previousGeneration: 4, forced: true, outcome: "rolled_back" } : { ok: true }, stdout: "{}", stderr: "", durationMs: 1200 }; },
+    hostCli: async (command) => { calls.push(`host_cli:${command}`); return { command, line: `zudocs-cli ${command} --json`, status: "Success" as const, instanceId: "i-eu", document: command === "policy show" ? { via: "daemon", applyPolicy: { effective: "unlock_required", source: "local", manifestSaid: "auto" } } : command === "rollback" ? { generation: 3, forced: true, outcome: "rolled_back" } : { ok: true }, stdout: "{}", stderr: "", durationMs: 1200 }; },
     startedAt: "2026-09-18T10:00:00Z",
     sdk: "agent-sdk-ts/test",
     invocations: 0,
@@ -181,7 +181,7 @@ test("the cap: the third run of a two-run day is refused with 429 and its reason
   assert.equal(body.error, "daily_cap");
   assert.equal(body.used, 2);
   assert.match(body.message, /Nothing was simulated/);
-  assert.equal(host.calls.length, before, "no invoke, no model call");
+  assert.deepEqual(host.calls.slice(before).filter((c) => c !== "invoke"), [], "no model call (the invoke runs for its sync pass, then the cap refuses)");
   const refusal = host.store.events.at(-1)!;
   assert.equal(refusal.kind, "cap_refused");
   assert.equal(refusal.capDay, body.day, "the day rides as capDay: `day` is the events table's partition key and never comes back to the timeline");

@@ -101,13 +101,17 @@ on all of them.* The same-customer-same-arm point is beat 4.
 The approval was beat 1: AirPrompter *stages*; the owner activates, through the desk or through `airprompter
 unlock` on the host; the console can only *request* an unlock (its note shows on the row when there is one).
 
-Now the freeze. Terminal: `npm run demo:console -- freeze`. Desk, within ten seconds (or **Sync now**): the release
-bar turns red — **FROZEN — every Run refuses**, with the SDK's reason; every **Run**, **Escalate** and **Run on
-staging** button greys; click **Run** on any ticket to show the refusal (`HTTP 423 frozen`) — no model was called,
-no cap slot taken. The eu-west card shows *frozen: yes* within a minute (a signed `disable` directive is honoured
-the moment a manifest verifies, before any approval — say that). `npm run demo:console -- unfreeze`: the bar
-clears, the buttons return, a run answers. The freeze and the unfreeze each sealed a generation; on eu-west they
-show as staged rows you need not approve — the next promotion supersedes them.
+Now the freeze. Terminal: `npm run demo:console -- freeze`. Desk, on the next poll (ten seconds; every poll syncs
+first, so every warm container tells the same story): the release bar turns red — **FROZEN — every Run refuses** —
+and the ticket card carries the band. Click **Run** on any ticket: the refusal comes back as itself, `HTTP 423
+frozen`, with the reason — no model was called, no cap slot taken (the check runs inside the invoke, after its sync,
+so the very first click after the freeze refuses too). Say: *a signed `disable` directive is honoured by the process that syncs the moment the manifest
+verifies — the Lambda stopped before anyone approved anything.* On eu-west the freeze is a generation like any
+other: the daemon verified it and staged it, but the workers attached to the daemon render from the active release
+until it is unlocked (the daemon hands them no standing directives — an SDK gap, filed), so the Approvals section
+shows the frozen generation staged: **Approve** it, and the eu-west card reads *frozen: yes* within thirty seconds.
+`npm run demo:console -- unfreeze`: the bar clears, the buttons return, a run answers on us-east; approve the
+unfreeze generation and eu-west lifts it too.
 
 ### 4 — Measure (desk + console, 3:30)
 
@@ -145,19 +149,26 @@ Each is one command; each prints the refusal as the platform gave it.
   does not declare: **the seal refuses** (`variable_undeclared: rev-N uses {{region_note}} …`). No runtime ever
   renders a literal placeholder.
 - `npm run demo:console -- drill model-required` — the reply pinned, as *required*, to a model no host reports.
-  The seal warns (`model_not_reported`) and seals; the promotion goes through; **every host refuses the release**
+  The seal warns (`model_not_reported`) and seals; the promotion goes through; **us-east refuses the release**
   (`status.lastRefusal: model_unavailable`, still serving the previous generation; AirPrompter's fleet page counts
-  the instances reporting the model unavailable). Then `npm run demo:console -- advance` to move past it.
+  the instances reporting the model unavailable). **eu-west stages it instead** — the released daemon declares no
+  model catalogue (`airprompterd` has no `--models`; the workers' catalogue never reaches the process that syncs —
+  SDK gap, filed), so the Approvals section shows it staged: **do not approve it**; say why. Then `npm run
+  demo:console -- advance` — the next promotion supersedes the staged row and puts the reply back on a model the
+  fleet reports.
 - `npm run demo:console -- drill golden-fail` — a triage version that answers `other`/`low` whatever the ticket
   says. us-east runs the golden set before activating (five cases against Nova Micro): **1/5 is below the 80 %
   floor, so the release stays staged — under `auto`**; the card reads *golden: 1/5 · below the floor — staged, not
   activated*. eu-west stages it too (do not approve). Click **Golden set now** on the presenter panel: the active
   release passes 5/5. `advance` to move past.
-- The eu-west shell row on the presenter panel (Run Command, the CLI's own document back): **policy show** — *in
-  force unlock_required (local); the console says auto — advisory here*; **rollback** — *generation G-1 live (was
-  G) — a forced downgrade, stamped on evidence*; the eu-west card reads *forced downgrade* and the fleet page shows
-  the instance's forced local rollback; the host is held back until the next promotion (`advance`), which lands
-  staged — approve it. **unlock** and **doctor** are there too.
+- The eu-west shell row on the presenter panel (Run Command; the API queues the command and the CLI's own document
+  lands on the timeline and under the buttons within seconds — `doctor` takes up to a minute): **policy show** —
+  *in force unlock_required (local); the console says auto — advisory here*; **rollback** — *generation G-1 live —
+  a forced downgrade, stamped on evidence*; the eu-west card reads *forced downgrade* and the fleet page shows the
+  instance's forced local rollback; the host is held back until the next promotion (`advance`), which lands staged —
+  approve it. **unlock**, **status** and **doctor** are there too. There is no `policy set` for that host: its daemon
+  runs with `--apply-policy unlock_required`, a local policy no `policy set` loosens; the loosening drill is the
+  us-east host's own **set auto / set unlock_required** (the SDK's `setApplyPolicy`, an operator's act).
 - `apply --force` and `apply.window` are laptop drills, recorded: `docs/strips/cli.txt` (the forced downgrade
   stamped on a laptop store) and `docs/strips/apply-window.txt` (a release staged under `unlock_required`,
   activated by the SDK on its own when a local window opened — `window_unlock` at +52 s).
@@ -193,9 +204,11 @@ step says so.
 
 ### 9 — Close (recorded, 0:30)
 
-`docs/strips/cli.txt`: `keygen`, `pull`, `verify`, `pull --check --max-behind`, `diff --against`, `apply`,
-`status`, `rollback`, `unlock`, `policy show/set`, `apply` under `unlock_required` → staged, `unlock --generation`,
-`apply --force`, `doctor`, `export-telemetry`, `telemetry verify`, `telemetry validate`. The opening beat in reverse:
+`docs/strips/cli.txt` (recorded by `npm run demo:strip` on a laptop store, twice — the second run has the previous
+generation to diff against and downgrade to): `keygen`, `pull`, `verify`, `pull --check --max-behind`, `diff
+--against`, `apply` (two generations), `status`, `rollback`, `unlock`, `policy show/set`, `apply` under
+`unlock_required` → staged, `unlock --generation`, `apply --force` (the forced downgrade, stamped), `doctor`,
+`export-telemetry`, `telemetry verify`, `telemetry validate`. The opening beat in reverse:
 `login` + `import` of a `prompts/` directory is how the prompts got into AirPrompter in phase 2 (docs/PROMPTS.md).
 
 ## After the session
@@ -219,12 +232,20 @@ hosted-staging click, the second split, the dial and the winner. 5:00.
 - **Golden sets run on us-east, not eu-west**: the SDK runs golden sets in the process that syncs and applies; on
   the daemon host that is `airprompterd`, and the released daemon has no golden hook or window flag (an attached
   worker cannot run them for a staged release). The desk shows us-east's verdict beside the eu-west approval row.
+- **A fresh us-east container during the golden-fail drill serves nothing**: its boot sync stages the failing
+  release and runs the golden set, which fails, so it has no active release — every run on that container answers
+  `502 no_verified_release` until `advance`. The warm containers keep serving. Do the drill quickly, or say so.
+- **The cold start now includes the golden set** (five Nova Micro calls after SSM, KMS and the sync): a first request
+  on a cold container can pass the API's 30-second cap and answer 503 once; the next request finds the warm
+  container. Click **Sync now** before beat 0 to warm it.
 - **`apply.window` is a laptop strip** for the same reason. The manifest's `unlockWindow` would reach the daemon,
   but setting one on the environment sets `unlock_required` on it (the platform refuses a window without it),
   which pins every host including the Lambda — which nobody can unlock. RUNBOOK.md says why we do not.
-- **The freeze on eu-west** is honoured without an approval (a verified directive stands from the moment it
-  verifies); the freeze and unfreeze generations still show as staged rows there. The next promotion supersedes
-  them.
+- **The freeze on eu-west needs the approval** of the frozen generation: the released daemon takes the directive
+  when it verifies the manifest, but an SDK attached over its socket renders from the daemon's active release and
+  learns nothing of a staged manifest's directives (airprompter-agent-sdk, filed from this beat). The Lambda, which
+  syncs itself, stops at once. The dry run tries the honest path first (sixty seconds without an approval) and
+  says which path it took.
 - **10 % is a share of customers.** With twelve seeded customers the candidate holds one or two of them, or none.
   The panel says which. The dial to 50 % is where the split is visible; stickiness is visible at any share.
 - **The candidate is a text change with a real effect** (a warmer closing line); the judge and the checks are the

@@ -4,8 +4,10 @@
  * host's queue), the wire: cut (the eu-west host loses AirPrompter and Bedrock, keeps the desk's tables; a rule
  * restores it in 15 minutes whatever happens) and restore — and the nudge: one message on the fleet's queue, so the
  * puller reads the origin now instead of on its schedule. Phase 6 adds the drills: the operator's CLI on the eu-west
- * host (policy show / set, rollback, unlock, status, doctor — the CLI's own document shown below the buttons), this
- * host's own apply policy (an operator's act on the SDK), the golden set run now, and the reset's clearing step.
+ * host (policy show, rollback, unlock, status, doctor — a job the API hands itself; the CLI's own document lands on
+ * the timeline and the newest answer is shown below the buttons), this host's own apply policy (an operator's act on
+ * the SDK — the one loosening in the fleet; the daemon host's policy is its unit's flag), the golden set run now, and
+ * the reset's clearing step.
  * Every button is an API call; the result lands as a notice and on the timeline. The day's cap is read from the counter.
  *
  * @example
@@ -64,8 +66,7 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
           <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "doctor" })}>doctor</button>
           <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "unlock" })}>unlock</button>
           <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Roll the eu-west host back to its previous release? A step below the stored generation is a forced downgrade the fleet page reports; the host is held back until something newer is promoted.")) onAction("host_cli", { command: "rollback" }); }}>rollback</button>
-          <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "policy set auto" })}>policy set auto</button>
-          <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "policy set unlock_required" })}>policy set unlock_required</button>
+          <span className="muted fine">the answer lands on the timeline</span>
         </div>
       ) : null}
       {cliOutput ? (

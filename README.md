@@ -79,8 +79,9 @@ the stream replayed as it arrived, the feedback, and the OpenAI-compatible call 
 ignored beside the version's sealed settings; on dev today the hosted run route answers `internal (500)`, platform
 issue #906, and the panel says so), the **Experiments** panel (per-arm results from the desk's own records, and the
 same customer on the same arm on every host), the ramp plan on the eu-west approval row (one approval for the whole
-plan), the freeze greying every Run with the SDK's reason, one-click `zudocs-cli` drills on the eu-west host
-through Run Command (`policy show`, `rollback`, `unlock`, `doctor`), the golden set run before a release activates
+plan), the freeze banding every ticket with the SDK's reason (Run stays clickable and answers `423 frozen`),
+one-click `zudocs-cli` drills on the eu-west host
+through Run Command (`policy show`, `rollback`, `unlock`, `status`, `doctor`), the golden set run before a release activates
 on us-east (a failing set leaves it staged under `auto`), and the recorded strips under `docs/strips/`. The weekly
 *Vendored bundle* workflow verifies the committed bundle with no key. See `docs/ARCHITECTURE.md`.
 

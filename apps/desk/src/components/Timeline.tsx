@@ -22,7 +22,7 @@ function describe(e: TimelineEvent): string {
     case "release_staged": return `release #${e.generation} staged — awaiting approval (policy ${e.policy})${e.note ? ` · console: ${e.note}` : ""}`;
     case "approval_decided": return `release #${e.generation} ${e.decision} for ${e.forHost} by ${e.by}`;
     case "release_activated": return `release #${e.generation} activated${e.by === "host" ? " on the host (unlock, window or rollback)" : ` on the desk's approval by ${e.by}`}`;
-    case "release_unstaged": return `release #${e.generation} is live; the staged release went away`;
+    case "release_unstaged": return e.replacedBy ? `release #${e.replacedBy} staged in place of the earlier staged release (its row is superseded; #${e.generation} stays live)` : `release #${e.generation} is live; the staged release went away`;
     case "approval_failed": return `release #${e.generation}: the unlock was refused — ${e.reason}`;
     case "health_changed": return `health ${e.status}${Array.isArray(e.reasons) && e.reasons.length ? `: ${(e.reasons as string[]).join(", ")}` : ""}${e.consecutiveSyncFailures ? ` · ${e.consecutiveSyncFailures} sync failures` : ""}`;
     case "wire": return `wire ${e.action === "cut" ? "cut" : "restored"}${e.forHost ? ` on ${e.forHost}` : ""} by ${e.by}${e.restoreBy ? ` · the rule restores by ${clock(String(e.restoreBy))}` : ""}`;

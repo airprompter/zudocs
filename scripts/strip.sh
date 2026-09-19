@@ -7,10 +7,13 @@
 #
 # What it records:
 #   docs/strips/cli.txt          keygen · pull (plaintext, dev) · verify · pull --check --max-behind · diff --against
-#                                the previous strip's bundle · apply (two generations) · status · rollback · unlock
-#                                (refused: nothing staged) · policy show/set · apply under unlock_required → staged ·
-#                                unlock --generation · apply --force (a forced downgrade, stamped) · doctor ·
-#                                export-telemetry · telemetry verify · telemetry validate (a spool-writer segment)
+#                                the previous strip's bundle · apply (two generations) · status · rollback (a forced
+#                                downgrade) · unlock (refused: nothing staged) · policy show/set · apply under
+#                                unlock_required → staged · unlock --generation · apply of the older bundle (refused:
+#                                a bundle never moves a host backwards) · apply --force (staged, stamped as a forced
+#                                downgrade) · doctor · export-telemetry · telemetry verify · telemetry validate.
+#                                The second-run commands need an earlier generation in the cache
+#                                (~/.cache/zudocs/strips): the first run on a laptop records the first-run form.
 #   docs/strips/apply-window.txt the SDK's apply.window on a laptop store: staged under unlock_required, activated
 #                                on its own when the window opens (scripts/strips/apply-window.mjs)
 #
@@ -36,14 +39,15 @@ if [ "${1:-}" = "--scan-only" ]; then scan; exit $?; fi
 
 if [ -z "${AIRPROMPTER_AGENT_KEY:-}" ]; then echo "AIRPROMPTER_AGENT_KEY is not set (set -a; . ~/.config/zudocs/dev.env; set +a)" >&2; exit 2; fi
 if [ ! -x "$CLI" ]; then echo "the released CLI is not at $CLI (docs/PROMPTS.md)" >&2; exit 2; fi
-node -e 'const c=JSON.parse(require("fs").readFileSync("airprompter.config.json","utf8")); for (const [k,v] of Object.entries({ORG:c.organizationId,AGENT:c.agentId,ENV:c.environment,HOSTED:c.hostedEnvironment,ROOT_URL:c.rootUrl,BASE:c.baseUrl,POINTER:c.edgePointerUrl})) console.log(`${k}=${v}`)' > "$ROOT/.strip.env"
-# shellcheck disable=SC1091
-. "$ROOT/.strip.env"; rm -f "$ROOT/.strip.env"
 KEYS="$ROOT/keys/dev.root.jwk.json"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/zudocs/strips"
 mkdir -p "$CACHE"
 TMP="${TMPDIR:-/tmp}"; WORK="$(mktemp -d "${TMP%/}/zudocs-strip-XXXXXX")"
 STATE="$WORK/state"
+# The config's ids and URLs (nothing secret) as shell variables, written under the work directory — never into the repository.
+node -e 'const c=JSON.parse(require("fs").readFileSync("airprompter.config.json","utf8")); for (const [k,v] of Object.entries({ORG:c.organizationId,AGENT:c.agentId,ENV:c.environment,HOSTED:c.hostedEnvironment,ROOT_URL:c.rootUrl,BASE:c.baseUrl,POINTER:c.edgePointerUrl})) console.log(`${k}=${v}`)' > "$WORK/strip.env"
+# shellcheck disable=SC1091
+. "$WORK/strip.env"
 OUT="$STRIPS/cli.txt"
 # Two scopes: the commands that take a root (pull, verify, apply, diff, doctor) also take --hosted-environment; the
 # store commands (status, unlock, rollback, policy) take the agent and environment only.
@@ -56,7 +60,7 @@ run() {
   # Print the command as typed (the key is in the environment, not on the line), then its output, then the exit code.
   say ""
   say "\$ airprompter $(printf "%s " "$@" | sed -e "s#$WORK#<work>#g" -e "s#$ROOT#.#g")"
-  "$CLI" "$@" 2>&1 | sed -e "s#$WORK#<work>#g" -e "s#$CACHE#<cache>#g" -e "s#$ROOT#.#g" -e 's#"grant":"[^"]*"#"grant":"<grant id>"#g' | tee -a "$OUT"
+  "$CLI" "$@" 2>&1 | sed -e "s#$WORK#<work>#g" -e "s#$CACHE#<cache>#g" -e "s#$ROOT#.#g" -e "s#${TMP%/}#<tmp>#g" -e 's#"grant":"[^"]*"#"grant":"<grant id>"#g' | tee -a "$OUT"
   local rc=${PIPESTATUS[0]}
   say "(exit $rc)"
   return 0

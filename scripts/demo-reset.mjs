@@ -86,15 +86,19 @@ say("3. policies");
 // --- 3b. a replay in flight keeps writing runs for up to five minutes: let it finish before the tables are cleared ------
 say("3b. runs in flight");
 {
+  // One window for both counts, and the wait looks for a replay_done written AFTER the newest queued replay — a
+  // done row from an earlier replay must not stand in for the one still writing.
   const recent = await desk.eventsSince(new Date(Date.now() - 6 * 60_000).toISOString());
   const queued = recent.filter((e) => e.kind === "presenter" && e.action === "replay");
   const done = recent.filter((e) => e.kind === "replay_done");
-  if (queued.length <= done.length) found("no replay in flight");
-  else if (dryRun) found(`would wait for ${queued.length - done.length} replay(s) in flight`);
+  const newestQueuedAt = queued.map((e) => e.at).sort().at(-1) ?? null;
+  const doneAfter = (rows) => rows.filter((e) => e.kind === "replay_done" && newestQueuedAt !== null && e.at > newestQueuedAt);
+  if (queued.length <= done.length || doneAfter(recent).length > 0) found("no replay in flight");
+  else if (dryRun) found(`would wait for the replay queued at ${newestQueuedAt} (${queued.length} queued, ${done.length} done in six minutes)`);
   else {
-    const before = done.length;
-    await desk.waitFor("the replay in flight to finish", async () => ((await desk.eventsSince(new Date(Date.now() - 12 * 60_000).toISOString())).filter((e) => e.kind === "replay_done").length > before ? true : null), { timeoutMs: 330_000, everyMs: 10_000 }).catch(() => found("the replay did not report done within five and a half minutes; going on"));
-    did("the replay in flight finished");
+    const finished = await desk.waitFor("the replay in flight to finish", async () => doneAfter(await desk.eventsSince(newestQueuedAt))[0] ?? null, { timeoutMs: 330_000, everyMs: 10_000 }).catch(() => null);
+    if (finished) did(`the replay queued at ${newestQueuedAt} finished: ${finished.done}/${finished.requested} runs`);
+    else found("the replay did not report done within five and a half minutes; going on");
   }
 }
 
@@ -145,6 +149,7 @@ const approveOnEuWest = async (generation) => {
   if (found_.settled) { found(`eu-west's row for #${generation} is already ${found_.settled.decision}`); return found_.settled; }
   const pending = found_.pending;
   const decided = await desk.api("POST", `/approvals/${encodeURIComponent(pending.approvalId)}/approve`, {});
+  if (decided.status !== 200) { say(`  ✗ approve #${generation} on eu-west refused: HTTP ${decided.status} ${decided.json.error ?? ""} ${decided.json.message ?? ""}`); return null; }
   did(`approved #${generation} on eu-west (${decided.json.already ? "already decided" : "decided now"})`);
   const activated = await desk.waitFor(`eu-west to activate #${generation}`, async () => (await desk.approvals()).find((a) => a.approvalId === pending.approvalId && ["activated", "superseded"].includes(a.decision)) ?? null, { timeoutMs: 120_000 });
   did(`eu-west ${activated.decision} #${generation} at ${activated.activatedAt ?? activated.updatedAt}`);

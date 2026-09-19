@@ -61,7 +61,11 @@ export const BEATS = Object.freeze({
     message: "Beat 5: an undeclared placeholder (the seal must refuse this)",
     notes: "Zudocs demo, beat 5: a version that uses {{region_note}}, which the slot does not declare",
   }),
-  /** Beat 5 — a model no host reports, pinned as required: every host refuses the release and says which model. */
+  /**
+   * Beat 5 — a model no host reports, pinned as required. The seal warns (`model_not_reported`) and seals; us-east
+   * refuses the release and keeps serving the previous generation; eu-west's daemon declares no model catalogue, so
+   * it stages it for approval instead (SDK #51) — the presenter must not approve it; `advance` supersedes the row.
+   */
   unreportedModel: Object.freeze({ tag: "support.reply", model: "anthropic.claude-sonnet-4-5", notes: "Zudocs demo, beat 5: the reply pinned (required) to a model no host reports" }),
 });
 

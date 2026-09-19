@@ -1,11 +1,13 @@
-# apply.window on a laptop store — 2026-09-19T02:16:27.047Z — window "02:17-02:19 UTC" (opens in 60 s), policy unlock_required, dev release
-+  1s sdk {"sdk":"agent-sdk-ts","agentId":"agent_1QNnYql4RXq9taZn","target":"dev","event":"apply_policy_pinned","policy":"auto","generation":4}
-+  5s sdk {"sdk":"agent-sdk-ts","agentId":"agent_1QNnYql4RXq9taZn","target":"dev","event":"release_staged","generation":4}
-+  5s sdk {"sdk":"agent-sdk-ts","agentId":"agent_1QNnYql4RXq9taZn","target":"dev","event":"awaiting_first_unlock","generation":4}
-+  5s after start: generation 0 · staged 4 · applyState awaiting_unlock · policy unlock_required (local) · window local closed 02:17–02:19Z
-+  6s sdk {"sdk":"agent-sdk-ts","agentId":"agent_1QNnYql4RXq9taZn","target":"dev","event":"heartbeat","intervalSeconds":300,"expiresAt":"2026-09-19T02:31:32.640Z","grant":"<grant id>"}
-+ 20s waiting: generation 0 · staged 4 · applyState awaiting_unlock · policy unlock_required (local) · window local closed 02:17–02:19Z
-+ 33s sdk {"sdk":"agent-sdk-ts","agentId":"agent_1QNnYql4RXq9taZn","target":"dev","event":"window_unlock","generation":4,"source":"local"}
-+ 35s ACTIVATED by the window: generation 4 · staged — · applyState active · policy unlock_required (local) · window local OPEN 02:17–02:19Z
-+ 35s render: support.triage rev-2 on amazon.nova-micro · release #4 · 1489 chars (not shown)
-+ 35s stopped
+# apply.window on a laptop store — 2026-09-19T03:06:50.972Z — window "03:08-03:10 UTC" (opens in 69 s), policy unlock_required, dev release
++  2s sdk {"sdk":"agent-sdk-ts","agentId":"agent_1QNnYql4RXq9taZn","target":"dev","event":"apply_policy_pinned","policy":"auto","generation":5}
++  6s sdk {"sdk":"agent-sdk-ts","agentId":"agent_1QNnYql4RXq9taZn","target":"dev","event":"release_staged","generation":5}
++  6s sdk {"sdk":"agent-sdk-ts","agentId":"agent_1QNnYql4RXq9taZn","target":"dev","event":"awaiting_first_unlock","generation":5}
++  6s after start: generation 0 · staged 5 · applyState awaiting_unlock · policy unlock_required (local) · window local closed 03:08–03:10Z
++  7s sdk {"sdk":"agent-sdk-ts","agentId":"agent_1QNnYql4RXq9taZn","target":"dev","event":"heartbeat","intervalSeconds":300,"expiresAt":"2026-09-19T03:21:57.363Z","grant":"<grant id>"}
++ 26s waiting: generation 0 · staged 5 · applyState awaiting_unlock · policy unlock_required (local) · window local closed 03:08–03:10Z
++ 48s waiting: generation 0 · staged 5 · applyState awaiting_unlock · policy unlock_required (local) · window local closed 03:08–03:10Z
++ 70s waiting: generation 0 · staged 5 · applyState awaiting_unlock · policy unlock_required (local) · window local closed 03:08–03:10Z
++ 71s sdk {"sdk":"agent-sdk-ts","agentId":"agent_1QNnYql4RXq9taZn","target":"dev","event":"window_unlock","generation":5,"source":"local"}
++ 78s ACTIVATED by the window: generation 5 · staged — · applyState active · policy unlock_required (local) · window local OPEN 03:08–03:10Z
++ 78s render: support.triage rev-2 on amazon.nova-micro · release #5 · 1489 chars (not shown)
++ 80s stopped

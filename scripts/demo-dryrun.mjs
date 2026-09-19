@@ -83,6 +83,19 @@ async function approveOnEuWest(generation, { timeoutMs = 180_000 } = {}) {
   return { pending, activated };
 }
 
+/**
+ * A row eu-west staged and nobody approved, after the next promotion staged in its place: the host settles it
+ * `superseded` on its next tick, and a late click on it is refused (`409 approval_stale` while pending, `already`
+ * once settled) — never an approval of a release the host no longer holds staged.
+ */
+async function expectSuperseded(row, why) {
+  const settled = await desk.waitFor(`eu-west to settle the row for #${row.generation}`, async () => (await desk.approvals()).find((a) => a.approvalId === row.approvalId && a.decision !== "pending") ?? null, { timeoutMs: 90_000, everyMs: 5_000 }).catch(() => null);
+  check(settled?.decision === "superseded", settled ? `eu-west settled the row for #${row.generation} ${settled.decision}: ${settled.outcome}` : `the row for #${row.generation} (${why}) is still pending ninety seconds after the next promotion landed`);
+  const late = await desk.api("POST", `/approvals/${encodeURIComponent(row.approvalId)}/approve`, {});
+  const refused = late.status === 409 || (late.status === 200 && late.json.already === true);
+  check(refused, `a late click on that row is refused: HTTP ${late.status} ${late.json.error ?? ""} ${late.json.message ?? ""}`.replace(/\s+/g, " "));
+}
+
 /** A promotion landing on every host: us-east on the next invoke, eu-west by approval, the puller on a nudge, the air-gapped host from the exchange. */
 async function landEverywhere(generation, { approve = true } = {}) {
   const sync = await syncEast();
@@ -287,7 +300,7 @@ beat(5, "safety nets");
     // The daemon host declares no catalogue (airprompterd has no --models flag; the attached workers' catalogue never
     // reaches the sync), so it cannot refuse: it STAGES the release for approval — a trap the presenter must not spring.
     const euStaged = await desk.waitFor("eu-west to stage the unreported-model release", async () => (await desk.approvals()).find((a) => a.hostId === EU && a.generation === pM.generation && a.decision === "pending") ?? null, { timeoutMs: 120_000 }).catch(() => null);
-    check(euStaged !== null, euStaged ? `eu-west STAGED #${pM.generation} instead of refusing (the daemon declares no models — SDK #51): not approved, superseded by the next promotion` : "eu-west neither refused nor staged the release within two minutes");
+    check(euStaged !== null, euStaged ? `eu-west STAGED #${pM.generation} instead of refusing (the daemon declares no models — SDK #51): not approved; the next promotion supersedes it` : "eu-west neither refused nor staged the release within two minutes");
     const fleet = await con.fleet(ENV);
     ok(`AirPrompter's fleet page: ${fleet.summary.modelUnavailable} instance(s) report the model unavailable, ${fleet.summary.refused} refused, ${fleet.summary.staged} staged`);
     // Move past it: a fresh canonical generation.
@@ -296,6 +309,7 @@ beat(5, "safety nets");
     const pA = await con.promote({ environment: ENV, releaseDigest: sealedA.release.releaseDigest, notes: "Zudocs demo, beat 5: advance" });
     await landEverywhere(pA.generation);
     ok(`advanced past it: generation ${pA.generation} live everywhere`);
+    if (euStaged) await expectSuperseded(euStaged, "the unreported-model release");
   }
 }
 {
@@ -315,6 +329,7 @@ beat(5, "safety nets");
   const sealedA2 = await con.seal({ environment: ENV, pins: canonicalPins(config, { "support.escalate.summary": { versionId: vA2.versionId }, "support.reply": { versionId: vC.versionId } }), notes: "Zudocs demo, beat 5: past the golden-failing release" });
   const pA2 = await con.promote({ environment: ENV, releaseDigest: sealedA2.release.releaseDigest, notes: "Zudocs demo, beat 5: advance" });
   await landEverywhere(pA2.generation);
+  if (euG) await expectSuperseded(euG, "the golden-failing release");
   const stA = (await desk.state()).host.status;
   check(stA.generation === pA2.generation && stA.golden?.met === true, `advanced: #${pA2.generation} passed its golden set (${stA.golden?.reports.map((r) => `${r.passed}/${r.cases}`).join(", ")}) and is live`);
 }
@@ -336,7 +351,7 @@ beat(5, "safety nets");
   await landEverywhere(pA3.generation);
   ok(`the next promotion (#${pA3.generation}) carried eu-west forward — held back until something newer was promoted`);
 }
-say("    apply --force and apply.window are laptop drills: docs/strips/cli.txt (the forced downgrade) and docs/strips/apply-window.txt (--strips records them now)");
+say("    apply --force and apply.window are laptop drills: docs/strips/cli.txt (rollback, the older bundle refused, apply --force staged and stamped; the second-run form needs an earlier generation in ~/.cache/zudocs/strips) and docs/strips/apply-window.txt (--strips records both now)");
 
 // --- Beat 6: your data, your variables ----------------------------------------------------------------------------------------------
 beat(6, "your data, your variables");

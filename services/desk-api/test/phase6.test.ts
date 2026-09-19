@@ -3,8 +3,10 @@
  * deltas with their offsets, the feedback, the compat request beside the catalogue's sealed inference, a refusal
  * recorded in the route's words and never retried); the host CLI's allowlist, its JSON-line reading and its
  * Run Command polling over fake ports; the per-arm fold with the stickiness table; and the handler's new paths —
- * a frozen host refuses a run inside the invoke (after its sync pass) before the cap is taken, `host_cli` refuses
- * anything off the allowlist and hands itself a job whose answer lands on the timeline, `policy` goes through
+ * a frozen host refuses a run inside the invoke (after its sync pass — the fake's invoke is what freezes the host)
+ * before the cap is taken, the same inside a replay job, `host_cli` refuses anything off the allowlist and hands
+ * itself a job whose answer lands on the timeline (a Run Command that cannot be sent lands as a Failed row), an
+ * approval the host has moved past answers `409 approval_stale`, `policy` goes through
  * `setApplyPolicy`, `golden` reports counts only, `reset` clears and re-seeds, `/arms` folds the desk's own records,
  * `/state` and `/approvals` answer after a sync pass, and an approval row carries the ramp plan this host read.
  *
@@ -17,7 +19,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer } from "aws-lambda";
 import { foldArms } from "../src/arms.js";
-import { FROZEN_REASON, createHandler, frozenOf, summariseCli } from "../src/handler.js";
+import { FROZEN_REASON, approvalStaleness, createHandler, frozenOf, summariseCli } from "../src/handler.js";
 import { HOST_CLI_COMMANDS, documentOf, isHostCliCommand, runHostCli } from "../src/hostCli.js";
 import { COMPAT_IGNORED, compatChatUrl, createHostedClient, hostedConfigured, hostedRun, type HostedPorts } from "../src/hosted.js";
 import type { Host } from "../src/runtime.js";
@@ -237,14 +239,16 @@ function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[];
   return self;
 }
 
-function fakeHost(options: { frozen?: boolean; ramps?: unknown[] } = {}) {
+function fakeHost(options: { frozen?: boolean; freezeOnInvoke?: boolean; ramps?: unknown[]; hostCliThrows?: string } = {}) {
   const store = fakeStore();
   const calls: string[] = [];
   const state = { frozen: options.frozen ?? false, policy: "auto", source: "local", generation: 7 };
   const status = () => ({ generation: state.generation, stagedGeneration: null, applyState: "active", variables: { sources: ["customer_tier"], unsourced: [] }, heartbeat: { lastAt: null, nextAt: null, intervalSeconds: 60, lastRefusal: null }, storageProtection: "kms", source: "store", applyPolicy: { effective: state.policy, source: state.source, manifestSaid: "auto" }, lastSyncOutcome: "unchanged", disabled: { agent: state.frozen, slots: [], arms: [] }, lastRefusal: state.frozen ? "disabled: frozen from the console" : null, ramps: options.ramps ?? [] });
   const ap: any = {
     instanceId: "i-fake", generation: state.generation, status, healthz: () => ({ ok: true, status: "ok", reasons: [] }),
-    invoke: async (fn: () => Promise<unknown>) => { calls.push("invoke"); return fn(); },
+    // `freezeOnInvoke`: the host is built unfrozen and the invoke's sync pass is what verifies the directive — a check
+    // made before the invoke would see an unfrozen host and take a cap slot.
+    invoke: async (fn: () => Promise<unknown>) => { calls.push("invoke"); if (options.freezeOnInvoke) state.frozen = true; return fn(); },
     prompt: () => ({ variables: () => [], renderAsync: async () => { throw new Error("not rendered in this test"); } }),
     setApplyPolicy: async (value: string, input: { by?: string }) => { calls.push(`setApplyPolicy:${value}:${input.by}`); state.policy = value; state.source = "operator"; return { effective: value, source: "operator", manifestSaid: "auto" }; },
     golden: async (o: { tag?: string }) => { calls.push(`golden:${o.tag ?? "*"}`); return [{ tag: "support.triage", arm: "control", setId: "gs", model: "amazon.nova-micro", cases: 5, passed: 1, failed: 4, passBps: 2000, minPassBps: 8000, meetsThreshold: false, results: [{ caseId: "billing-double-charge", ok: false, failed: ["category"] }, { caseId: "other-dark-mode", ok: true, failed: [] }] }]; },
@@ -253,7 +257,7 @@ function fakeHost(options: { frozen?: boolean; ramps?: unknown[] } = {}) {
   const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "arn:aws:lambda:eu-west-1:1:function:zudocs-wire", nudgeQueueUrl: "", hosted: { runKeyParameter: "", runUrl: "", target: "staging" }, euHost: { region: "eu-west-1", nameTag: "zudocs-eu-host" }, airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
   const host: Host & { store: ReturnType<typeof fakeStore>; calls: string[] } = {
     env, ap, store, calls, callers: { judgeModel: "amazon.nova-micro", complete: async () => ({ text: "", response: {} }), judge: async () => "", golden: async () => ({ text: "", outputTokens: null }) }, hosted: null,
-    hostCli: async (command) => { calls.push(`host_cli:${command}`); return { command, line: `zudocs-cli ${command} --json`, status: "Success", instanceId: "i-eu", document: command === "policy show" ? { via: "daemon", applyPolicy: { effective: "unlock_required", source: "local", manifestSaid: "auto" } } : { ok: true }, stdout: "{}", stderr: "", durationMs: 1200 }; },
+    hostCli: async (command) => { calls.push(`host_cli:${command}`); if (options.hostCliThrows) throw new Error(options.hostCliThrows); return { command, line: `zudocs-cli ${command} --json`, status: "Success", instanceId: "i-eu", document: command === "policy show" ? { via: "daemon", applyPolicy: { effective: "unlock_required", source: "local", manifestSaid: "auto" } } : { ok: true }, stdout: "{}", stderr: "", durationMs: 1200 }; },
     startedAt: "2026-09-18T10:00:00Z", sdk: "agent-sdk-ts/test", invocations: 0, coldStart: true,
     observed: async (fn) => ({ result: await fn(), error: undefined, observations: [] }),
     writeStatus: async () => undefined,
@@ -266,15 +270,23 @@ const event = (method: string, rawPath: string, body?: unknown): APIGatewayProxy
 const parse = (r: any) => ({ status: r.statusCode as number, body: JSON.parse(r.body) as any });
 
 test("handler: a frozen host refuses a run inside the invoke (after the sync), takes no cap slot, and /state syncs first and says frozen", async () => {
-  const host = fakeHost({ frozen: true });
+  // Built unfrozen: only the invoke's sync pass freezes it, so a refusal proves the check ran inside the invoke.
+  const host = fakeHost({ freezeOnInvoke: true });
+  assert.deepEqual(frozenOf(host), { frozen: false, reason: null }, "not frozen before the first invoke");
   const handler = createHandler(async () => host);
   const run = parse(await handler(event("POST", "/tickets/T-1/run")));
   assert.equal(run.status, 423);
   assert.equal(run.body.error, "frozen");
   assert.equal(run.body.reason, FROZEN_REASON, "a fixed reason: lastRefusal may name another refusal entirely");
-  assert.ok(host.calls.includes("invoke"), "the check ran inside the invoke, after its sync pass");
+  assert.deepEqual(host.calls, ["invoke"], "the check ran inside the invoke, after its sync pass");
   assert.equal(host.store.used, 0, "the cap is not taken for a refused run");
   assert.equal(host.store.events[0]?.kind, "run_refused");
+  // The replay job takes the same path: the freeze the invoke verified refuses before a slot is taken.
+  const replayHost = fakeHost({ freezeOnInvoke: true });
+  await createHandler(async () => replayHost)({ replay: { n: 3, by: "seth@zudocs.com" } });
+  assert.equal(replayHost.store.used, 0, "no cap slot taken by a frozen replay");
+  assert.deepEqual(replayHost.store.events.map((e) => e.kind), ["run_refused", "replay_done"]);
+  assert.equal(replayHost.store.events[1]?.done, 0);
   host.calls.length = 0;
   const state = parse(await handler(event("GET", "/state")));
   assert.deepEqual(state.body.frozen, { frozen: true, reason: FROZEN_REASON });
@@ -342,4 +354,67 @@ test("handler: an approval row carries the ramp plan this host read from the sam
   assert.deepEqual(g7.ramps[0].plan, plan);
   assert.equal(g7.ramps[0].readBy, "us-east-1/lambda");
   assert.deepEqual(list.body.approvals.find((a: any) => a.generation === 6).ramps, []);
+});
+
+test("handler: a host-CLI job whose Run Command cannot be sent lands on the timeline as a Failed row, never as a throw", async () => {
+  const host = fakeHost({ hostCliThrows: "no instance with tag Name=zudocs-eu-host is running" });
+  const handler = createHandler(async () => host);
+  await handler({ hostCli: { command: "doctor", by: "seth@zudocs.com", requestedAt: "2026-09-19T00:00:00Z" } });
+  const row = host.store.events.at(-1)!;
+  assert.equal(row.kind, "host_cli");
+  assert.equal(row.status, "Failed");
+  assert.equal(row.command, "doctor");
+  assert.equal(row.line, "zudocs-cli doctor --json");
+  assert.equal(row.instanceId, null);
+  assert.equal(row.document, null);
+  assert.match(String(row.summary), /Run Command could not be sent: no instance with tag/);
+  assert.equal(row.by, "seth@zudocs.com");
+});
+
+test("approvalStaleness: a newer row on the same host and store, or the host's later status row naming another staged generation, makes a row stale; an older status row or another store does not", () => {
+  const row = (id: string, generation: number, decision: any = "pending", storeId = "s", hostId = "eu-west-1/ec2"): any => ({ approvalId: id, hostId, storeId, generation, releaseDigest: null, stagedAt: "2026-09-19T00:10:00Z", unlockRequest: null, decision, decidedBy: null, decidedAt: null, activatedAt: null, outcome: null, updatedAt: "2026-09-19T00:10:00Z" });
+  const status = (writtenAt: string, generation: number, stagedGeneration: number | null, hostId = "eu-west-1/ec2"): any => ({ hostId, region: "eu-west-1", kind: "daemon", sdk: "x", writtenAt, status: { generation, stagedGeneration }, healthz: {}, container: {} });
+  const g7 = row("g7", 7);
+  assert.deepEqual(approvalStaleness(g7, [g7], []), { stale: false, reason: null }, "alone, current");
+  assert.deepEqual(approvalStaleness(g7, [g7], [status("2026-09-19T00:11:00Z", 6, 7)]), { stale: false, reason: null }, "the host still holds it staged");
+  const newer = approvalStaleness(g7, [g7, row("g8", 8)], []);
+  assert.equal(newer.stale, true);
+  assert.match(newer.reason!, /#8 was staged in its place \(its own row is pending\)/);
+  assert.equal(approvalStaleness(g7, [g7, row("g8", 8, "pending", "other-store")], []).stale, false, "a newer row on another store is another instance's");
+  assert.equal(approvalStaleness(g7, [g7, row("g8", 8, "pending", "s", "other/host")], []).stale, false, "another host's row");
+  const live = approvalStaleness(g7, [g7], [status("2026-09-19T00:12:00Z", 7, null)]);
+  assert.equal(live.stale, true);
+  assert.match(live.reason!, /#7 is live and nothing is staged/);
+  const other = approvalStaleness(g7, [g7], [status("2026-09-19T00:12:00Z", 6, 8)]);
+  assert.equal(other.stale, true);
+  assert.match(other.reason!, /#8 is staged \(#6 live\)/);
+  assert.equal(approvalStaleness(g7, [g7], [status("2026-09-19T00:09:00Z", 6, null)]).stale, false, "a status row older than the staging says nothing about it");
+  assert.equal(approvalStaleness(g7, [g7], [status("2026-09-19T00:12:00Z", 6, null)]).stale, false, "nothing staged and an older generation live: a store the row does not describe; the watcher decides");
+});
+
+test("handler: approving a row the host has moved past answers 409 approval_stale with the row and records no decision; a current row is approved once", async () => {
+  const host = fakeHost();
+  const mk = (id: string, generation: number): any => ({ approvalId: id, hostId: "eu-west-1/ec2", storeId: "s", generation, releaseDigest: null, stagedAt: "2026-09-19T00:10:00Z", unlockRequest: null, decision: "pending", decidedBy: null, decidedAt: null, activatedAt: null, outcome: null, updatedAt: "2026-09-19T00:10:00Z" });
+  host.store.approvals.set("g7", mk("g7", 7));
+  host.store.approvals.set("g8", mk("g8", 8));
+  const approved: string[] = [];
+  host.store.approve = async (id: string, by: string, at: string) => { const r = host.store.approvals.get(id); if (!r || r.decision !== "pending") return { ok: false, row: r ?? null }; approved.push(id); Object.assign(r, { decision: "approved", decidedBy: by, decidedAt: at }); return { ok: true, row: r }; };
+  const handler = createHandler(async () => host);
+  const stale = parse(await handler(event("POST", "/approvals/g7/approve")));
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.error, "approval_stale");
+  assert.match(stale.body.message, /release #7 is no longer what eu-west-1\/ec2 holds staged: #8 was staged in its place/);
+  assert.equal(stale.body.approval.decision, "pending", "the row is handed back as it is; the host settles it");
+  assert.deepEqual(approved, [], "no decision recorded");
+  assert.equal(host.store.events.filter((e) => e.kind === "approval_decided").length, 0);
+  const fresh = parse(await handler(event("POST", "/approvals/g8/approve")));
+  assert.equal(fresh.status, 200);
+  assert.equal(fresh.body.already, false);
+  assert.deepEqual(approved, ["g8"]);
+  assert.equal(host.store.events.at(-1)?.kind, "approval_decided");
+  const again = parse(await handler(event("POST", "/approvals/g8/approve")));
+  assert.equal(again.status, 200);
+  assert.equal(again.body.already, true, "a settled or decided row is never re-checked for staleness, only answered as it stands");
+  const missing = parse(await handler(event("POST", "/approvals/nope/approve")));
+  assert.equal(missing.status, 404);
 });

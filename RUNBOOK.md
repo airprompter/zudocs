@@ -140,7 +140,9 @@ on-demand tables, one `t4g.micro`, two Lambdas and the desk's CloudFront — Bud
 - us-east stays *staged* after a promotion: the golden set failed (the card's *golden* line); `advance`.
 - eu-west shows *forced downgrade*: a rollback drill; the next promotion carries it forward (`advance`, approve).
 - eu-west shows *staged* and nobody approved: the Approvals section; a fresh instance always starts this way.
-  After the model-required drill the staged row is the release no worker can serve — do not approve it; `advance`.
+  After the model-required drill the staged row is the release no worker can serve — do not approve it; `advance`
+  (the next staging settles the row *superseded* on the host's next tick; a click on it after that answers
+  `409 approval_stale`).
 - us-east answers `502 no_verified_release` on every run: a fresh container booted while the golden-failing release
   was promoted and has nothing active; `advance`, then **Sync now**.
 - The puller says `agent_key_unreadable`: the ap-southeast-1 parameter is missing (`ssm-put-agent-key.sh` with

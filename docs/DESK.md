@@ -21,7 +21,7 @@ the honest notes — what the SDK cannot do on this host yet, and how the desk s
 | Telemetry | The SDK's normal upload to AirPrompter, and the tee: the same segment's rows as CloudWatch EMF lines on stdout, only after AirPrompter accepted the segment; dimensions capped to `tag`, `versionId`, `arm`, `status` | `src/tee.ts` |
 | Cap | 2,000 runs per UTC day (an atomic DynamoDB counter, refused at the line); HTTP 429 `daily_cap` with the count — nothing is simulated | `src/store.ts`, `src/handler.ts` |
 | Status and timeline | Every run and presenter action writes `status()` + `healthz()` to the status table (one row per host); `onChange` and every action append to the events table (partitioned by UTC day). The eu-west host writes the same tables across regions (`docs/EU-WEST.md`) | `src/runtime.ts`, `src/store.ts` |
-| Approvals | The eu-west host's staged releases: the host opens the row, `POST /approvals/{id}/approve` flips it `pending → approved` exactly once under the signer's e-mail (a repeat answers `already: true` with the row as it stands), the host activates through its daemon and settles it | `src/store.ts`, `src/handler.ts` |
+| Approvals | The eu-west host's staged releases: the host opens the row, `POST /approvals/{id}/approve` flips it `pending → approved` exactly once under the signer's e-mail (a repeat answers `already: true` with the row as it stands; a row the host has moved past — a newer generation staged on the same store, or the host's later status row naming another staged generation — answers `409 approval_stale` and records nothing), the host activates through its daemon and settles it | `src/store.ts`, `src/handler.ts` |
 
 Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack registers):
 `GET /tickets`, `GET /tickets/{id}`, `POST /tickets/{id}/run`, `POST /tickets/{id}/escalate`,
@@ -56,7 +56,8 @@ Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack
   tag; the CLI's document comes back and lands on the timeline), `policy` (`ap.setApplyPolicy`), `golden`
   (`ap.golden()` on the active release; counts only), `reset` (clear runs, feedback, approvals, events, counters;
   re-seed), `replay` up to 30.
-- `/state` carries `frozen` (the manifest's `disable` directive as `status().disabled.agent`, with `lastRefusal`)
+- `/state` carries `frozen` (the manifest's `disable` directive as `status().disabled.agent`, with one fixed
+  reason — `lastRefusal` may name another refusal entirely)
   and a run on a frozen host answers `423 frozen` before the cap is taken; `features.hosted` and `features.hostCli`
   say what the presenter panel may offer.
 - The SDK starts with `golden.invoke` (a caller with no wrapper — the hook runs inside the boot sync), so every

@@ -149,12 +149,13 @@ Each is one command; each prints the refusal as the platform gave it.
   does not declare: **the seal refuses** (`variable_undeclared: rev-N uses {{region_note}} …`). No runtime ever
   renders a literal placeholder.
 - `npm run demo:console -- drill model-required` — the reply pinned, as *required*, to a model no host reports.
-  The seal warns (`model_not_reported`) and seals; the promotion goes through; **us-east refuses the release**
-  (`status.lastRefusal: model_unavailable`, still serving the previous generation; AirPrompter's fleet page counts
+  The seal warns (`model_not_reported`) and seals; the promotion goes through; **us-east refuses the release** and
+  keeps serving the previous generation (the sync's outcome and the card say why; AirPrompter's fleet page counts
   the instances reporting the model unavailable). **eu-west stages it instead** — the released daemon declares no
   model catalogue (`airprompterd` has no `--models`; the workers' catalogue never reaches the process that syncs —
   airprompter-agent-sdk#51), so the Approvals section shows it staged: **do not approve it**; say why. Then `npm run
-  demo:console -- advance` — the next promotion supersedes the staged row and puts the reply back on a model the
+  demo:console -- advance` — the next promotion stages in its place, the host settles the old row *superseded* on
+  its next tick (a click on it after that is refused: `409 approval_stale`), and the reply goes back to a model the
   fleet reports.
 - `npm run demo:console -- drill golden-fail` — a triage version that answers `other`/`low` whatever the ticket
   says. us-east runs the golden set before activating (five cases against Nova Micro): **1/5 is below the 80 %
@@ -169,9 +170,11 @@ Each is one command; each prints the refusal as the platform gave it.
   approve it. **unlock**, **status** and **doctor** are there too. There is no `policy set` for that host: its daemon
   runs with `--apply-policy unlock_required`, a local policy no `policy set` loosens; the loosening drill is the
   us-east host's own **set auto / set unlock_required** (the SDK's `setApplyPolicy`, an operator's act).
-- `apply --force` and `apply.window` are laptop drills, recorded: `docs/strips/cli.txt` (the forced downgrade
-  stamped on a laptop store) and `docs/strips/apply-window.txt` (a release staged under `unlock_required`,
-  activated by the SDK on its own when a local window opened — `window_unlock` at +52 s).
+- `apply --force` and `apply.window` are laptop drills, recorded: `docs/strips/cli.txt` (`rollback`, then the older
+  bundle refused — *a bundle never moves a host backwards* — then `apply --force`, staged and stamped as a forced
+  downgrade on a laptop store) and `docs/strips/apply-window.txt` (a release staged under `unlock_required`,
+  activated by the SDK on its own when a local window opened — `window_unlock` at +71 s in the committed
+  recording; the window opens on the first minute boundary at least a minute out, so the instant varies by run).
 
 ### 6 — Your data, your variables (desk, 1:30)
 
@@ -204,11 +207,15 @@ step says so.
 
 ### 9 — Close (recorded, 0:30)
 
-`docs/strips/cli.txt` (recorded by `npm run demo:strip` on a laptop store, twice — the second run has the previous
-generation to diff against and downgrade to): `keygen`, `pull`, `verify`, `pull --check --max-behind`, `diff
---against`, `apply` (two generations), `status`, `rollback`, `unlock`, `policy show/set`, `apply` under
-`unlock_required` → staged, `unlock --generation`, `apply --force` (the forced downgrade, stamped), `doctor`,
-`export-telemetry`, `telemetry verify`, `telemetry validate`. The opening beat in reverse:
+`docs/strips/cli.txt` (recorded by `npm run demo:strip` on a laptop store with the previous generation in its cache
+— generation 4 beside generation 5 in the committed recording), in order: `keygen`, `pull` (plaintext), `verify`,
+`pull --check --max-behind`, `diff --against` (4 → 5: one slot changed), `apply` of the older bundle then of the
+current one (slots A and B), `status`, `rollback` (4 live again, `forced: true`), `status`, `unlock` (refused:
+nothing staged), `policy show`, `policy set unlock_required`, `apply` of the current bundle → *staged*, `unlock
+--generation 5`, `status`, `apply` of the older bundle (refused: a bundle never moves a host backwards), `apply
+--force` (staged under the pin, stamped as a forced downgrade), `status`, `policy set auto`, `doctor`,
+`export-telemetry`, `telemetry verify`, `telemetry validate`. A first run on a laptop with an empty cache records the
+first-run form (no diff, one apply, no rollback) and says so. The opening beat in reverse:
 `login` + `import` of a `prompts/` directory is how the prompts got into AirPrompter in phase 2 (docs/PROMPTS.md).
 
 ## After the session

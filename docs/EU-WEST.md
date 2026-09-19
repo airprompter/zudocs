@@ -83,7 +83,10 @@ the demo beat, not a thing to hide; the SDK gap (`airprompterd --key-provider`) 
    fresh host this is also the moment the workers' SDKs attach (nothing was active before).
 5. If an operator ran `airprompter unlock` on the host's shell instead (or a window opened, or a rollback moved
    the generation), the staged generation vanishes without the watcher's unlock: the row settles `superseded`
-   with the reason and the timeline says `activated on the host`. A socket that is closed while the watcher unlocks
+   with the reason and the timeline says `activated on the host`. If the console promoted again before anyone
+   decided, the daemon stages the newer generation in place of the old one: the watcher settles the old row
+   `superseded` (naming the generation staged in its place), writes `release_unstaged`, and opens the newer row —
+   and the desk refuses a late click on the old row (`409 approval_stale`) even before the tick that settles it. A socket that is closed while the watcher unlocks
    (the daemon restarts on every key refresh) is transient: the decision stands and the next tick tries again. A
    daemon *refusal* (a store reason) settles the row `failed` with it and is not retried in a loop; only a restarted
    worker re-opens a `failed` row — an operator's deliberate retry.
@@ -96,9 +99,10 @@ promotes something newer — which then arrives staged, for the owner to approve
 host). Two things the drill taught: a release is content-addressed, so sealing the same pins again is the same
 digest and "already what runs here" — advancing needs a real change (a version, a setting); and the SDK never
 clears the `forcedDowngrade` flag once the host has moved past the rollback (`heldBackBelow` lifts, the flag stays),
-so the card keeps saying *forced downgrade* until the store is replaced — filed upstream (#45). A tightened policy
-pin is loosened only by `zudocs-cli policy set auto` on the host. Nothing here restores an old state; every reset
-is a promotion.
+so the card keeps saying *forced downgrade* until the store is replaced — filed upstream (#45). The daemon's policy
+is its unit's `--apply-policy unlock_required`, which no desk button changes (the shell row runs `policy show`,
+`status`, `doctor`, `unlock` and `rollback`; the loosening drill is the us-east host's own `setApplyPolicy`).
+Nothing here restores an old state; every reset is a promotion.
 
 ## The wire-cut drill
 

@@ -15,7 +15,7 @@
  * @example
  * ```sh
  * set -a; . ~/.config/zudocs/dev.env; set +a
- * node scripts/strips/apply-window.mjs --state-dir /tmp/zudocs-window       # ~90 s; the log is the strip
+ * node scripts/strips/apply-window.mjs --state-dir /tmp/zudocs-window       # 1–2 minutes; the log is the strip
  * ```
  */
 import { readFileSync } from "node:fs";
@@ -31,10 +31,11 @@ const root = JSON.parse(readFileSync(`${repoRoot}/keys/${config.hostedEnvironmen
 const started = Date.now();
 const clock = () => `+${String(Math.round((Date.now() - started) / 1000)).padStart(3, " ")}s`;
 const hhmm = (ms) => new Date(ms).toISOString().slice(11, 16);
-// A window that opens one minute from now and closes three minutes from now, in UTC, on this process's clock.
-const opens = started + 60_000;
+// A window is minute-granular ("HH:MM-HH:MM UTC"), so it opens on the first minute boundary at least sixty seconds
+// away — sixty to a hundred and nineteen seconds from now — and closes two minutes after that; the header says when.
+const opens = Math.ceil((started + 60_000) / 60_000) * 60_000;
 const window = `${hhmm(opens)}-${hhmm(opens + 120_000)} UTC`;
-console.log(`# apply.window on a laptop store — ${new Date(started).toISOString()} — window "${window}" (opens in 60 s), policy unlock_required, dev release`);
+console.log(`# apply.window on a laptop store — ${new Date(started).toISOString()} — window "${window}" (opens in ${Math.round((opens - started) / 1000)} s), policy unlock_required, dev release`);
 const ap = await AirPrompterAgent.start({
   organizationId: config.organizationId,
   agentId: config.agentId,
@@ -52,7 +53,7 @@ const ap = await AirPrompterAgent.start({
 const line = (label) => { const s = ap.status(); console.log(`${clock()} ${label}: generation ${s.generation} · staged ${s.stagedGeneration ?? "—"} · applyState ${s.applyState} · policy ${s.applyPolicy.effective} (${s.applyPolicy.source}) · window ${s.window ? `${s.window.source} ${s.window.open ? "OPEN" : "closed"} ${s.window.opensAt.slice(11, 16)}–${s.window.closesAt.slice(11, 16)}Z` : "none"}`); };
 line("after start");
 let served = false;
-for (let i = 0; i < 24 && !served; i += 1) {
+for (let i = 0; i < 30 && !served; i += 1) {
   await new Promise((r) => setTimeout(r, 5000));
   const s = ap.status();
   if (s.applyState === "active" && s.generation > 0) served = true;
@@ -61,7 +62,7 @@ for (let i = 0; i < 24 && !served; i += 1) {
 if (served) {
   const r = ap.prompt("support.triage", { subject: "cust-1001" }).render({ ticket: "Search still returns a page we deleted last week." });
   console.log(`${clock()} render: ${r.tag} ${r.versionId} on ${r.model} · release #${r.generation} · ${r.text.length} chars (not shown)`);
-} else console.log(`${clock()} the window never opened within two minutes — check the clock`);
+} else console.log(`${clock()} the window never opened within two and a half minutes — check the clock`);
 await ap.stop();
 console.log(`${clock()} stopped`);
 process.exit(served ? 0 : 1);

@@ -152,7 +152,7 @@ switch (command) {
       const sealed = await con.seal({ environment: ENV, pins, notes: beat.notes, modelRequired: [beat.tag] });
       const release = describeSeal(sealed);
       if (!release) { say("  → refused at the seal"); process.exit(0); }
-      say("  → the seal accepted it with a warning; promoting so every host can refuse it (status.lastRefusal = model_unavailable):");
+      say("  → the seal accepted it with a warning; promoting so the hosts can refuse it (us-east stays on the previous generation; eu-west's daemon declares no models, so it stages it — do not approve; `advance` supersedes the row):");
       const pointer = await con.promote({ environment: ENV, releaseDigest: release.releaseDigest, notes: beat.notes });
       say(`  promoted generation ${pointer.generation}; run \`npm run demo:console -- advance\` to move past it once the refusal has been seen`);
     } else if (sub === "golden-fail") {
@@ -170,8 +170,9 @@ switch (command) {
     const v = await con.newVersion({ tag: "support.escalate.summary", inference: (current) => ({ ...current, maxOutputTokens: Number(current.maxOutputTokens ?? 400) + 1 }), message: "Advance: the summary's cap +1" });
     say(`  support.escalate.summary: version ${v.versionId} (cap ${v.inference?.maxOutputTokens})`);
     const current = (await con.pins(ENV)).map(({ tag, versionId, model }) => ({ tag, versionId, model }));
-    // A pin on a model this fleet does not report (the model-required drill) goes back to its canonical pin; the rest stay.
-    const healed = current.map((p) => (config.models.includes(p.model) || !config.canonical[p.tag] ? p : { tag: p.tag, ...config.canonical[p.tag] }));
+    // A pin on a model this fleet does not report (the model-required drill) goes back to its canonical MODEL; its
+    // version stays (after beat 4 the reply is the winner's version, and advancing must not roll that back).
+    const healed = current.map((p) => (config.models.includes(p.model) || !config.canonical[p.tag] ? p : { ...p, model: config.canonical[p.tag].model }));
     const pins = withPin(healed, "support.escalate.summary", { versionId: v.versionId });
     const release = describeSeal(await con.seal({ environment: ENV, pins, notes: `Zudocs demo: advance (summary cap ${v.inference?.maxOutputTokens})` }));
     if (!release) process.exit(1);

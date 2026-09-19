@@ -11,7 +11,9 @@
  *   SDK switches — and settle the row `activated` (or `failed`, when the daemon *refused* with a store reason; a
  *   socket that is closed or absent is transient and the row stays `approved` for the next tick);
  * - a staged generation that vanished without the watcher's unlock (an operator's `airprompter unlock` on the shell,
- *   an update window, a rollback) settles the row `superseded` and says which generation is live.
+ *   an update window, a rollback) settles the row `superseded` and says which generation is live;
+ * - a staged generation replaced by a newer one (the next promotion landed while the row was open) settles the old
+ *   row `superseded` — it is no longer what the host would activate — and opens the newer generation's row.
  *
  * The row's id is the host, the generation *and the store* the daemon serves from (`hello.storeId`): a replaced
  * instance stages the same generation again on a fresh store and gets a fresh row, while a restarted watcher on the
@@ -130,6 +132,16 @@ export class ApprovalWatcher {
       return "superseded";
     }
     const approvalId = approvalIdOf(hostId, staged, storeId);
+    if (this.open && this.open.approvalId !== approvalId) {
+      // The daemon staged something newer while this row was open (the next promotion landed): the row's generation
+      // is no longer what an unlock would activate, so it is settled — a later click on it must not approve it.
+      const at = now();
+      const outcome = `superseded: generation ${staged} is staged in its place (generation ${s.generation} is live); the newer generation has its own row`;
+      const row = await store.settleApproval(this.open.approvalId, { decision: "superseded", outcome, at });
+      if (row) await store.appendEvent({ at, kind: "release_unstaged", host: hostId, generation: s.generation, approvalId: this.open.approvalId, by: "host", outcome, replacedBy: staged });
+      log({ event: "approval_superseded", approvalId: this.open.approvalId, generation: s.generation, replacedBy: staged });
+      this.open = null;
+    }
     if (this.open?.approvalId !== approvalId) {
       const at = now();
       const request = s.unlockRequests.find((r) => r !== null) ?? null;

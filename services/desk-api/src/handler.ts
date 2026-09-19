@@ -7,7 +7,9 @@
  * with a job event and walks it sequentially under the same cap. The status tick (`{ tick: "status" }` from EventBridge
  * every five minutes) is a sync pass and one status row, so the card never goes stale between runs. Approvals are the eu-west host's staged releases:
  * the host writes the row, `POST /approvals/{id}/approve` records the owner's decision exactly once (a repeat
- * answers with the row as it stands), and the host activates through its daemon and settles the row. Phase 6 adds
+ * answers with the row as it stands; a row the host has moved past — a newer generation staged on the same store,
+ * or the host's own row saying something else is staged — answers `409 approval_stale` and is not approved), and
+ * the host activates through its daemon and settles the row. Phase 6 adds
  * the hosted staging run (`POST /tickets/{id}/hosted-run`, `hosted.ts`), the per-arm results (`GET /arms`), the
  * approval rows enriched with the ramp plan the us-east host read from the same signed manifest, and four presenter
  * actions: `host_cli` (an allowlisted `zudocs-cli` command on the eu-west host through Run Command), `policy` (this
@@ -34,7 +36,7 @@ import { match } from "./router.js";
 import { runTicket, type StepRecord } from "./run.js";
 import { getHost, type Host } from "./runtime.js";
 import { SEED_CUSTOMERS, SEED_TICKETS } from "./seedData.js";
-import { dayOf } from "./store.js";
+import { dayOf, type ApprovalRow, type StatusRow } from "./store.js";
 
 type Result = { statusCode: number; body: unknown };
 const json = (statusCode: number, body: unknown): APIGatewayProxyResultV2 => ({ statusCode, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify(body) });
@@ -71,6 +73,26 @@ const readBody = (event: APIGatewayProxyEventV2WithJWTAuthorizer): Record<string
     return {};
   }
 };
+
+/**
+ * Is this approval row still the one its host would activate? Two readings, both from the desk's own tables: another
+ * row of the same host and store for a newer generation (the watcher opened it when the daemon staged past this one —
+ * the watcher settles the old row on the same tick, but the click can race it), and the host's status row, when it
+ * was written after this row was staged, naming a different staged generation (or none: the release went live or
+ * away on the host). A stale row is refused so a late click never approves a generation the host no longer holds
+ * staged. Pure.
+ */
+export function approvalStaleness(row: ApprovalRow, approvals: ApprovalRow[], hosts: StatusRow[]): { stale: boolean; reason: string | null } {
+  const newer = approvals.filter((a) => a.hostId === row.hostId && a.storeId === row.storeId && a.generation > row.generation).sort((a, b) => b.generation - a.generation)[0];
+  if (newer) return { stale: true, reason: `release #${row.generation} is no longer what ${row.hostId} holds staged: #${newer.generation} was staged in its place (its own row is ${newer.decision})` };
+  const host = hosts.find((h) => h.hostId === row.hostId);
+  const status = host?.status as { stagedGeneration?: number | null; generation?: number } | undefined;
+  if (host && status && typeof status.generation === "number" && Date.parse(host.writtenAt) > Date.parse(row.stagedAt) && status.stagedGeneration !== row.generation) {
+    if (status.generation >= row.generation) return { stale: true, reason: `release #${row.generation} is not staged on ${row.hostId} any more: its row written at ${host.writtenAt} says #${status.generation} is live${status.stagedGeneration ? ` and #${status.stagedGeneration} is staged` : " and nothing is staged"}` };
+    if (status.stagedGeneration) return { stale: true, reason: `release #${row.generation} is not staged on ${row.hostId} any more: its row written at ${host.writtenAt} says #${status.stagedGeneration} is staged (#${status.generation} live)` };
+  }
+  return { stale: false, reason: null };
+}
 
 /** The freeze as this host sees it: the manifest's `disable` directive on the whole agent (`status().disabled.agent`). */
 export const FROZEN_REASON = "the release's manifest carries a disable directive for this agent — frozen from the console";
@@ -248,6 +270,13 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
     case "approve": {
       // Everyone who can sign in is the owner (README › sign-in); the decision is recorded once, under the signer's name.
       const at = new Date().toISOString();
+      const current = await store.getApproval(params.approvalId!);
+      if (!current) return { statusCode: 404, body: { error: "no_such_approval" } };
+      if (current.decision === "pending") {
+        const [approvals, hosts] = await Promise.all([store.listApprovals(50), store.listStatus()]);
+        const staleness = approvalStaleness(current, approvals, hosts);
+        if (staleness.stale) return { statusCode: 409, body: { error: "approval_stale", approval: current, message: `not approved: ${staleness.reason}; the host settles this row on its next tick` } };
+      }
       const decided = await store.approve(params.approvalId!, by, at);
       if (!decided.row) return { statusCode: 404, body: { error: "no_such_approval" } };
       if (decided.ok) {
@@ -462,18 +491,23 @@ async function replay(host: Host, job: ReplayJob, context?: Context): Promise<vo
   for (let i = 0; i < job.replay.n; i += 1) {
     if (context && context.getRemainingTimeInMillis() < 45_000) break;
     const ticket = chosen[i % chosen.length]!;
-    const frozen = frozenOf(host);
-    if (frozen.frozen) {
-      await store.appendEvent({ at: new Date().toISOString(), kind: "run_refused", host: env.hostId, ticketId: ticket.ticketId, reason: frozen.reason, by: job.replay.by });
-      break;
-    }
     const day = dayOf(new Date().toISOString());
-    const slot = await store.takeRunSlot(day, env.dailyRunCap);
-    if (!slot.ok) {
-      await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, capDay: day, cap: env.dailyRunCap, used: slot.used, by: job.replay.by });
+    // The same order as a click: inside the invoke (after its sync pass) the freeze, then the cap slot, then the run.
+    const outcome = await ap.invoke(async (): Promise<"run" | "frozen" | { cap: number }> => {
+      if (frozenOf(host).frozen) return "frozen";
+      const slot = await store.takeRunSlot(day, env.dailyRunCap);
+      if (!slot.ok) return { cap: slot.used };
+      await runTicket(host, ticket, { by: job.replay.by, kind: "run", capUsed: slot.used });
+      return "run";
+    });
+    if (outcome === "frozen") {
+      await store.appendEvent({ at: new Date().toISOString(), kind: "run_refused", host: env.hostId, ticketId: ticket.ticketId, reason: FROZEN_REASON, by: job.replay.by });
       break;
     }
-    await ap.invoke(() => runTicket(host, ticket, { by: job.replay.by, kind: "run", capUsed: slot.used }));
+    if (outcome !== "run") {
+      await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, capDay: day, cap: env.dailyRunCap, used: outcome.cap, by: job.replay.by });
+      break;
+    }
     done += 1;
   }
   await host.writeStatus();

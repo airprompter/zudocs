@@ -39,3 +39,6 @@ apps/desk/public/dev-*.json
 # Python bytecode (a py_compile check leaves it beside the worker)
 __pycache__/
 *.pyc
+
+# The strip once wrote its config values here (it writes under its work directory now); never commit it
+.strip.env

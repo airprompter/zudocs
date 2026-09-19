@@ -146,9 +146,13 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
     if (action === "seed" || action === "reset") { setRuns([]); if (action === "reset") { setEvents([]); lastEventAt.current = null; } }
   });
   const approve = (approvalId: string) => act("approve", async () => {
-    const { message, already } = await api.approve(approvalId);
-    say(already ? "warn" : "info", message);
-    await Promise.all([loadApprovals(), loadEvents()]);
+    try {
+      const { message, already } = await api.approve(approvalId);
+      say(already ? "warn" : "info", message);
+    } finally {
+      // A refusal (`409 approval_stale`: the host moved past this row) is shown by `act`; the rows are re-read either way.
+      await Promise.all([loadApprovals(), loadEvents()]);
+    }
   });
 
   const selected = tickets.find((t) => t.ticketId === selectedId) ?? null;

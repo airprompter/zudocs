@@ -46,7 +46,7 @@ try {
   process.exit(2);
 }
 const ENV = config.environment;
-const con = createConsole({ config, token });
+const con = createConsole({ config, token, log: (e) => e.event === "platform_5xx_retry" && found(`the platform answered ${e.status} on ${e.method} ${e.path}; retried once`) });
 const desk = await connectDesk();
 const fleetRegion = process.env.ZUDOCS_FLEET_REGION ?? "ap-southeast-1";
 const EU = "eu-west-1/ec2";
@@ -204,9 +204,13 @@ say("7. the desk Lambda's STATE_EPOCH");
 say("8. the fleet");
 if (!dryRun) {
   const target = promoted[promoted.length - 1];
-  const before = await desk.state();
+  // The epoch bump replaced every container: the first request to a cold one runs the boot sync and the golden set
+  // and can pass the API's 30-second cap (a 503 once, DEMO.md › Honest notes) — wait for a container that answers.
+  const answering = () => desk.waitFor("the desk to answer after the epoch bump", async () => { const s = await desk.state(); return s?.host?.instanceId ? s : null; }, { timeoutMs: 180_000, everyMs: 5_000 });
+  const before = await answering();
   const sync = await desk.api("POST", "/presenter/sync");
-  found(`us-east: container ${(await desk.state()).host.instanceId.slice(0, 12)} (was ${before.host.instanceId.slice(0, 12)}) · sync ${sync.json.outcome ?? sync.status} · generation ${sync.json.generation}`);
+  const after = await answering();
+  found(`us-east: container ${after.host.instanceId.slice(0, 12)} (was ${before.host.instanceId.slice(0, 12)}) · sync ${sync.json.outcome ?? sync.status} · generation ${sync.json.generation ?? "?"}`);
   const agreement = await desk.waitFor(`the fleet to agree on #${target}`, async () => {
     const a = fleetAgreement((await desk.state()).hosts, target);
     return a.agree ? a : null;

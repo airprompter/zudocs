@@ -6,7 +6,8 @@
  * a frozen host refuses a run inside the invoke (after its sync pass — the fake's invoke is what freezes the host)
  * before the cap is taken, the same inside a replay job, `host_cli` refuses anything off the allowlist and hands
  * itself a job whose answer lands on the timeline (a Run Command that cannot be sent lands as a Failed row), an
- * approval the host has moved past answers `409 approval_stale`, `policy` goes through
+ * approval the host has moved past answers `409 approval_stale`, a start that fails with SDK #52's fresh-store
+ * signature is retried once, `policy` goes through
  * `setApplyPolicy`, `golden` reports counts only, `reset` clears and re-seeds, `/arms` folds the desk's own records,
  * `/state` and `/approvals` answer after a sync pass, and an approval row carries the ramp plan this host read.
  *
@@ -22,7 +23,7 @@ import { foldArms } from "../src/arms.js";
 import { FROZEN_REASON, approvalStaleness, createHandler, frozenOf, summariseCli } from "../src/handler.js";
 import { HOST_CLI_COMMANDS, documentOf, isHostCliCommand, runHostCli } from "../src/hostCli.js";
 import { COMPAT_IGNORED, compatChatUrl, createHostedClient, hostedConfigured, hostedRun, type HostedPorts } from "../src/hosted.js";
-import type { Host } from "../src/runtime.js";
+import { isFreshStoreRootRace, startWithRetry, type Host } from "../src/runtime.js";
 import type { Customer, Store, Ticket, TimelineEvent } from "../src/store.js";
 
 // --- hosted ----------------------------------------------------------------------------------------------------------
@@ -417,4 +418,27 @@ test("handler: approving a row the host has moved past answers 409 approval_stal
   assert.equal(again.body.already, true, "a settled or decided row is never re-checked for staleness, only answered as it stands");
   const missing = parse(await handler(event("POST", "/approvals/nope/approve")));
   assert.equal(missing.status, 404);
+});
+
+test("startWithRetry: SDK #52's fresh-store signature is retried once and logged; any other failure, or a second failure, is thrown as it is", async () => {
+  const race = Object.assign(new Error("no verified release in the store, no usable vendored bundle, and the control plane at https://api-dev.airprompter.com could not be reached: slot A failed verification: unknown_signing_key"), { name: "AgentStartError", code: "no_verified_release" });
+  assert.equal(isFreshStoreRootRace(race), true);
+  assert.equal(isFreshStoreRootRace(Object.assign(new Error("slot A failed verification: unknown_signing_key"), { code: "other" })), false, "the code matters");
+  assert.equal(isFreshStoreRootRace(Object.assign(new Error("could not be reached: ECONNRESET"), { code: "no_verified_release" })), false, "a real network failure is not the race");
+  assert.equal(isFreshStoreRootRace(null), false);
+  const logs: Record<string, unknown>[] = [];
+  let starts = 0;
+  const host = { startedAt: "x" } as unknown as Host;
+  const once = await startWithRetry(async () => { starts += 1; if (starts === 1) throw race; return host; }, (e) => void logs.push(e));
+  assert.equal(once, host);
+  assert.equal(starts, 2);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]!.event, "host_start_retried");
+  assert.equal(logs[0]!.issue, "airprompter-agent-sdk#52");
+  starts = 0;
+  await assert.rejects(startWithRetry(async () => { starts += 1; throw race; }, () => undefined), /unknown_signing_key/);
+  assert.equal(starts, 2, "retried once, then thrown");
+  starts = 0;
+  await assert.rejects(startWithRetry(async () => { starts += 1; throw Object.assign(new Error("the SSM parameter has no value"), { code: "no_key" }); }, () => undefined), /SSM/);
+  assert.equal(starts, 1, "not the race: no retry");
 });

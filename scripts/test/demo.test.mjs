@@ -93,6 +93,30 @@ test("the console client: benign warnings are acknowledged once, a real blocker 
   await assert.rejects(con.pins("qa"), /dev, staging or prod/);
 });
 
+test("the console client retries a 5xx once (logged as such) and never a 4xx", async () => {
+  let boards = 0;
+  const logs = [];
+  const fetchImpl = async (url) => {
+    const path = new URL(url).pathname;
+    const reply = (status, json) => ({ status, text: async () => JSON.stringify(json) });
+    if (path.endsWith("/board")) { boards += 1; return boards === 1 ? reply(500, { error: "Internal server error" }) : reply(200, { board: { environments: { dev: { generation: 1, releaseDigest: "sha256:a", stateRevision: 1, frozen: false, applyPolicy: "auto", experiments: [] } }, rows: [] } }); }
+    if (path.endsWith("/promote")) return reply(409, { code: "stale_state_revision", message: "moved" });
+    return reply(404, { error: "no route" });
+  };
+  const con = createConsole({ config: { baseUrl: "https://api.test", workspaceId: "ws", organizationId: "org", agentId: "agent" }, token: "t", fetchImpl, log: (e) => logs.push(e) });
+  const before = Date.now();
+  assert.deepEqual(await con.pins("dev"), []);
+  assert.equal(boards, 2, "one 500, one answer");
+  assert.ok(Date.now() - before >= 2900, "three seconds between them");
+  assert.equal(logs.filter((l) => l.event === "platform_5xx_retry").length, 1);
+  assert.equal(logs[0].status, 500);
+  let promotes = 0;
+  const counting = async (url, init) => { if (new URL(url).pathname.endsWith("/promote")) promotes += 1; return fetchImpl(url, init); };
+  const con2 = createConsole({ config: { baseUrl: "https://api.test", workspaceId: "ws", organizationId: "org", agentId: "agent" }, token: "t", fetchImpl: counting });
+  await assert.rejects(con2.promote({ environment: "dev", releaseDigest: "sha256:a", notes: "n" }), (error) => error instanceof ConsoleRefusal && error.status === 409);
+  assert.equal(promotes, 1, "a 4xx is the platform's word");
+});
+
 test("the vendored bundle: the CI agent's only, one placeholder slot, verified", () => {
   const config = { organizationId: "org", agentId: "agent_support", ciAgentId: "agent_ci" };
   const meta = { kind: "airprompter-bundle-meta", organizationId: "org", agentId: "agent_ci", generation: 1 };

@@ -50,7 +50,7 @@ try {
   process.exit(2);
 }
 const ENV = config.environment;
-const con = createConsole({ config, token });
+const con = createConsole({ config, token, log: (e) => e.event === "platform_5xx_retry" && gap(`the platform answered ${e.status} on ${e.method} ${e.path}; retried once`) });
 const desk = await connectDesk();
 const EAST = "us-east-1/lambda";
 const EU = "eu-west-1/ec2";
@@ -106,14 +106,25 @@ async function landEverywhere(generation, { approve = true } = {}) {
   const puller = await desk.waitFor(`the exchange to hold #${generation}`, async () => { const r = await desk.hostRow(PULLER); return Number(r?.status?.generation) === generation ? r : null; }, { timeoutMs: 180_000, everyMs: 10_000 });
   ok(`the exchange holds #${generation} (pulled ${puller.status.pulledAt}, ${puller.status.keyId ? "sealed" : "plaintext"})`);
   if (flag("--airgap")) {
-    const airgap = await desk.waitFor(`the air-gapped host to apply #${generation}`, async () => { const r = await desk.hostRow(AIRGAP); return Number(r?.status?.generation) === generation ? r : null; }, { timeoutMs: 240_000, everyMs: 10_000 });
+    // The host applies within its own timer, but its row reaches the desk only when the puller mirrors it — one
+    // puller tick (five minutes at the deployed cadence, one with the demo flag). A nudge every ninety seconds is
+    // the presenter's own click (Nudge the fleet) and brings the mirror forward; the wait spans a full tick anyway.
+    let lastNudge = Date.now();
+    const airgap = await desk.waitFor(`the air-gapped host to apply #${generation} (one puller tick; nudging every 90 s)`, async () => {
+      const r = await desk.hostRow(AIRGAP);
+      if (Number(r?.status?.generation) === generation) return r;
+      if (Date.now() - lastNudge > 90_000) { lastNudge = Date.now(); await desk.api("POST", "/presenter/nudge"); }
+      return null;
+    }, { timeoutMs: 420_000, everyMs: 10_000 });
     ok(`the air-gapped host applied #${generation} (written ${airgap.writtenAt}, mirrored ${airgap.mirroredAt})`);
   }
 }
 
 // --- Beat 0: the cold open ------------------------------------------------------------------------------------------
 beat(0, "cold open: one ticket, Run, a badge");
-const state0 = await desk.state();
+// After a reset every container is cold; the first request runs the boot sync and the golden set and can pass the
+// API's 30-second cap once (DEMO.md › Honest notes says to click Sync now first) — the rehearsal does the same.
+const state0 = await desk.waitFor("the desk to answer (a cold container syncs and runs the golden set first)", async () => { const s = await desk.state(); return s?.host?.status ? s : null; }, { timeoutMs: 180_000, everyMs: 5_000 });
 const gen0 = state0.host.status.generation;
 say(`    fleet: ${state0.hosts.map((h) => `${h.hostId} #${h.status?.generation ?? "?"}`).join(" · ")} · us-east container ${state0.host.instanceId.slice(0, 12)} · frozen ${state0.frozen?.frozen}`);
 check(!state0.frozen?.frozen, "the environment is not frozen at the start (run the reset first)");
@@ -141,7 +152,7 @@ if (flag("--hosted")) {
   const h = hosted.json.run;
   if (hosted.status === 501) gap(`hosted staging is not configured on this deployment: ${hosted.json.message}`);
   else {
-    ok(`hosted catalogue: staging generation ${h.catalogue.generation}, reply on ${h.catalogue.slot?.model} with ${JSON.stringify(h.catalogue.slot?.inference)}; subject hash computed on the desk (${h.subjectHash?.slice(0, 12)}…)`);
+    ok(`hosted catalogue: staging generation ${h.catalogue.generation}, reply on ${h.catalogue.slot?.model} with ${JSON.stringify(h.catalogue.slot?.inference)}; ${h.subjectHash ? `subject hash computed on the desk (${h.subjectHash.slice(0, 12)}…)` : `no experiment on staging (${h.catalogue.experiments.length} listed), so no subject hash — the customer id never leaves the desk either way`}`);
     if (h.stream.result) ok(`hosted stream: ${h.stream.deltas.length} deltas, ${badge({ tag: "support.reply", versionId: h.stream.result.versionId, generation: h.stream.result.generation, model: h.stream.result.model, arm: h.stream.result.arm })} · ${h.stream.result.priceMicros} µ$ · feedback ${h.feedback?.accepted}`);
     else gap(`hosted run refused by the route: ${h.stream.refusal?.code} (HTTP ${h.stream.refusal?.status}) ${h.stream.refusal?.message} — recorded as such; platform issue #906`);
     check(h.compat?.request.temperature === 1.9 && h.compat.ignored.includes("temperature"), `compatible endpoint called with temperature ${h.compat?.request.temperature} (ignored by contract) beside the sealed ${JSON.stringify(h.catalogue.slot?.inference)}; it answered HTTP ${h.compat?.response.status}${h.compat?.response.runRef ? ` runRef ${h.compat.response.runRef.slice(0, 10)}…` : ""}`);
@@ -257,8 +268,12 @@ try {
 }
 // AirPrompter's own rollout page.
 {
+  // The page reads the step's window once the step has held long enough (the platform's rule, minutes); two minutes
+  // in it can honestly say "not yet" — the claim is that it answers for this experiment, and what it says is printed.
   const doc = await con.experiments.read({ environment: ENV, experimentId: e1.experimentId });
-  check(doc.arms.control.runs + doc.arms.candidate.runs > 0, `AirPrompter's rollout page: control ${doc.arms.control.runs} runs / candidate ${doc.arms.candidate.runs} runs (window ${doc.window.usageSource}); quality ${doc.arms.control.quality ? `${doc.arms.control.quality.signal} ${doc.arms.control.quality.valueBps / 100} %` : "—"} vs ${doc.arms.candidate.quality ? `${doc.arms.candidate.quality.valueBps / 100} %` : "—"}; evaluation ${doc.evaluation?.decision ?? "none yet"}; promote: ${doc.promote.reason}`);
+  const line = `AirPrompter's rollout page: control ${doc.arms.control.runs} runs / candidate ${doc.arms.candidate.runs} runs (window ${doc.window.usageSource}); quality ${doc.arms.control.quality ? `${doc.arms.control.quality.signal} ${doc.arms.control.quality.valueBps / 100} %` : "—"} vs ${doc.arms.candidate.quality ? `${doc.arms.candidate.quality.valueBps / 100} %` : "—"}; evaluation ${doc.evaluation?.decision ?? "none yet"}; promote: ${doc.promote.reason}`;
+  check(doc.experiment?.experimentId === e1.experimentId && !!doc.arms?.control && !!doc.arms?.candidate, line);
+  if (doc.arms.control.runs + doc.arms.candidate.runs === 0) gap("the rollout page has no window for this step yet (the step must hold before it reads one); in a session the read comes minutes after the start");
 }
 // Dial to 50 %, then the winner.
 const dialed = await con.experiments.weights({ environment: ENV, experimentId: e1.experimentId, action: "set", weightBps: 5000, notes: "Zudocs demo, beat 4: dialled to 50 %" });
@@ -290,7 +305,7 @@ beat(5, "safety nets");
 {
   const pins = withPin(await con.pins(ENV), BEATS.unreportedModel.tag, { model: BEATS.unreportedModel.model });
   const sealedM = await con.seal({ environment: ENV, pins, notes: BEATS.unreportedModel.notes, modelRequired: [BEATS.unreportedModel.tag] });
-  if (sealedM.blocked) ok(`the seal refused a required model no host reports: ${sealedM.blocked.blockers.map((b) => `${b.code}${b.detail ? ` (${b.detail})` : ""}`).join(", ")}`);
+  if (sealedM.blocked) ok(`the seal refused a required model no host reports (the environment's catalogue is what the fleet reports; nothing to advance past): ${sealedM.blocked.blockers.map((b) => `${b.code}${b.detail ? ` (${b.detail})` : ""}`).join(", ")}`);
   else {
     ok(`the seal accepted the unreported model with a warning (${sealedM.warnings.map((w) => w.code).join(", ")}); promoting to let the hosts refuse it`);
     const pM = await con.promote({ environment: ENV, releaseDigest: sealedM.release.releaseDigest, notes: BEATS.unreportedModel.notes });
@@ -344,7 +359,7 @@ beat(5, "safety nets");
   check(held !== null, held ? `eu-west card: forced downgrade, serving #${held.status.generation}` : "eu-west never reported the forced downgrade");
   const fleet = await con.fleet(ENV);
   const forcedOnFleet = fleet.instances.filter((i) => i.claimed?.localRollback?.forced).length;
-  ok(`AirPrompter's fleet page: ${forcedOnFleet} instance(s) with a forced local rollback`);
+  ok(`AirPrompter's fleet page: ${forcedOnFleet} instance(s) with a forced local rollback (the host reports it on its next heartbeat, up to five minutes; read ${forcedOnFleet ? "after" : "before"} that)`);
   const vA3 = await con.newVersion({ tag: "support.escalate.summary", inference: (c) => ({ ...c, maxOutputTokens: Number(c.maxOutputTokens ?? 400) + 1 }), message: "Beat 5: past the rollback" });
   const sealedA3 = await con.seal({ environment: ENV, pins: canonicalPins(config, { "support.escalate.summary": { versionId: vA3.versionId }, "support.reply": { versionId: vC.versionId } }), notes: "Zudocs demo, beat 5: past the rollback" });
   const pA3 = await con.promote({ environment: ENV, releaseDigest: sealedA3.release.releaseDigest, notes: "Zudocs demo, beat 5: advance past the rollback" });

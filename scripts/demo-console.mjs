@@ -151,7 +151,7 @@ switch (command) {
       const pins = withPin(await con.pins(ENV), beat.tag, { model: beat.model });
       const sealed = await con.seal({ environment: ENV, pins, notes: beat.notes, modelRequired: [beat.tag] });
       const release = describeSeal(sealed);
-      if (!release) { say("  → refused at the seal"); process.exit(0); }
+      if (!release) { say("  → refused at the seal: the environment's catalogue is what the fleet reports, so a required model nobody reports never becomes a release (nothing to advance past)"); process.exit(0); }
       say("  → the seal accepted it with a warning; promoting so the hosts can refuse it (us-east stays on the previous generation; eu-west's daemon declares no models, so it stages it — do not approve; `advance` supersedes the row):");
       const pointer = await con.promote({ environment: ENV, releaseDigest: release.releaseDigest, notes: beat.notes });
       say(`  promoted generation ${pointer.generation}; run \`npm run demo:console -- advance\` to move past it once the refusal has been seen`);

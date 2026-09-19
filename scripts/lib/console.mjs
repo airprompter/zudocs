@@ -52,13 +52,26 @@ export function createConsole({ config, token, fetchImpl = globalThis.fetch, log
   const A = (agentId = config.agentId) => `/workspace/${ws}/agents/${agentId}`;
   const idem = () => ({ "idempotency-key": randomBytes(8).toString("hex") });
 
-  const api = async (method, path, body, extra = {}) => {
+  // One retry, three seconds later, when the platform answers 5xx: a blip on the dev API must not end a
+  // twenty-five-minute rehearsal, and the retry is logged as what it is. A seal is content-addressed and a
+  // promotion carries an idempotency key, so neither doubles; a draft retried after a 500 that had in fact landed
+  // makes one more revision of the same text, which is harmless. A 4xx is the platform's word and is not retried.
+  const once = async (method, path, body, extra) => {
     const response = await fetchImpl(`${base}${path}`, { method, headers: { authorization: `Bearer ${token}`, accept: "application/json", ...(body !== undefined ? { "content-type": "application/json" } : {}), ...extra }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
     const text = await response.text();
     let json;
     try { json = JSON.parse(text); } catch { json = { text: text.slice(0, 300) }; }
-    if (response.status === 401) throw new ConsoleRefusal(`${method} ${path}`, 401, { error: "the session token was not accepted; run `airprompter login` again (tokens last about an hour)" });
     return { status: response.status, json };
+  };
+  const api = async (method, path, body, extra = {}) => {
+    let r = await once(method, path, body, extra);
+    if (r.status >= 500) {
+      log({ event: "platform_5xx_retry", method, path, status: r.status, answer: JSON.stringify(r.json).slice(0, 120) });
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      r = await once(method, path, body, extra);
+    }
+    if (r.status === 401) throw new ConsoleRefusal(`${method} ${path}`, 401, { error: "the session token was not accepted; run `airprompter login` again (tokens last about an hour)" });
+    return r;
   };
   const must = (r, want, what) => {
     if (!(Array.isArray(want) ? want : [want]).includes(r.status)) throw new ConsoleRefusal(what, r.status, r.json);

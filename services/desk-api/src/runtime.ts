@@ -16,7 +16,7 @@
  *
  * @example
  * ```ts
- * const host = await getHost();                 // memoised; a failed start is retried by the next invocation
+ * const host = await getHost();                 // memoised; a failed start is retried by the next invocation (SDK #52's fresh-store race: once, at once)
  * const { ap } = host;
  * await ap.invoke(async () => { ... ap.prompt("support.reply", { subject }).renderAsync(values) ... });
  * ```
@@ -81,9 +81,31 @@ async function readAgentKey(env: DeskEnv): Promise<string> {
   return value;
 }
 
+/**
+ * SDK #52: on a fresh store whose first sync accepts a newer root document, the golden hook verifies the slot it just
+ * staged against the root the agent held BEFORE the sync (`unknown_signing_key`), and the SDK reports it as a network
+ * failure (`no_verified_release … could not be reached: slot A failed verification: unknown_signing_key`). The store
+ * now holds the accepted root and the staged slot, so a second start on the same store succeeds. Pure.
+ */
+export function isFreshStoreRootRace(error: unknown): boolean {
+  const e = error as { code?: unknown; message?: unknown } | null;
+  return typeof e?.message === "string" && e.code === "no_verified_release" && /failed verification: unknown_signing_key/.test(e.message);
+}
+
+/** One start, retried once (and logged as such) when the failure is SDK #52's signature; anything else is thrown as it is. */
+export async function startWithRetry(start: () => Promise<Host>, log: (event: Record<string, unknown>) => void, isRetryable: (error: unknown) => boolean = isFreshStoreRootRace): Promise<Host> {
+  try {
+    return await start();
+  } catch (error) {
+    if (!isRetryable(error)) throw error;
+    log({ event: "host_start_retried", reason: String((error as Error).message ?? error).slice(0, 200), issue: "airprompter-agent-sdk#52" });
+    return start();
+  }
+}
+
 export function getHost(): Promise<Host> {
   if (!pending) {
-    pending = startHost().catch((error) => {
+    pending = startWithRetry(startHost, (event) => console.log(JSON.stringify({ source: "desk", ...event }))).catch((error) => {
       pending = null;
       throw error;
     });

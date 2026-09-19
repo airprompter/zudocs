@@ -62,9 +62,11 @@ export const BEATS = Object.freeze({
     notes: "Zudocs demo, beat 5: a version that uses {{region_note}}, which the slot does not declare",
   }),
   /**
-   * Beat 5 — a model no host reports, pinned as required. The seal warns (`model_not_reported`) and seals; us-east
-   * refuses the release and keeps serving the previous generation; eu-west's daemon declares no model catalogue, so
-   * it stages it for approval instead (SDK #51) — the presenter must not approve it; `advance` supersedes the row.
+   * Beat 5 — a model no host reports, pinned as required. On dev the environment's catalogue is what the fleet's
+   * instances report, so the seal refuses it outright (`model_not_in_catalog`) and nothing is promoted. The dry run
+   * and the drill keep the other branch for a platform that seals with a warning: us-east would refuse the release
+   * and keep serving the previous generation; eu-west's daemon declares no model catalogue (SDK #51), so it would
+   * stage it — not to be approved; the next promotion supersedes the row.
    */
   unreportedModel: Object.freeze({ tag: "support.reply", model: "anthropic.claude-sonnet-4-5", notes: "Zudocs demo, beat 5: the reply pinned (required) to a model no host reports" }),
 });

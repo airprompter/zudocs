@@ -12,7 +12,7 @@
  * ```
  */
 import type { Arms } from "../api";
-import { TOOLTIPS, ago, armLabel, latency, modelLabel, money, slotShort } from "../format";
+import { TOOLTIPS, ago, armLabel, countdown, latency, modelLabel, money, slotShort } from "../format";
 
 const pct = (bps: number) => `${Math.round(bps / 100)} %`;
 /** The candidate arm's index in the manifest's arm order (control first by the platform's rule; found by name, not assumed). */
@@ -30,7 +30,7 @@ export function Experiments({ arms }: { arms: Arms | null }) {
       {arms.ramps.map((r) => (
         <p key={r.experimentId} className="fine">
           <strong>{r.tag ? slotShort(r.tag) : "every slot"}</strong>: {r.arms.map((arm, i) => `${arm} ${pct(r.weightBps[i] ?? 0)}`).join(" · ")}
-          <span className="muted"> · plan {r.plan.map((p, i) => `${i === r.step ? "▶ " : ""}${pct(p.weightBps[candidateIndex(r.arms)] ?? 0)}`).join(" → ")}{r.nextStepAt ? ` · next step ${ago(r.nextStepAt).replace(" ago", "")}` : ""} · one approval unlocks the whole plan on eu-west</span>
+          <span className="muted"> · plan {r.plan.map((p, i) => `${i === r.step ? "▶ " : ""}${pct(p.weightBps[candidateIndex(r.arms)] ?? 0)}`).join(" → ")}{r.nextStepAt ? ` · next step ${countdown(r.nextStepAt).replace(/^expired (.*) ago$/, "due $1 ago")}` : ""} · one approval unlocks the whole plan on eu-west</span>
         </p>
       ))}
       {live.length ? (

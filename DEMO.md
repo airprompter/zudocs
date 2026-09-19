@@ -39,7 +39,11 @@ https://api-dev.airprompter.com)"`), plus the AirPrompter console open on the **
    (the rule restores it after 15 minutes regardless; the desk's *Cut the wire* is the click) — or cut it live in
    beat 7 and talk for the ninety seconds it takes.
 4. Open the desk, sign in, check the release bar reads `release #N · active on 3/3` (4/4 with the air-gapped host),
-   no *staged*, no *FROZEN*, the inbox holds twelve tickets, the Approvals section says *nothing waiting*.
+   no *staged*, no *FROZEN*, the inbox holds twelve tickets, the Approvals section says *nothing waiting*. If the
+   eu-west card still reads *forced downgrade* (health *degraded: forced_downgrade*) from the last session's rollback
+   drill, that is the SDK never clearing the flag once the host moved past the rollback (SDK #45): the reset cannot
+   clear it — a deploy that touches `services/eu-host/` replaces the instance and its store (RUNBOOK.md › Replacing a
+   host), or say so in beat 2.
 5. Open the console on the agent's board; open a terminal with the session token; keep `docs/strips/cli.txt` and
    `docs/strips/apply-window.txt` open for beat 9.
 6. Rehearsal: `npm run demo:dryrun -- --skip-wire` performs every click below and asserts what you will see (25 min
@@ -69,8 +73,10 @@ click — click **Sync now** to make it now. The Approvals section shows **relea
 approval on eu-west-1/ec2** (that host runs `unlock_required`: AirPrompter staged, nobody activated). Click
 **Approve**: within five seconds the row reads *live* with the instant, the eu-west card flips to `#G+1 · active`,
 the timeline says `release #G+1 activated on the desk's approval by you`. Click **Nudge the fleet**: the puller
-reads the origin now; the ap-southeast card reads *exchange holds #G+1*, and with the air-gapped host up its card
-follows within a minute (*last apply #G+1 from the exchange*).
+reads the origin now; the ap-southeast card reads *exchange holds #G+1*. With the air-gapped host up, it applies
+from the exchange within its own timer, but its card is a mirror the puller writes on its tick — five minutes at
+the deployed cadence, one with `--context demo=true` — so click **Nudge the fleet** again a minute later to bring
+the mirror forward (*last apply #G+1 from the exchange*), or come back to it in beat 2.
 
 Re-run **T-1041**: the reply opens with the customer's name and the badge reads `rev-N+1 · release #G+1`. Nothing
 deployed.
@@ -149,25 +155,24 @@ Each is one command; each prints the refusal as the platform gave it.
   does not declare: **the seal refuses** (`variable_undeclared: rev-N uses {{region_note}} …`). No runtime ever
   renders a literal placeholder.
 - `npm run demo:console -- drill model-required` — the reply pinned, as *required*, to a model no host reports.
-  The seal warns (`model_not_reported`) and seals; the promotion goes through; **us-east refuses the release** and
-  keeps serving the previous generation (the sync's outcome and the card say why; AirPrompter's fleet page counts
-  the instances reporting the model unavailable). **eu-west stages it instead** — the released daemon declares no
-  model catalogue (`airprompterd` has no `--models`; the workers' catalogue never reaches the process that syncs —
-  airprompter-agent-sdk#51), so the Approvals section shows it staged: **do not approve it**; say why. Then `npm run
-  demo:console -- advance` — the next promotion stages in its place, the host settles the old row *superseded* on
-  its next tick (a click on it after that is refused: `409 approval_stale`), and the reply goes back to a model the
-  fleet reports.
+  **The seal refuses it**: `model_not_in_catalog (anthropic.claude-sonnet-4-5)` — the environment's catalogue is
+  what the fleet's instances report on their heartbeats, so a required model nobody reports never becomes a
+  release, and nothing needs advancing past. Say: *the catalogue is the fleet's word, not a list we typed.* (The
+  daemon host reports no models at all — `airprompterd` has no `--models`, airprompter-agent-sdk#51 — which is why
+  the seal also warns `variable_uncovered`; the console's benign warnings are acknowledged by the command.)
 - `npm run demo:console -- drill golden-fail` — a triage version that answers `other`/`low` whatever the ticket
   says. us-east runs the golden set before activating (five cases against Nova Micro): **1/5 is below the 80 %
   floor, so the release stays staged — under `auto`**; the card reads *golden: 1/5 · below the floor — staged, not
-  activated*. eu-west stages it too (do not approve). Click **Golden set now** on the presenter panel: the active
-  release passes 5/5. `advance` to move past.
+  activated*. eu-west stages it too — the daemon has no golden hook — so the Approvals section shows it: **do not
+  approve it**; say why. Click **Golden set now** on the presenter panel: the active release passes 5/5. Then
+  `advance`: the next promotion stages in its place, the host settles the old row *settled on the host* (superseded,
+  naming the generation staged instead) on its next tick, and a click on it after that is refused.
 - The eu-west shell row on the presenter panel (Run Command; the API queues the command and the CLI's own document
   lands on the timeline and under the buttons within seconds — `doctor` takes up to a minute): **policy show** —
   *in force unlock_required (local); the console says auto — advisory here*; **rollback** — *generation G-1 live —
-  a forced downgrade, stamped on evidence*; the eu-west card reads *forced downgrade* and the fleet page shows the
-  instance's forced local rollback; the host is held back until the next promotion (`advance`), which lands staged —
-  approve it. **unlock**, **status** and **doctor** are there too. There is no `policy set` for that host: its daemon
+  a forced downgrade, stamped on evidence*; the eu-west card reads *forced downgrade* within a minute, and the fleet
+  page shows the instance's forced local rollback after its next heartbeat (up to five minutes — not at once); the
+  host is held back until the next promotion (`advance`), which lands staged — approve it. **unlock**, **status** and **doctor** are there too. There is no `policy set` for that host: its daemon
   runs with `--apply-policy unlock_required`, a local policy no `policy set` loosens; the loosening drill is the
   us-east host's own **set auto / set unlock_required** (the SDK's `setApplyPolicy`, an operator's act).
 - `apply --force` and `apply.window` are laptop drills, recorded: `docs/strips/cli.txt` (`rollback`, then the older
@@ -244,7 +249,11 @@ hosted-staging click, the second split, the dial and the winner. 5:00.
   `502 no_verified_release` until `advance`. The warm containers keep serving. Do the drill quickly, or say so.
 - **The cold start now includes the golden set** (five Nova Micro calls after SSM, KMS and the sync): a first request
   on a cold container can pass the API's 30-second cap and answer 503 once; the next request finds the warm
-  container. Click **Sync now** before beat 0 to warm it.
+  container. Click **Sync now** before beat 0 to warm it. A fresh container can also refuse its very first sync
+  with `unknown_signing_key` reported as a network failure (the golden hook verifies the staged slot against the
+  root the agent held before the sync accepted the newer one — SDK #52). The desk retries the start once on that
+  exact signature (the store now holds the accepted root), so the container serves on its first request and the log
+  carries `host_start_retried`; after a reset (every container fresh) expect one or two such lines.
 - **`apply.window` is a laptop strip** for the same reason. The manifest's `unlockWindow` would reach the daemon,
   but setting one on the environment sets `unlock_required` on it (the platform refuses a window without it),
   which pins every host including the Lambda — which nobody can unlock. RUNBOOK.md says why we do not.

@@ -55,10 +55,14 @@ the pull request.
 ## Deploying
 
 CI deploys `ZudocsDns`, `ZudocsSite`, `ZudocsSharedHost`, `ZudocsFleet` and `ZudocsDesk` from `main` through the OIDC
-role (the desk API bundle, the desk app, the eu-west host bundle, the puller and the airgap bundle are built in the
-workflow first: `npm run build`; the desk stack is ordered after the host and fleet stacks because it names the host's
+role (the desk API bundle, the desk app, the eu-west host bundle with the wire and power functions, the puller, the
+airgap bundle and the cost check are built in the workflow first: `npm run build`; the desk stack is ordered after the host and fleet stacks because it names the host's
 role and function and the nudge queue). A change under `services/eu-host/` or to its `pins.json` replaces the eu-west
 instance; a change under `services/airgap/` or to its `pins.json` replaces the air-gapped instance on the next
 `airgap:up`. `ZudocsAirgap` is deployed on demand from the owner's profile only (`npm run airgap:up` / `airgap:down`;
 `infra/test/airgap-stack.test.ts` pins that CI never lists it). `ZudocsCi` (the role itself) and the CDK bootstrap are
-deployed from the owner's Identity Center session only — see the README's "First deploy".
+deployed from the owner's Identity Center session only — see the README's "First deploy". `npm run teardown` is the
+owner's too (it refuses under `CI`); its dry run is the only form a review ever needs.
+- The eu-west host sleeps at night (phase 8). A proof or a dry run that needs it checks the card first
+  (`npm run host:status`) and wakes it (`npm run host:wake -- --wait`); the reset refuses a sleeping host. A change
+  under `services/eu-host/` still replaces the instance — asleep or not — on the next deploy.

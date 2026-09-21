@@ -3,10 +3,11 @@
  * Builds what the eu-west host stack deploys: `dist/bundle/` (the host bundle the instance downloads at boot — the
  * worker and the import pass bundled by esbuild for Node 22 arm64, the Python worker and its requirements rendered from `pins.json`, the
  * systemd units, the helper scripts, the CloudWatch agent config, the pinned root JWK, and `zudocs.env` — the
- * identifiers and table names from `airprompter.config.json` and `infra/cdk.json`, never a key) and `dist/wire/`
- * (the wire function for Lambda). What was tested is what deploys: every dependency is inside the bundle.
+ * identifiers and table names from `airprompter.config.json` and `infra/cdk.json`, never a key), `dist/wire/` (the
+ * wire function for Lambda) and `dist/power/` (the power function: sleep, wake, the tick). What was tested is what
+ * deploys: every dependency is inside the bundle.
  *
- *   $ node build.mjs            # → dist/bundle/*, dist/wire/index.mjs
+ *   $ node build.mjs            # → dist/bundle/*, dist/wire/index.mjs, dist/power/index.mjs
  *   $ node build.mjs --check    # build into a temporary directory only (CI proves it builds)
  */
 import { build } from "esbuild";
@@ -24,6 +25,7 @@ const bundleDir = join(out, "bundle");
 mkdirSync(join(bundleDir, "units"), { recursive: true });
 mkdirSync(join(bundleDir, "bin"), { recursive: true });
 mkdirSync(join(out, "wire"), { recursive: true });
+mkdirSync(join(out, "power"), { recursive: true });
 
 const common = {
   bundle: true,
@@ -39,6 +41,7 @@ const common = {
 await build({ ...common, entryPoints: [join(here, "src", "worker.ts")], outfile: join(bundleDir, "worker.mjs") });
 await build({ ...common, entryPoints: [join(here, "src", "importTelemetry.ts")], outfile: join(bundleDir, "import.mjs") });
 await build({ ...common, entryPoints: [join(here, "src", "wire.ts")], outfile: join(out, "wire", "index.mjs") });
+await build({ ...common, entryPoints: [join(here, "src", "power.ts")], outfile: join(out, "power", "index.mjs") });
 
 const config = JSON.parse(readFileSync(join(repoRoot, "airprompter.config.json"), "utf8"));
 const cdkContext = JSON.parse(readFileSync(join(repoRoot, "infra", "cdk.json"), "utf8")).context;
@@ -53,4 +56,4 @@ cpSync(join(here, "host", "pyworker.py"), join(bundleDir, "pyworker.py"));
 cpSync(join(here, "host", "cloudwatch-agent.json"), join(bundleDir, "cloudwatch-agent.json"));
 for (const unit of ["airprompterd.service", "zudocs-worker.service", "zudocs-pyworker.service", "zudocs-import.service", "zudocs-import.timer"]) cpSync(join(here, "host", "units", unit), join(bundleDir, "units", unit));
 for (const bin of ["zudocs-agent-key", "zudocs-cli"]) cpSync(join(here, "host", "bin", bin), join(bundleDir, "bin", bin));
-console.log(`eu-host built → ${bundleDir} (worker.mjs, import.mjs, units, helpers) and ${join(out, "wire", "index.mjs")}`);
+console.log(`eu-host built → ${bundleDir} (worker.mjs, import.mjs, units, helpers), ${join(out, "wire", "index.mjs")} and ${join(out, "power", "index.mjs")}`);

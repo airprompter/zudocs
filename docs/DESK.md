@@ -27,7 +27,7 @@ Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack
 `GET /tickets`, `GET /tickets/{id}`, `POST /tickets/{id}/run`, `POST /tickets/{id}/escalate`,
 `POST /runs/{id}/feedback`, `GET /state`, `GET /events?since=`, `GET /approvals`, `POST /approvals/{id}/approve`
 (phase 4: the owner's decision on a release staged on the eu-west host, recorded once — `docs/EU-WEST.md`),
-`POST /presenter/{heartbeat|upload|sync|seed|replay|enqueue|cut_wire|restore_wire}`, `GET /healthz`.
+`POST /presenter/{heartbeat|upload|sync|seed|replay|enqueue|cut_wire|restore_wire|nudge|host_cli|policy|golden|reset|sleep_host|wake_host|demo_mode}`, `GET /healthz`.
 
 ### What each number on the run panel is
 
@@ -67,8 +67,15 @@ Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack
   re-seed), `replay` up to 30.
 - `/state` carries `frozen` (the manifest's `disable` directive as `status().disabled.agent`, with one fixed
   reason — `lastRefusal` may name another refusal entirely)
-  and a run on a frozen host answers `423 frozen` before the cap is taken; `features.hosted` and `features.hostCli`
-  say what the presenter panel may offer.
+  and a run on a frozen host answers `423 frozen` before the cap is taken; `features.hosted`, `features.hostCli`,
+  `features.power` and `features.demoMode` say what the presenter panel may offer.
+- Phase 8 (`hostPower.ts`): `sleep_host` / `wake_host` invoke the eu-west power function by its fixed ARN and answer
+  with its own document (a refusal — `wire_cut`, `demo_mode_on`, `several_instances`, `instance_pending`,
+  `instance_stopping` — is 409 and on the timeline); `/state` folds the eu-west row's `power` marker into
+  `hosts[].powerView` (asleep since / going to sleep / waking / started) and, when the marker is in transition past
+  twenty seconds, asks the function to look now (a `tick`); `demo_mode` writes the eu-west switch parameter (on for
+  four hours, or off — `demoMode.ts` is the one parser every reader shares) and `/state.demoMode` is the reading
+  through a thirty-second cache; `host_cli` answers `409 host_asleep` while the marker says the host is off.
 - The SDK starts with `golden.invoke` (a caller with no wrapper — the hook runs inside the boot sync), so every
   staged release's golden sets run against the pinned model before the apply decision; below the floor the release
   stays staged under `auto` and `status().golden` says so.

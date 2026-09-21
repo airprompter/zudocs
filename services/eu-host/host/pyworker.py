@@ -1,6 +1,7 @@
 """The Zudocs Python worker on the eu-west host: the public Python SDK (``airprompter-agent``) attached to the same
 ``airprompterd`` as the Node worker — one daemon, one store, one key that no worker holds — running one ticket every
-twenty minutes through LiteLLM to Bedrock (Converse, the instance role's credentials): ``support.reply`` rendered
+two hours idle (every five minutes while the demo-mode parameter it reads every minute says on; the same fail-closed
+rules as the Node worker's ``demoMode.ts``) through LiteLLM to Bedrock (Converse, the instance role's credentials): ``support.reply`` rendered
 with ``customer_tier`` from the desk's own table, the model called with the release's inference settings, the
 observation filed by the SDK's LiteLLM callback, the declared checks run, feedback from their verdicts, the record
 written to the desk's runs table with ``host: eu-west-1/ec2`` and the Python SDK's name, and this process's part of
@@ -62,6 +63,41 @@ def need(name: str) -> str:
     if not value:
         raise SystemExit(f"host env: {name} is missing")
     return value
+
+
+DEMO_MODE_MAX_HOURS = 4
+
+
+def parse_demo_mode(text: Optional[str], now: float) -> dict[str, Any]:
+    """The demo-mode parameter's text as the workers read it (the Node side's ``parseDemoMode``, the same rules):
+    on only when the document parses, says on, carries an ``until`` still ahead and no further than the cap."""
+    off = {"mode": "off", "until": None, "by": None, "reason": None}
+    if text is None or not text.strip():
+        return {**off, "reason": "absent"}
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return {**off, "reason": "unparseable"}
+    if not isinstance(doc, dict):
+        return {**off, "reason": "unparseable"}
+    by = doc.get("by") if isinstance(doc.get("by"), str) and doc.get("by").strip() else None
+    if doc.get("mode") == "off":
+        return {"mode": "off", "until": None, "by": by, "reason": None}
+    if doc.get("mode") != "on":
+        return {**off, "by": by, "reason": "unknown_mode"}
+    until_text = doc.get("until")
+    try:
+        until = datetime.fromisoformat(str(until_text).replace("Z", "+00:00")).timestamp() if isinstance(until_text, str) else None
+    except ValueError:
+        until = None
+    if until is None:
+        return {**off, "by": by, "reason": "no_expiry"}
+    until_iso = datetime.fromtimestamp(until, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    if until <= now:
+        return {"mode": "off", "until": until_iso, "by": by, "reason": "expired"}
+    if until - now > DEMO_MODE_MAX_HOURS * 3600 + 60:
+        return {**off, "by": by, "reason": "too_long"}
+    return {"mode": "on", "until": until_iso, "by": by, "reason": None}
 
 
 def plain(value: Any) -> Any:
@@ -201,10 +237,14 @@ def main() -> None:
     agent_id = need("AIRPROMPTER_AGENT")
     target = need("AIRPROMPTER_ENVIRONMENT")
     by = os.environ.get("ZUDOCS_WORKER_NAME", "eu-west python worker")
-    interval = int(os.environ.get("ZUDOCS_PY_TICKET_INTERVAL_SECONDS", "1200"))
+    idle_interval = int(os.environ.get("ZUDOCS_PY_TICKET_INTERVAL_SECONDS", "7200"))
+    demo_interval = int(os.environ.get("ZUDOCS_PY_DEMO_TICKET_INTERVAL_SECONDS", "300"))
+    demo_parameter = os.environ.get("ZUDOCS_DEMO_MODE_PARAMETER", "").strip() or f"/zudocs/{need('AIRPROMPTER_ENVIRONMENT')}/demo-mode"
+    demo_poll = int(os.environ.get("ZUDOCS_DEMO_MODE_POLL_SECONDS", "60"))
     cap = int(os.environ.get("ZUDOCS_DAILY_RUN_CAP", "2000"))
     bedrock_region = need("ZUDOCS_BEDROCK_REGION")
     tables = Tables(need("ZUDOCS_TABLES_REGION"))
+    ssm = boto3.client("ssm", region_name=need("ZUDOCS_REGION"))
     with open(need("AIRPROMPTER_ROOT_JWK_PATH"), encoding="utf-8") as f:
         root = json.load(f)
     if "d" in root:
@@ -270,14 +310,48 @@ def main() -> None:
     cursor: Optional[str] = None
     stopping = False
 
+    # Demo mode: the SSM switch the desk writes, read every minute; the interval in force follows it (demoMode.ts's rules).
+    demo = {"mode": "off", "until": None, "by": None, "reason": "not_read_yet"}
+    demo_read_at: Optional[str] = None
+    demo_error: Optional[str] = None
+    interval = idle_interval
+    next_run = time.time() + 90  # the first ticket a minute and a half after start; the Node worker's is later still
+
+    def read_demo_mode() -> None:
+        nonlocal demo, demo_read_at, demo_error, interval, next_run
+        try:
+            try:
+                text = ssm.get_parameter(Name=demo_parameter)["Parameter"]["Value"]
+            except ssm.exceptions.ParameterNotFound:
+                text = None
+            now = time.time()
+            parsed = parse_demo_mode(text, now)
+            demo_read_at = now_iso()
+            demo_error = None
+            new_interval = demo_interval if parsed["mode"] == "on" else idle_interval
+            if new_interval != interval:
+                interval = new_interval
+                # A mode change pulls the next ticket forward to at most one new interval away, never further out.
+                next_run = min(next_run, now + interval)
+            if parsed["mode"] != demo["mode"] or parsed["reason"] != demo["reason"]:
+                log(event="demo_mode", mode=parsed["mode"], until=parsed["until"], reason=parsed["reason"], by=parsed["by"], ticketIntervalSeconds=interval)
+            demo = parsed
+        except Exception as error:  # noqa: BLE001 — the last reading stands; the row says the read failed
+            demo_error = f"{type(error).__name__}: {str(error)[:160]}"
+            log(event="demo_mode_unreadable", parameter=demo_parameter, reason=demo_error)
+
+    def cadence_fields() -> dict[str, Any]:
+        return {"demoMode": demo["mode"], "until": demo["until"], "by": demo["by"], "reason": demo["reason"], "ticketIntervalSeconds": interval, "idleIntervalSeconds": idle_interval, "demoIntervalSeconds": demo_interval, "nextTicketAt": datetime.fromtimestamp(next_run, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"), "parameter": demo_parameter, "readAt": demo_read_at, "error": demo_error}
+
     def write_status() -> None:
         s = ap.status()
         h = ap.healthz()
-        tables.merge_status(host_id, {"instanceId": s.instance_id, "sdk": sdk, "startedAt": started_at, "writtenAt": now_iso(), "generation": s.generation, "stagedGeneration": s.staged_generation, "applyState": s.apply_state, "source": s.source, "attached": bool((s.daemon or {}).get("attached")), "healthz": h.get("status"), "reasons": h.get("reasons", []), "runs": runs, "lastRunAt": last_run_at, "variables": {"sources": list(s.variables.get("sources", [])) if isinstance(s.variables, dict) else []}})
+        tables.merge_status(host_id, {"instanceId": s.instance_id, "sdk": sdk, "startedAt": started_at, "writtenAt": now_iso(), "generation": s.generation, "stagedGeneration": s.staged_generation, "applyState": s.apply_state, "source": s.source, "attached": bool((s.daemon or {}).get("attached")), "healthz": h.get("status"), "reasons": h.get("reasons", []), "runs": runs, "lastRunAt": last_run_at, "variables": {"sources": list(s.variables.get("sources", [])) if isinstance(s.variables, dict) else []}, "cadence": cadence_fields()})
 
     tables.append_event({"at": started_at, "kind": "worker_started", "host": host_id, "sdk": sdk, "instanceId": status.instance_id, "generation": status.generation, "source": status.source, "language": "python"})
     ap.on_change(lambda change: tables.append_event({"at": now_iso(), "kind": "release_changed", "host": host_id, "generation": change.generation, "stagedGeneration": change.staged_generation, "applyState": ap.status().apply_state, "seenBy": "python"}))
-    log(event="serving", hostId=host_id, generation=status.generation, stagedGeneration=status.staged_generation, socketPath=socket_path, sdk=sdk, intervalSeconds=interval)
+    read_demo_mode()
+    log(event="serving", hostId=host_id, generation=status.generation, stagedGeneration=status.staged_generation, socketPath=socket_path, sdk=sdk, intervalSeconds=interval, demoMode=demo["mode"])
     write_status()
 
     def run_one() -> None:
@@ -351,8 +425,8 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    next_run = time.time() + 90  # the first ticket a minute and a half after start; the Node worker's is later still
     next_status = time.time() + 30
+    next_demo_read = time.time() + demo_poll
     while not stopping:
         now = time.time()
         if now >= next_run:
@@ -361,6 +435,9 @@ def main() -> None:
                 run_one()
             except Exception as error:  # noqa: BLE001
                 log(event="ticket_run_failed", reason=str(error)[:300])
+        if now >= next_demo_read:
+            next_demo_read = now + demo_poll
+            read_demo_mode()
         if now >= next_status:
             next_status = now + 30
             try:

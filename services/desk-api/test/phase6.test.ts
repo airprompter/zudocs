@@ -302,7 +302,7 @@ function fakeHost(options: { frozen?: boolean; freezeOnInvoke?: boolean; ramps?:
     golden: async (o: { tag?: string }) => { calls.push(`golden:${o.tag ?? "*"}`); return [{ tag: "support.triage", arm: "control", setId: "gs", model: "amazon.nova-micro", cases: 5, passed: 1, failed: 4, passBps: 2000, minPassBps: 8000, meetsThreshold: false, results: [{ caseId: "billing-double-charge", ok: false, failed: ["category"] }, { caseId: "other-dark-mode", ok: true, failed: [] }] }]; },
     feedback: () => true, heartbeatNow: async () => undefined, syncNow: async () => undefined, flushTelemetry: async () => ({ status: "nothing" }), uploadNow: async () => null, spool: { observe: () => {} }, onChange: () => () => {},
   };
-  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "arn:aws:lambda:eu-west-1:1:function:zudocs-wire", nudgeQueueUrl: "", hosted: { runKeyParameter: "", runUrl: "", target: "staging" }, euHost: { region: "eu-west-1", nameTag: "zudocs-eu-host" }, airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
+  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "arn:aws:lambda:eu-west-1:1:function:zudocs-wire", nudgeQueueUrl: "", powerFunctionArn: "", demoModeParameter: "", hosted: { runKeyParameter: "", runUrl: "", target: "staging" }, euHost: { region: "eu-west-1", nameTag: "zudocs-eu-host" }, airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
   const host: Host & { store: ReturnType<typeof fakeStore>; calls: string[] } = {
     env, ap, store, calls, callers: { judgeModel: "amazon.nova-micro", complete: async () => ({ text: "", response: {} }), judge: async () => "", golden: async () => ({ text: "", outputTokens: null }) }, hosted: null,
     hostCli: async (command) => { calls.push(`host_cli:${command}`); if (options.hostCliThrows) throw new Error(options.hostCliThrows); const stdout = options.hostCliStdout ?? "{}"; return { command, line: `zudocs-cli ${command} --json`, status: "Success", instanceId: "i-eu", document: options.hostCliStdout ? documentOf(stdout) : command === "policy show" ? { via: "daemon", applyPolicy: { effective: "unlock_required", source: "local", manifestSaid: "auto" } } : { ok: true }, stdout, stderr: options.hostCliStderr ?? "", durationMs: 1200 }; },
@@ -310,6 +310,8 @@ function fakeHost(options: { frozen?: boolean; freezeOnInvoke?: boolean; ramps?:
     observed: async (fn) => ({ result: await fn(), error: undefined, observations: [] }),
     writeStatus: async () => undefined,
     nudge: async () => ({ messageId: null }),
+    power: async (action, by) => ({ action, hostId: "eu-west-1/ec2", instanceId: "i-eu", state: "running", changed: false, refusal: null, marker: null, message: `${action} by ${by}` }),
+    demoMode: null,
   };
   return host;
 }
@@ -339,7 +341,7 @@ test("handler: a frozen host refuses a run inside the invoke (after the sync), t
   const state = parse(await handler(event("GET", "/state")));
   assert.deepEqual(state.body.frozen, { frozen: true, reason: FROZEN_REASON });
   assert.deepEqual(host.calls, ["invoke"], "/state answers after a sync pass, so every warm container tells the same story");
-  assert.deepEqual(state.body.features, { wire: true, nudge: false, hosted: false, hostCli: true });
+  assert.deepEqual(state.body.features, { wire: true, nudge: false, hosted: false, hostCli: true, power: false, demoMode: false });
   assert.deepEqual(frozenOf(fakeHost()), { frozen: false, reason: null });
 });
 

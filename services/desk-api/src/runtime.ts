@@ -31,6 +31,7 @@ import { createCallers, createGoldenCaller, type Callers } from "./bedrock.js";
 import { readEnv, type DeskEnv } from "./env.js";
 import { createHostedClient, type HostedClient } from "./hosted.js";
 import { runHostCli, type HostCliCommand, type HostCliResult } from "./hostCli.js";
+import { createDemoModePorts, invokePower, type DemoModePorts, type PowerAction, type PowerAnswer } from "./hostPower.js";
 import { MODELS } from "./modelCatalogue.js";
 import { collectObservations, tapObservations, type Observed } from "./observe.js";
 import { createStore, type Store } from "./store.js";
@@ -63,6 +64,10 @@ export interface Host extends RunHost {
   readonly hosted: HostedClient | null;
   /** One allowlisted `zudocs-cli` command on the eu-west host through Run Command (`hostCli.ts`); a fake in tests. */
   hostCli(command: HostCliCommand, timeoutSeconds?: number): Promise<HostCliResult>;
+  /** The eu-west power function (`hostPower.ts`): sleep, wake, tick; a fake in tests. */
+  power(action: PowerAction, by: string): Promise<PowerAnswer>;
+  /** The demo-mode switch (null when the deployment names no parameter). */
+  readonly demoMode: DemoModePorts | null;
 }
 
 let pending: Promise<Host> | null = null;
@@ -169,6 +174,8 @@ async function startHost(): Promise<Host> {
     callers,
     hosted,
     hostCli: (command, timeoutSeconds) => runHostCli({ region: env.euHost.region, nameTag: env.euHost.nameTag }, command, timeoutSeconds),
+    power: (action, by) => invokePower(env.powerFunctionArn, { action, by }),
+    demoMode: env.demoModeParameter ? createDemoModePorts(env.euHost.region, env.demoModeParameter) : null,
     startedAt,
     sdk: `${SDK_NAME}/${SDK_VERSION}`,
     invocations: 0,

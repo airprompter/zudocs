@@ -35,7 +35,7 @@ export const PINS: Pins = { cli: { tag: "cli/v0.1.0", asset: "airprompter-linux-
 export const AIRGAP_PINS: AirgapPins = { node: { version: "v22.23.2", asset: "node-v22.23.2-linux-arm64.tar.gz", sha256: "e".repeat(64), url: "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-arm64.tar.gz" }, ami: { name: "al2023-fixture", "ap-southeast-1": "ami-033ccd61cb71cb72b" } };
 
 /** Stand-ins for the built artefacts: the stacks only need the directories to exist. */
-export function fixtures(): { deskApi: string; deskSite: string; euHostBundle: string; wire: string; puller: string; airgapBundle: string } {
+export function fixtures(): { deskApi: string; deskSite: string; euHostBundle: string; wire: string; power: string; puller: string; airgapBundle: string; costCheck: string } {
   const dir = (name: string, file: string, text: string) => {
     const path = mkdtempSync(join(tmpdir(), `zudocs-${name}-`));
     writeFileSync(join(path, file), text);
@@ -46,6 +46,8 @@ export function fixtures(): { deskApi: string; deskSite: string; euHostBundle: s
     deskSite: dir("desk-site", "index.html", "<!doctype html><title>fixture</title>\n"),
     euHostBundle: dir("eu-host-bundle", "worker.mjs", "// fixture\n"),
     wire: dir("wire", "index.mjs", "export const handler = async () => ({});\n"),
+    power: dir("power", "index.mjs", "export const handler = async () => ({});\n"),
+    costCheck: dir("cost-check", "index.mjs", "export const handler = async () => ({});\n"),
     puller: dir("puller", "index.mjs", "export const handler = async () => ({});\n"),
     airgapBundle: dir("airgap-bundle", "runtime.mjs", "// fixture\n"),
   };

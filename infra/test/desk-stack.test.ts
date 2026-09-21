@@ -90,9 +90,10 @@ test("IAM: exactly the catalogue's models, one SSM parameter by ARN, KMS under e
   assert.equal(mantle.length, 1, "the OpenAI-compatible endpoint's own action");
   assert.deepEqual(actionsOf(mantle[0]!), ["bedrock-mantle:CreateInference"]);
   assert.ok(JSON.stringify(mantle[0]!.Resource).includes(":bedrock-mantle:us-east-1:111122223333:project/default"), "the account's default Mantle project, nothing wider");
-  const ssm = statements.filter((st) => actionsOf(st).includes("ssm:GetParameter"));
+  const ssm = statements.filter((st) => actionsOf(st).includes("ssm:GetParameter") && st.Sid !== "DemoModeSwitch");
   assert.equal(ssm.length, 1);
   assert.ok(JSON.stringify(ssm[0]!.Resource).includes(":parameter/zudocs/dev/agent-key"), "one parameter, by ARN");
+  assert.ok(!JSON.stringify(ssm[0]!.Resource).includes("demo-mode"), "the SecureStrings' statement never names the demo-mode switch (its own statement does, phase 8)");
   assert.ok(!actionsOf(ssm[0]!).includes("ssm:GetParameters") && !actionsOf(ssm[0]!).includes("ssm:GetParametersByPath"));
   const kmsStatements = statements.filter((st) => actionsOf(st).some((a) => a.startsWith("kms:")));
   assert.equal(kmsStatements.length, 2, "the store's wrap/unwrap and SSM's decrypt");
@@ -112,7 +113,8 @@ test("IAM: exactly the catalogue's models, one SSM parameter by ARN, KMS under e
   assert.equal(self.length, 1);
   assert.ok(JSON.stringify(self[0]!.Resource).includes(":function:zudocs-desk-api"), "itself, by its fixed name");
   assert.ok(JSON.stringify(self[0]!.Resource).includes(":lambda:eu-west-1:111122223333:function:zudocs-wire"), "and the eu-west wire function, by its fixed name in the other region");
-  assert.equal((JSON.stringify(self[0]!.Resource).match(/function:/g) ?? []).length, 2, "nothing else");
+  assert.ok(JSON.stringify(self[0]!.Resource).includes(":lambda:eu-west-1:111122223333:function:zudocs-power"), "and the eu-west power function (phase 8: sleep / wake)");
+  assert.equal((JSON.stringify(self[0]!.Resource).match(/function:/g) ?? []).length, 3, "nothing else");
   const [role] = Object.values(desk.findResources("AWS::IAM::Role", { Properties: { AssumeRolePolicyDocument: Match.objectLike({ Statement: [Match.objectLike({ Principal: { Service: "lambda.amazonaws.com" } })] }) } }) as Resources);
   assert.deepEqual((role!.Properties.ManagedPolicyArns as unknown[]).length, 1, "only the basic execution policy is managed; the deny policy arrives through the budget action");
 });
@@ -120,7 +122,7 @@ test("IAM: exactly the catalogue's models, one SSM parameter by ARN, KMS under e
 test("phase 6: the staging run key is a second parameter by ARN under the same key; Run Command reaches the eu-west instance by its Name tag only; the environment names the run URL and never a key", () => {
   const { desk } = synth();
   const [policy] = Object.values(desk.findResources("AWS::IAM::Policy") as Resources);
-  const statements = policy!.Properties.PolicyDocument.Statement as Array<{ Action: string | string[]; Resource: unknown; Condition?: unknown }>;
+  const statements = policy!.Properties.PolicyDocument.Statement as Array<{ Action: string | string[]; Resource: unknown; Condition?: unknown; Sid?: string }>;
   const actionsOf = (st: { Action: string | string[] }) => (Array.isArray(st.Action) ? st.Action : [st.Action]);
   const ssm = statements.find((st) => actionsOf(st).includes("ssm:GetParameter"))!;
   const resources = JSON.stringify(ssm.Resource);
@@ -141,7 +143,12 @@ test("phase 6: the staging run key is a second parameter by ARN under the same k
   assert.deepEqual(instances.Condition, { StringEquals: { "ssm:resourceTag/Name": "zudocs-eu-host" } }, "only the instance that carries the host's Name tag — the desk never learns an id");
   const reads = statements.find((st) => actionsOf(st).includes("ssm:GetCommandInvocation"))!;
   assert.deepEqual(actionsOf(reads).sort(), ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"]);
-  assert.ok(!statements.some((st) => actionsOf(st).some((a) => /ssm:StartSession|ssm:PutParameter|ec2:/.test(a))), "no session, no parameter writes, no EC2 control");
+  assert.ok(!statements.some((st) => actionsOf(st).some((a) => /ssm:StartSession|ec2:/.test(a))), "no session, no EC2 control (the power function in eu-west holds that, by tag)");
+  const writes = statements.filter((st) => actionsOf(st).includes("ssm:PutParameter"));
+  assert.equal(writes.length, 1, "one parameter write: the demo-mode switch (phase 8)");
+  assert.equal(writes[0]!.Sid, "DemoModeSwitch");
+  assert.deepEqual(actionsOf(writes[0]!).sort(), ["ssm:GetParameter", "ssm:PutParameter"]);
+  assert.deepEqual(writes[0]!.Resource, "arn:aws:ssm:eu-west-1:111122223333:parameter/zudocs/dev/demo-mode", "the eu-west String by ARN — never the SecureStrings, never a wildcard");
   const [fn] = Object.values(desk.findResources("AWS::Lambda::Function", { Properties: { FunctionName: "zudocs-desk-api" } }) as Resources);
   const env = fn!.Properties.Environment.Variables as Record<string, string>;
   assert.equal(env.RUN_KEY_PARAMETER, "/zudocs/staging/run-key", "a name, never a key");
@@ -248,4 +255,13 @@ test("phase 6 addendum: no synthesized template anywhere grants or names AWS-Run
   const sendCommand = statements.filter((st) => actionsOf(st).includes("ssm:SendCommand"));
   const documents = sendCommand.flatMap((st) => (JSON.stringify(st.Resource).match(/document\/[A-Za-z0-9_.-]+/g) ?? []));
   assert.deepEqual(documents, [`document/${HOST_CLI_DOCUMENT_NAME}`], "exactly one document ARN, the desk's own");
+});
+
+test("phase 8: the function names the eu-west power function and the demo-mode parameter (a name, in the host's region) and nothing key-shaped", () => {
+  const { desk } = synthAll();
+  const [fn] = Object.values(desk.findResources("AWS::Lambda::Function", { Properties: { FunctionName: "zudocs-desk-api" } }) as Resources);
+  const env = fn!.Properties.Environment.Variables as Record<string, string>;
+  assert.equal(env.POWER_FUNCTION_ARN, "arn:aws:lambda:eu-west-1:111122223333:function:zudocs-power");
+  assert.equal(env.DEMO_MODE_PARAMETER, "/zudocs/dev/demo-mode");
+  for (const [name, value] of Object.entries(env)) assert.ok(!/apa_|apr_/.test(String(value)), `${name} carries no key`);
 });

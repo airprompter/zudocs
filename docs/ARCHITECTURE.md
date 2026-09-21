@@ -54,6 +54,23 @@ Agent with one placeholder slot, so the one committed bundle carries no Zudocs p
 bundle* workflow (credential-less: `verify`, the verify action pinned by commit, `telemetry validate`, the tests
 that start the real SDK against the `/testing` kit). DEMO.md and RUNBOOK.md are the two faces.
 
+## Phase 8: the steady state
+
+The deployment idles for pennies and wakes for a session. The eu-west host is stopped every night by an EventBridge
+Scheduler schedule invoking the **power function** (`services/eu-host/src/power.ts`: `StopInstances` / `StartInstances`
+on the one instance carrying the host's Name tag, a five-minute tick that reconciles the status row's `power` marker
+with what EC2 says) and started only by the owner — the desk's *Wake the fleet* or `npm run host:wake`; the card reads
+*asleep since …* from the marker rather than a stale, degraded host, and the daemon re-reads its Agent key from SSM at
+every start while the store stays on the root volume (the generation survives; a promotion made meanwhile lands
+staged). The **demo-mode switch** (one SSM String the desk writes for at most four hours and both workers read every
+minute, fail-closed: no expiry is off) turns the idle cadence — a ticket an hour on the Node worker, every two hours
+on the Python worker — into one every two and five minutes for a session; the schedule's sleep is refused while it is
+on. `npm run cost:report` and the monthly **cost check** (`services/cost-check`, a Lambda on a Scheduler schedule)
+share one Cost Explorer query (`scripts/lib/cost.mjs`): by service and by day, the budget, fixed vs variable, the
+expected month; the check files `cost/YYYY-MM.json` in the trail bucket and puts `Zudocs/Cost` metrics.
+`npm run teardown` deletes every stack in the order they can be (`scripts/lib/teardown.mjs`) and lists what
+CloudFormation leaves, with the commands; its dry run is the reviewed form. docs/COST.md has every line.
+
 ## Invariants
 
 - Only public packages, the released CLI, the public root key, keys from the console.
@@ -71,6 +88,9 @@ that start the real SDK against the `/testing` kit). DEMO.md and RUNBOOK.md are 
   is promoted, a tightened policy is loosened only on the host. `npm run demo:reset` is that rule as a script.
 - The one bundle in git is the `zudocs-ci` Agent's placeholder (`vendored/`, `scripts/check-vendored.mjs`); the
   strips under `docs/strips/` are scanned for anything key-shaped before they are written.
+- Nothing starts a host but a person: the nightly schedule only stops the eu-west host, and refuses to while demo
+  mode is on or the wire is cut; the power function's IAM stops and starts instances carrying the host's Name tag
+  and nothing else (no terminate, no launch). A switch that could cost money expires on its own (demo mode: four hours).
 - Nothing typed on the desk reaches a shell: the host CLI is an allowlist of exact command lines, sent as the one
   parameter of the desk's own Run Command document (allowed values = the allowlist, a fixed shell line); the desk's
   role may send no other document — never `AWS-RunShellScript`. The CLI's output is scanned for anything key-shaped

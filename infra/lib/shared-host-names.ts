@@ -1,14 +1,16 @@
 /**
  * The fixed names the eu-west host stack and the desk stack agree on without a cross-region reference: the host's
  * instance role (the Budgets action attaches the Bedrock deny policy to it by name), the wire function (the
- * presenter's cut / restore invoke it by ARN), the host's id in the status table, the log group — and the pins of
+ * presenter's cut / restore invoke it by ARN), the power function (sleep / wake, phase 8) and its nightly schedule,
+ * the demo-mode parameter the desk writes and the workers read, the host's id in the status table, the log group — and the pins of
  * what the host installs (`services/eu-host/pins.json`: the released CLI's linux-arm64 digest, the Python SDK's
  * commit), read here so the stack and the build agree on one file.
  *
  * @example
  * ```ts
- * import { EU_HOST_ROLE_NAME, WIRE_FUNCTION_NAME, readPins } from "./shared-host-names.js";
+ * import { EU_HOST_ROLE_NAME, POWER_FUNCTION_NAME, WIRE_FUNCTION_NAME, demoModeParameterName, readPins } from "./shared-host-names.js";
  * `arn:aws:lambda:eu-west-1:${account}:function:${WIRE_FUNCTION_NAME}`;
+ * `arn:aws:ssm:eu-west-1:${account}:parameter${demoModeParameterName("dev")}`;   // the switch the desk writes
  * readPins().cli.sha256;   // the digest the boot script checks before the CLI is executable
  * readPins().ami["eu-west-1"];   // the pinned AL2023 arm64 image
  * ```
@@ -29,6 +31,21 @@ export const EU_HOST_ID = "eu-west-1/ec2";
 export const EU_HOST_LOG_GROUP = "/zudocs/eu-host";
 /** Minutes a cut wire stays cut before the rule restores it, whatever the presenter forgot. */
 export const WIRE_CUT_MAX_MINUTES = 15;
+/** The power function's fixed name (the desk invokes it across regions by ARN; the schedule and the tick invoke it here). */
+export const POWER_FUNCTION_NAME = "zudocs-power";
+/** The nightly sleep's schedule name (EventBridge Scheduler, in the host's region). */
+export const SLEEP_SCHEDULE_NAME = "zudocs-eu-host-sleep";
+/**
+ * When the host is put to sleep, UTC: 10:00, 10:20 and 10:40 — three idempotent attempts twenty minutes apart, so a
+ * wire cut at the first (restored by the rule within fifteen minutes) or a blip does not cost a day awake. The owner
+ * works US hours and the sessions cluster between 00:00 and 08:00 UTC; ten in the morning UTC is night on both
+ * coasts. There is no automatic start: the fleet is woken on demand (the desk's "Wake the fleet", `npm run host:wake`).
+ */
+export const SLEEP_CRON_UTC = "cron(0,20,40 10 * * ? *)";
+/** The demo-mode switch (`services/eu-host/src/demoMode.ts`): an SSM String parameter in the host's region, by environment. */
+export const demoModeParameterName = (environment: string): string => `/zudocs/${environment}/demo-mode`;
+/** Minutes between the power function's ticks (the marker reconciled with what EC2 says). */
+export const POWER_TICK_MINUTES = 5;
 
 export interface Pins {
   readonly cli: { readonly tag: string; readonly asset: string; readonly sha256: string; readonly url: string };

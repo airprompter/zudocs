@@ -112,7 +112,7 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
   const store = fakeStore();
   const calls: string[] = [];
   const ap = fakeAp(store, calls) as unknown as Host["ap"];
-  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "", nudgeQueueUrl: "", hosted: { runKeyParameter: "", runUrl: "", target: "staging" }, euHost: { region: "eu-west-1", nameTag: "zudocs-eu-host" }, airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
+  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "", nudgeQueueUrl: "", powerFunctionArn: "", demoModeParameter: "", hosted: { runKeyParameter: "", runUrl: "", target: "staging" }, euHost: { region: "eu-west-1", nameTag: "zudocs-eu-host" }, airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
   const host: Host & { store: ReturnType<typeof fakeStore>; calls: string[] } = {
     env,
     ap,
@@ -136,6 +136,8 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
     observed: async (fn) => ({ result: await fn(), error: undefined, observations: [{ tag: "support.reply", versionId: "rev-2", arm: "none", model: "openai.gpt-5-6-luna", status: "ok", latencyMs: 1234, tokens: { input: 200, output: 40 }, usageSource: "reported" }] }),
     writeStatus: async () => store.putStatus({ hostId: "us-east-1/lambda", region: "us-east-1", kind: "lambda", sdk: "x", writtenAt: "", status: ap.status(), healthz: ap.healthz(), container: { instanceId: "i-fake", coldStart: false, startedAt: "", invocations: 1 } }),
     nudge: async (body) => { calls.push(`nudge:${String(body.by)}`); return { messageId: "msg-1" }; },
+    power: async (action, by) => { calls.push(`power:${action}:${by}`); return { action, hostId: "eu-west-1/ec2", instanceId: "i-eu", state: action === "sleep" ? "stopping" : action === "wake" ? "pending" : "running", changed: action !== "tick", refusal: null, marker: { state: action === "sleep" ? "stopping" : action === "wake" ? "pending" : "running", since: "2026-09-21T10:00:00.000Z", at: "2026-09-21T10:00:00.000Z", by, instanceId: "i-eu" }, message: `${action} done` }; },
+    demoMode: null,
   };
   return host;
 }
@@ -299,7 +301,7 @@ test("state, events, healthz and unknown routes; a failed start answers 503 with
   assert.equal(state.host.status.storageProtection, "kms");
   assert.deepEqual(state.host.models, ["openai.gpt-5-6-luna", "amazon.nova-2-lite", "amazon.nova-micro", "anthropic.claude-haiku-4-5"]);
   assert.deepEqual(state.cap, { day: new Date().toISOString().slice(0, 10), used: 0, cap: 2 });
-  assert.deepEqual(state.features, { wire: false, nudge: false, hosted: false, hostCli: false }, "no wire function, no nudge queue, no run key configured on this fake host");
+  assert.deepEqual(state.features, { wire: false, nudge: false, hosted: false, hostCli: false, power: false, demoMode: false }, "no wire function, no nudge queue, no run key configured on this fake host");
   const nudge = await handler(event("POST", "/presenter/nudge"));
   assert.equal((nudge as { statusCode: number }).statusCode, 501, "without the fleet stack there is nothing to nudge, and it says so");
   assert.equal(parse(nudge).error, "no_nudge_queue");

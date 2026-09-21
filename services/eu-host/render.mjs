@@ -36,8 +36,14 @@ export function renderHostEnv(config, cdkContext, env = process.env) {
     ZUDOCS_IMPORT_DIR: "/var/lib/zudocs/import",
     ZUDOCS_AGENT_KEY_PARAMETER: `/zudocs/${environment}/agent-key`,
     ZUDOCS_DAILY_RUN_CAP: "2000",
-    ZUDOCS_TICKET_INTERVAL_SECONDS: "600",
-    ZUDOCS_PY_TICKET_INTERVAL_SECONDS: "1200",
+    // The idle cadence (phase 8): a ticket an hour on the Node worker, every two hours on the Python worker; demo mode
+    // (the SSM switch below, written by the desk) drops them to two and five minutes for at most four hours.
+    ZUDOCS_TICKET_INTERVAL_SECONDS: "3600",
+    ZUDOCS_PY_TICKET_INTERVAL_SECONDS: "7200",
+    ZUDOCS_DEMO_TICKET_INTERVAL_SECONDS: "120",
+    ZUDOCS_PY_DEMO_TICKET_INTERVAL_SECONDS: "300",
+    ZUDOCS_DEMO_MODE_PARAMETER: `/zudocs/${environment}/demo-mode`,
+    ZUDOCS_DEMO_MODE_POLL_SECONDS: "60",
     ZUDOCS_STATUS_INTERVAL_SECONDS: "30",
     TICKETS_TABLE: "zudocs-desk-tickets",
     CUSTOMERS_TABLE: "zudocs-desk-customers",
@@ -58,7 +64,7 @@ export function renderHostEnv(config, cdkContext, env = process.env) {
     AIRPROMPTER_EDGE_POINTER_URL: pointer.trim(),
   };
   for (const [name, value] of Object.entries(lines)) {
-    if (/KEY$|SECRET|TOKEN|PASSWORD/.test(name) && name !== "ZUDOCS_AGENT_KEY_PARAMETER") throw new Error(`eu-host build: ${name} looks like a secret's slot`);
+    if (/KEY$|SECRET|TOKEN|PASSWORD/.test(name) && !/_PARAMETER$/.test(name)) throw new Error(`eu-host build: ${name} looks like a secret's slot`);
     if (/^apa_|^apk_|^eyJ/.test(value)) throw new Error(`eu-host build: ${name} holds a value that looks like a key`);
     if (/[\s"'\\]/.test(value)) throw new Error(`eu-host build: ${name} holds a character systemd's EnvironmentFile would misread`);
   }

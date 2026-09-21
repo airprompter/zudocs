@@ -24,6 +24,8 @@
  *   and may send exactly one document: the eu-west stack's `zudocs-desk-host-cli`, whose parameter's allowed values
  *   are the allowlist and whose shell line is fixed (never `AWS-RunShellScript`, which would be arbitrary root on
  *   the host that holds the Agent key).
+ * - Phase 8: the presenter's **Sleep** and **Wake the fleet** invoke the eu-west power function by its fixed name,
+ *   and **demo mode** writes the eu-west demo-mode parameter (a String, by name: the workers' cadence switch).
  *
  * Two things a synth cannot catch: the SSM parameter must exist before the first request (the function fails its
  * cold start with the parameter's name otherwise), and Bedrock model access in a fresh account is a per-model
@@ -45,7 +47,7 @@ import { CATALOGUE } from "../../services/desk-api/src/modelCatalogue.js";
 import { ROUTES } from "../../services/desk-api/src/router.js";
 import type { ZudocsConfig } from "./config.js";
 import { DESK_STATUS_TICK_MINUTES, NUDGE_QUEUE_NAME } from "./fleet-names.js";
-import { EU_HOST_NAME_TAG, EU_HOST_ROLE_NAME, WIRE_FUNCTION_NAME } from "./shared-host-names.js";
+import { EU_HOST_NAME_TAG, EU_HOST_ROLE_NAME, POWER_FUNCTION_NAME, WIRE_FUNCTION_NAME, demoModeParameterName } from "./shared-host-names.js";
 import { BUDGET_NAME, type SiteStack } from "./site-stack.js";
 
 export interface DeskStackProps extends cdk.StackProps {
@@ -164,6 +166,10 @@ export class DeskStack extends cdk.Stack {
     const runKeyParameter = `/zudocs/${airprompter.hostedTarget}/run-key`;
     const runKeyParameterArn = this.formatArn({ service: "ssm", resource: "parameter", resourceName: runKeyParameter.slice(1) });
     const wireFunctionArn = `arn:${this.partition}:lambda:${config.regions.sharedHost}:${this.account}:function:${WIRE_FUNCTION_NAME}`;
+    const powerFunctionArn = `arn:${this.partition}:lambda:${config.regions.sharedHost}:${this.account}:function:${POWER_FUNCTION_NAME}`;
+    // The demo-mode switch (phase 8): the eu-west parameter the presenter writes; the workers read it every minute.
+    const demoModeParameter = demoModeParameterName(airprompter.environment);
+    const demoModeArn = `arn:${this.partition}:ssm:${config.regions.sharedHost}:${this.account}:parameter${demoModeParameter}`;
     // The fleet's nudge queue in ap-southeast-1, by its fixed name (no cross-region reference): the presenter posts to it.
     const nudgeQueueArn = `arn:${this.partition}:sqs:${config.regions.fleet}:${this.account}:${NUDGE_QUEUE_NAME}`;
     const nudgeQueueUrl = `https://sqs.${config.regions.fleet}.amazonaws.com/${this.account}/${NUDGE_QUEUE_NAME}`;
@@ -198,6 +204,8 @@ export class DeskStack extends cdk.Stack {
         EU_HOST_NAME_TAG: EU_HOST_NAME_TAG,
         // The eu-west wire function, by its fixed name (no cross-region reference): the presenter's cut / restore.
         WIRE_FUNCTION_ARN: wireFunctionArn,
+        POWER_FUNCTION_ARN: powerFunctionArn,
+        DEMO_MODE_PARAMETER: demoModeParameter,
         NUDGE_QUEUE_URL: nudgeQueueUrl,
         AIRPROMPTER_BASE_URL: airprompter.baseUrl,
         AIRPROMPTER_ORGANIZATION_ID: airprompter.organizationId,
@@ -240,8 +248,11 @@ export class DeskStack extends cdk.Stack {
       this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["bedrock-mantle:CreateInference"], resources: [this.formatArn({ service: "bedrock-mantle", resource: "project", resourceName: "default" })] }));
     }
     // The replay job: the function invokes itself asynchronously (by its fixed name, so the policy has no cycle);
-    // the presenter's cut / restore invokes the eu-west wire function (by its fixed name in the other region).
-    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [this.formatArn({ service: "lambda", resource: "function", resourceName: DESK_FUNCTION_NAME, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME }), wireFunctionArn] }));
+    // the presenter's cut / restore invokes the eu-west wire function, and sleep / wake the eu-west power function
+    // (both by their fixed names in the other region).
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [this.formatArn({ service: "lambda", resource: "function", resourceName: DESK_FUNCTION_NAME, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME }), wireFunctionArn, powerFunctionArn] }));
+    // Demo mode: read and overwrite exactly the eu-west switch parameter (a String; no KMS involved).
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ sid: "DemoModeSwitch", actions: ["ssm:GetParameter", "ssm:PutParameter"], resources: [demoModeArn] }));
     this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["sqs:SendMessage"], resources: [nudgeQueueArn] }));
     // The status tick (phase 5): the card never goes stale between runs; the invocation is a sync pass and one row.
     new events.Rule(this, "StatusTick", { description: "Zudocs: the desk host writes its status row every five minutes", schedule: events.Schedule.rate(cdk.Duration.minutes(DESK_STATUS_TICK_MINUTES)), targets: [new eventTargets.LambdaFunction(this.fn, { event: events.RuleTargetInput.fromObject({ tick: "status" }) })] });

@@ -118,6 +118,26 @@ restart in that window fails its `ExecStartPre` until the wire is back (systemd 
 that rewrites the group's tags mid-drill would drop the cut's instant — the tick treats a cut with no instant as an
 old one and restores it on its next pass, so neither strands the host.
 
+## Sleep, wake and the cadence (phase 8)
+
+The host is stopped every night (`zudocs-eu-host-sleep`, ten in the morning UTC, three attempts twenty minutes
+apart) and started by the owner alone — *Wake the fleet* on the desk or `npm run host:wake -- --wait`. What a
+stop/start does to this host, proven on 2026-09-21 (RUNBOOK.md › Sleep and wake): systemd's `enabled` units come back
+in order, `airprompterd`'s `ExecStartPre` re-reads the Agent key from SSM into its root-only file, the daemon opens
+the same store on the root volume (the generation is unchanged; a promotion made while asleep lands staged under
+`unlock_required` for the desk to approve), the Node worker waits for the socket, reconciles the approvals and
+re-attaches, the Python worker follows, and the row is written within about three minutes of the start. The public
+IPv4 is released on stop and a new one is assigned on start (no Elastic IP) — nothing here depends on it. The card
+reads *asleep since …* from the row's `power` marker, which the power function writes and its tick reconciles; the
+workers' rows go quiet while the host is off and are shown as from before the sleep. The host CLI row is refused
+(`409 host_asleep`) while it sleeps.
+
+The workers' ticket cadence is idle by default — the Node worker one inbox ticket an hour, the Python worker every
+two hours — and both read the demo-mode parameter (`/zudocs/dev/demo-mode`, a String in this region the host's role
+may read beside the Agent key's name) every minute: on (two and five minutes) only while the document says so and its
+`until` is ahead (four hours at most), off with a reason otherwise; the status row's `cadence` block says which and
+when it was last read. The desk's presenter panel writes it; `docs/COST.md` says what each cadence costs.
+
 ## Proof
 
 `npm run eu:proof` (with `ZUDOCS_PROOF_PASSWORD` in the environment) reads the stack outputs in both regions,

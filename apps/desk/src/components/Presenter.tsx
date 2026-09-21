@@ -7,7 +7,9 @@
  * host (policy show, rollback, unlock, status, doctor — a job the API hands itself; the CLI's own document lands on
  * the timeline and the newest answer is shown below the buttons), this host's own apply policy (an operator's act on
  * the SDK — the one loosening in the fleet; the daemon host's policy is its unit's flag), the golden set run now, and
- * the reset's clearing step.
+ * the reset's clearing step. Phase 8 adds the steady state: **Wake the fleet** and **Sleep** (the eu-west host started
+ * and stopped at EC2; the card reads waking / asleep since) and the **demo mode** switch (the eu-west workers' ticket
+ * cadence: two minutes for four hours, then back to an hour on its own).
  * Every button is an API call; the result lands as a notice and on the timeline. The day's cap is read from the counter.
  *
  * @example
@@ -28,6 +30,11 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
   const wire = state?.features?.wire ?? false;
   const nudge = state?.features?.nudge ?? false;
   const hostCli = state?.features?.hostCli ?? false;
+  const power = state?.features?.power ?? false;
+  const demoMode = state?.features?.demoMode ?? false;
+  const euPower = (state?.hosts ?? []).find((h) => h.kind === "daemon")?.powerView ?? null;
+  const asleep = euPower !== null && euPower.phase !== "awake";
+  const mode = state?.demoMode ?? null;
   const policy = state?.host.status?.applyPolicy as { effective?: string; source?: string } | undefined;
   return (
     <section className="presenter">
@@ -56,6 +63,24 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
         <div className="button-row" title={TOOLTIPS.wire}>
           <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Cut the eu-west host's wire? AirPrompter and Bedrock go dark for it; the desk's tables stay; a rule restores it in 15 minutes.")) onAction("cut_wire"); }}>Cut the wire (eu-west)</button>
           <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("restore_wire")}>Restore the wire</button>
+        </div>
+      ) : null}
+      {power || demoMode ? (
+        <div className="button-row" title={TOOLTIPS.power}>
+          {power ? (
+            <>
+              <button type="button" className={`chip-button${asleep ? " done" : ""}`} disabled={disabled} onClick={() => onAction("wake_host")}>Wake the fleet</button>
+              <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Put the eu-west host to sleep? Its daemon and workers stop (a ticket in flight there is lost); only its volume bills until you wake it. The nightly schedule does this by itself.")) onAction("sleep_host"); }}>Sleep</button>
+              <span className="muted fine">eu-west: {euPower ? euPower.label : "—"}{euPower && euPower.phase !== "awake" && euPower.since ? ` since ${clock(euPower.since)}` : ""}</span>
+            </>
+          ) : null}
+          {demoMode ? (
+            <>
+              <span className="muted fine" title={TOOLTIPS.demoMode}>· demo mode {mode ? mode.mode : "—"}{mode?.mode === "on" && mode.until ? ` until ${clock(mode.until)}` : ""}{mode?.reason && mode.reason !== "absent" ? ` (${mode.reason})` : ""}:</span>
+              <button type="button" className={`chip-button${mode?.mode === "on" ? " done" : ""}`} disabled={disabled || mode?.mode === "on"} title={TOOLTIPS.demoMode} onClick={() => onAction("demo_mode", { value: "on" })}>on</button>
+              <button type="button" className="chip-button" disabled={disabled || mode?.mode !== "on"} title={TOOLTIPS.demoMode} onClick={() => onAction("demo_mode", { value: "off" })}>off</button>
+            </>
+          ) : null}
         </div>
       ) : null}
       {hostCli ? (

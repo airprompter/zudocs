@@ -242,9 +242,10 @@ first-run form (no diff, one apply, no rollback) and says so. The opening beat i
 
 ## After the session
 
-`npm run demo:reset`. It prints what it did and ends when every status row agrees on the new generation; then
-`npm run airgap:down` (the exchange keeps everything; the card fades in fifteen minutes). The eu-west host goes to
-sleep on its own at ten in the morning UTC (**Sleep** on the panel does it now); demo mode lapses within four hours. Twenty sessions are about
+1. `npm run demo:reset`. It prints what it did and ends when every status row agrees on the new generation.
+2. `npm run airgap:down` (the exchange keeps everything; the card fades in fifteen minutes).
+3. **Sleep** on the presenter panel (or `npm run host:sleep`): the eu-west host would go to sleep on its own at ten in
+   the morning UTC, but until then it bills ($0.34 a day); demo mode lapses within four hours either way. Twenty sessions are about
 160 generations — fine. Thumbs filed during the session stay in the organisation's rollout results.
 
 ## The five-minute cut

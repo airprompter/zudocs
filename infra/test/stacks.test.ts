@@ -151,7 +151,7 @@ test("CI: a native OIDC provider; the deploy role trusts one repository's main b
   assert.deepEqual([...statements[0]!.Resource].sort(), ["us-east-1", "eu-west-1", "ap-southeast-1"].map((r) => `arn:aws:iam::111122223333:role/cdk-hnb659fds-*-111122223333-${r}`).sort());
 });
 
-test("phase 8: the monthly cost check — a small function on a Scheduler schedule on the first of the month; Cost Explorer read, one budget, one prefix of the trail bucket, one metric namespace; the trail's expiry covers its own prefix only", () => {
+test("phase 8: the monthly cost check — a small function on a Scheduler schedule on the third of the month; Cost Explorer read, one budget, one prefix of the trail bucket, one metric namespace; the trail's expiry covers its own prefix only", () => {
   const { site } = synth();
   site.hasResourceProperties("AWS::Lambda::Function", { FunctionName: COST_CHECK_FUNCTION_NAME, Runtime: "nodejs22.x", Architectures: ["arm64"], Handler: "index.handler", Timeout: 60, Environment: { Variables: Match.objectLike({ COST_PREFIX: "cost/", BUDGET_NAME: "zudocs-monthly", ACCOUNT_ID: "111122223333" }) } });
   const statements = statementsOf(site);
@@ -170,7 +170,7 @@ test("phase 8: the monthly cost check — a small function on a Scheduler schedu
   assert.equal(schedules.length, 1);
   assert.equal(schedules[0]!.Properties.Name, COST_CHECK_SCHEDULE_NAME);
   assert.equal(schedules[0]!.Properties.ScheduleExpression, COST_CHECK_CRON_UTC);
-  assert.equal(schedules[0]!.Properties.ScheduleExpression, "cron(0 6 1 * ? *)", "the first of the month, 06:00 UTC");
+  assert.equal(schedules[0]!.Properties.ScheduleExpression, "cron(0 6 3 * ? *)", "the third of the month, 06:00 UTC: Cost Explorer settles a day about a day late");
   assert.equal(schedules[0]!.Properties.ScheduleExpressionTimezone, "UTC");
   const invokes = statements.filter((st) => actionsOf(st).includes("lambda:InvokeFunction"));
   assert.equal(invokes.length, 1, "the scheduler's role invokes the cost check and nothing else");

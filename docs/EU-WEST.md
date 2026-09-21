@@ -122,7 +122,7 @@ old one and restores it on its next pass, so neither strands the host.
 
 The host is stopped every night (`zudocs-eu-host-sleep`, ten in the morning UTC, three attempts twenty minutes
 apart) and started by the owner alone — *Wake the fleet* on the desk or `npm run host:wake -- --wait`. What a
-stop/start does to this host, proven on 2026-09-21 (RUNBOOK.md › Sleep and wake): systemd's `enabled` units come back
+stop/start does to this host (proven live at the phase-8 merge; the transcript is in that pull request): systemd's `enabled` units come back
 in order, `airprompterd`'s `ExecStartPre` re-reads the Agent key from SSM into its root-only file, the daemon opens
 the same store on the root volume (the generation is unchanged; a promotion made while asleep lands staged under
 `unlock_required` for the desk to approve), the Node worker waits for the socket, reconciles the approvals and

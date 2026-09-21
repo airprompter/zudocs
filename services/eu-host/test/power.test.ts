@@ -22,12 +22,15 @@ import { SCHEDULE_BY, liveInstanceOf, power, readEnv, reconciledMarker, type Pow
 const NOW = Date.parse("2026-09-21T10:00:00.000Z");
 const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
 
-function fake(options: { instances?: Array<{ id: string; state: string; groups?: string[] }>; wireCut?: boolean; demoMode?: string | null; marker?: PowerMarker | null; rowExists?: boolean; now?: number } = {}) {
+const LAUNCHED = new Date(NOW - 86_400_000);
+
+function fake(options: { instances?: Array<{ id: string; state: string; groups?: string[]; launched?: Date }>; wireCut?: boolean; demoMode?: string | null; marker?: PowerMarker | null; rowExists?: boolean; now?: number; raceOnce?: PowerMarker } = {}) {
   const instances = options.instances ?? [{ id: "i-live", state: "running", groups: ["sg-1"] }];
   const calls: string[] = [];
   const events: Record<string, unknown>[] = [];
   let marker: PowerMarker | null = options.marker ?? null;
   let now = options.now ?? NOW;
+  let race = options.raceOnce ?? null;
   const ports: PowerPorts = {
     env: { nameTag: "zudocs-eu-host", hostId: "eu-west-1/ec2", dynamoRegion: "us-east-1", statusTable: "s", eventsTable: "e", demoModeParameter: "/zudocs/dev/demo-mode" },
     ec2: {
@@ -35,7 +38,7 @@ function fake(options: { instances?: Array<{ id: string; state: string; groups?:
         if (command instanceof DescribeInstancesCommand) {
           calls.push(`describe:${JSON.stringify(command.input.Filters)}`);
           const states = (command.input.Filters ?? []).find((f) => f.Name === "instance-state-name")?.Values ?? [];
-          return { Reservations: [{ Instances: instances.filter((i) => states.includes(i.state)).map((i) => ({ InstanceId: i.id, State: { Name: i.state }, LaunchTime: new Date(NOW - 86_400_000), SecurityGroups: (i.groups ?? []).map((GroupId) => ({ GroupId })) })) }] };
+          return { Reservations: [{ Instances: instances.filter((i) => states.includes(i.state)).map((i) => ({ InstanceId: i.id, State: { Name: i.state }, LaunchTime: i.launched ?? LAUNCHED, SecurityGroups: (i.groups ?? []).map((GroupId) => ({ GroupId })) })) }] };
         }
         if (command instanceof DescribeSecurityGroupsCommand) {
           calls.push("describe-groups");
@@ -65,11 +68,22 @@ function fake(options: { instances?: Array<{ id: string; state: string; groups?:
       },
     } as PowerPorts["ssm"],
     readMarker: async () => marker,
-    writeMarker: async (m) => {
-      if (options.rowExists === false) return false;
+    writeMarker: async (m, previousAt) => {
+      if (options.rowExists === false) return "no_row";
+      if (race) {
+        // Someone else's write landed between the read and this write (the presenter's own click, another tick).
+        marker = race;
+        race = null;
+        calls.push(`raced:${m.state}`);
+        return "raced";
+      }
+      if ((marker?.at ?? null) !== previousAt) {
+        calls.push(`raced:${m.state}`);
+        return "raced";
+      }
       marker = m;
       calls.push(`marker:${m.state}`);
-      return true;
+      return "written";
     },
     appendEvent: async (e) => void events.push(e),
     now: () => now,
@@ -97,11 +111,14 @@ test("pure helpers: the one live instance by tag (terminated ones ignored, two l
   assert.equal(stopped.at, iso(0));
   const pending: PowerMarker = { state: "pending", since: iso(-30_000), at: iso(-30_000), by: "seth@zudocs.com", instanceId: "i-live" };
   assert.equal(reconciledMarker(pending, "running", "i-live", NOW, "x")!.since, iso(-30_000));
-  const outside = reconciledMarker({ ...stopped }, "running", "i-live", NOW + 1000, "observed by the tick")!;
-  assert.equal(outside.since, iso(1000), "started outside the desk: a new run of the state, dated when the tick found it");
-  assert.equal(outside.by, "observed by the tick");
+  const outside = reconciledMarker({ ...stopped }, "running", "i-live", NOW + 1000, "the tick", iso(-5 * 60_000))!;
+  assert.equal(outside.since, iso(-5 * 60_000), "started outside the desk: dated from EC2's launch time (it moves on every start), so the workers' rows are newer than it");
+  assert.equal(outside.by, "the tick");
+  assert.equal(reconciledMarker({ ...stopped }, "running", "i-live", NOW + 1000, "the tick", null)!.since, iso(1000), "no launch time known: dated when found");
+  assert.equal(reconciledMarker({ ...stopped }, "running", "i-live", NOW, "the tick", iso(60_000))!.since, iso(0), "a launch time in the future (clock skew) is not trusted");
   assert.equal(reconciledMarker(stopped, "stopped", "i-other", NOW, "the tick")!.since, iso(0), "another instance id is another host: dated now");
-  assert.equal(reconciledMarker(null, "stopped", "i-live", NOW, "observed by the tick")!.since, iso(0));
+  assert.equal(reconciledMarker(null, "stopped", "i-live", NOW, "the tick")!.since, iso(0));
+  assert.equal(reconciledMarker(null, "running", "i-live", NOW, "the tick", iso(-3_600_000))!.since, iso(-3_600_000), "a first look at a running host: since its launch");
 });
 
 test("sleep: stops the tagged instance and writes stopping; a second sleep changes nothing; refused while pending, while the wire is cut, and to the schedule while demo mode is on (not to the presenter)", async () => {
@@ -110,7 +127,7 @@ test("sleep: stops the tagged instance and writes stopping; a second sleep chang
   assert.equal(slept.state, "stopping");
   assert.equal(slept.changed, true);
   assert.equal(slept.refusal, null);
-  assert.ok(f.calls.includes("stop:i-live"));
+  assert.ok(f.calls.includes("stop:i-live"), "StopInstances on the tagged instance");
   assert.ok(f.calls.some((c) => c.startsWith("describe:") && c.includes('"tag:Name"') && c.includes("zudocs-eu-host") && c.includes('"instance-state-name"')), "described by tag and live states only");
   assert.deepEqual(f.marker()!.state, "stopping");
   assert.equal(f.marker()!.by, "seth@zudocs.com");
@@ -123,8 +140,8 @@ test("sleep: stops the tagged instance and writes stopping; a second sleep chang
   const pending = fake({ instances: [{ id: "i-live", state: "pending", groups: ["sg-1"] }] });
   const p = await power({ action: "sleep", by: "seth@zudocs.com" }, pending.ports);
   assert.equal(p.refusal, "instance_pending");
-  assert.equal(pending.calls.filter((c) => c.startsWith("stop:")).length, 0);
-  assert.equal(pending.events.at(-1)!.refusal, "instance_pending", "the refusal is on the timeline");
+  assert.equal(pending.calls.filter((c) => c.startsWith("stop:")).length, 0, "nothing stopped");
+  assert.equal(pending.events.at(-1)!.refusal, "instance_pending", "the refusal of an act is on the timeline");
 
   const cut = fake({ wireCut: true });
   const c = await power({ action: "sleep", by: "seth@zudocs.com" }, cut.ports);
@@ -136,8 +153,8 @@ test("sleep: stops the tagged instance and writes stopping; a second sleep chang
   const d = await power({ action: "sleep", by: SCHEDULE_BY }, demo.ports);
   assert.equal(d.refusal, "demo_mode_on", "the schedule never stops a host mid-session");
   assert.match(d.message, /seth@zudocs.com/);
-  assert.equal(demo.calls.filter((x) => x.startsWith("stop:")).length, 0);
-  assert.ok(demo.calls.includes("ssm:/zudocs/dev/demo-mode"));
+  assert.equal(demo.calls.filter((x) => x.startsWith("stop:")).length, 0, "nothing stopped while demo mode is on");
+  assert.ok(demo.calls.includes("ssm:/zudocs/dev/demo-mode"), "the switch was read by name");
   const presenter = await power({ action: "sleep", by: "seth@zudocs.com" }, demo.ports);
   assert.equal(presenter.refusal, null, "the presenter's own click is honoured whatever the switch says");
   assert.equal(demo.calls.filter((x) => x.startsWith("stop:")).length, 1);
@@ -153,7 +170,7 @@ test("wake: starts a stopped instance and writes pending; already running or pen
   const woken = await power({ action: "wake", by: "seth@zudocs.com" }, f.ports);
   assert.equal(woken.state, "pending");
   assert.equal(woken.changed, true);
-  assert.ok(f.calls.includes("start:i-live"));
+  assert.ok(f.calls.includes("start:i-live"), "StartInstances on the tagged instance");
   assert.equal(f.marker()!.state, "pending");
   assert.equal(f.marker()!.since, iso(0), "a wake is a new run of the state");
   assert.match(woken.message, /re-reads its key/);
@@ -182,25 +199,40 @@ test("the tick reconciles: stopping → stopped keeps since (asleep since the sl
   assert.equal(quiet.changed, false);
   assert.equal(f.events.length, 1, "an agreeing tick writes no row");
   f.instances[0]!.state = "running";
+  f.instances[0]!.launched = new Date(NOW + 30_000);
   f.advance(60_000);
   const outside = await power({ action: "status" }, f.ports);
   assert.equal(outside.state, "running");
-  assert.equal(f.marker()!.since, iso(60_000), "started outside the desk: dated when the desk looked");
-  assert.equal(f.marker()!.by, "observed by the desk");
+  assert.equal(f.marker()!.since, iso(30_000), "started outside the desk: dated from EC2's launch time");
+  assert.equal(f.marker()!.by, "the desk");
+  assert.equal(f.events.at(-1)!.observed, true, "an observed change is a row");
 
   const gone = fake({ instances: [{ id: "i-old", state: "terminated" }] });
   const g = await power({ action: "tick" }, gone.ports);
   assert.equal(g.refusal, "no_instance");
   assert.equal(g.state, null);
+  assert.equal(gone.events.length, 0, "a tick with nothing to reconcile writes no row (a replacement in flight would otherwise fill the timeline)");
   const two = fake({ instances: [{ id: "a", state: "running" }, { id: "b", state: "pending" }] });
   assert.equal((await power({ action: "sleep", by: "x" }, two.ports)).refusal, "several_instances");
-  assert.equal(two.calls.filter((c) => c.startsWith("stop:")).length, 0);
+  assert.equal(two.calls.filter((c) => c.startsWith("stop:")).length, 0, "nothing stopped during a replacement");
+  assert.equal(two.events.length, 1, "a refused act is a row");
+  assert.equal((await power({ action: "status" }, two.ports)).refusal, "several_instances");
+  assert.equal(two.events.length, 1, "a refused look is not");
 
   const noRow = fake({ instances: [{ id: "i-live", state: "stopped" }], rowExists: false });
   const n = await power({ action: "tick" }, noRow.ports);
   assert.equal(n.state, "stopped");
   assert.equal(noRow.marker(), null, "no row, no marker: a bare row the card cannot render is never created");
   assert.equal(noRow.events.length, 1, "the timeline still says what was found");
+
+  // The race: the tick read `running` (no marker), then the presenter's sleep wrote `stopping` before the tick's write landed.
+  const presenters: PowerMarker = { state: "stopping", since: iso(-1000), at: iso(-1000), by: "seth@zudocs.com", instanceId: "i-live" };
+  const raced = fake({ instances: [{ id: "i-live", state: "stopping" }], marker: null, raceOnce: presenters });
+  const r = await power({ action: "tick" }, raced.ports);
+  assert.ok(raced.calls.includes("raced:stopping"), "the conditional write refused");
+  assert.equal(raced.events.length, 0, "no row layered over the presenter's");
+  assert.deepEqual(r.marker, presenters, "the answer carries the marker that won");
+  assert.equal(raced.marker()!.by, "seth@zudocs.com", "the presenter's sleep stands");
 });
 
 test("the ticket cadence under the switch: due once per interval; switching on pulls the next ticket to within the demo interval; switching off never pushes a due ticket out", () => {

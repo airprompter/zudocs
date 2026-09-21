@@ -6,13 +6,15 @@
  *
  * "Fixed" is what bills while nothing happens: the instance-hours and their volume and address, the zone, the
  * key. Everything else scales with use (models, invocations, reads and writes, log bytes, the report's own Cost
- * Explorer calls at $0.01 each). Tax is neither and is shown apart. Expected monthly = the last seven full days'
+ * Explorer calls at $0.01 a page — one thirty-day query serves both windows). Tax is neither and is shown apart. Expected monthly = the last seven full days'
  * daily mean × the average month (30.44 days) — a measure, not a promise: the nightly sleep and demo mode move it.
  *
  * @example
  * ```js
  * const window = costWindow(new Date("2026-09-21T12:00:00Z"), 30);           // { start: "2026-08-22", end: "2026-09-21" } — full days, today excluded
- * const summary = summarise(response.ResultsByTime, window);                // { days, total, dailyMean, byService: [{ service, total, share, kind }], byDay: [...] }
+ * const { results, calls } = await costAndUsagePages((q) => ce.send(new GetCostAndUsageCommand(q)), costQuery(window));   // every page, $0.01 each
+ * const summary = summarise(results, window);                               // { days, total, dailyMean, byService: [{ service, total, share, kind }], byDay: [...] }
+ * summarise(within(results, costWindow(now, 7)), costWindow(now, 7));      // the seven-day fold from the same answer
  * expectedMonthlyUsd(summarise(last7, costWindow(now, 7)));                  // 15.42
  * spliceNumbers(docText, renderNumbersSection({ last7, last30, budget, now }));   // docs/COST.md with its numbers replaced
  * ```
@@ -54,7 +56,7 @@ export function monthWindow(month) {
   return { start: day(start), end: day(end), days: Math.round((end - start) / 86_400_000), month };
 }
 
-/** The month before the one `now` is in, as `YYYY-MM` (what the monthly Lambda files on the first). */
+/** The month before the one `now` is in, as `YYYY-MM` (what the monthly Lambda files on the third). */
 export function previousMonth(now) {
   const first = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const previous = new Date(first.getTime() - 86_400_000);
@@ -64,6 +66,30 @@ export function previousMonth(now) {
 /** The GetCostAndUsage input for a window: daily, unblended, grouped by service. */
 export function costQuery(window) {
   return { TimePeriod: { Start: window.start, End: window.end }, Granularity: "DAILY", Metrics: ["UnblendedCost"], GroupBy: [{ Type: "DIMENSION", Key: "SERVICE" }] };
+}
+
+/**
+ * Every page of a GetCostAndUsage answer: `send(query)` is one call ($0.01) and answers `{ ResultsByTime, NextPageToken }`;
+ * a daily-by-service month is one page, but the API may split it and a reader that stops at the first page would
+ * silently drop days. Returns the results and how many calls it took.
+ */
+export async function costAndUsagePages(send, query, maxPages = 10) {
+  const results = [];
+  let token;
+  let calls = 0;
+  do {
+    const page = await send(token ? { ...query, NextPageToken: token } : query);
+    calls += 1;
+    results.push(...(page.ResultsByTime ?? []));
+    token = page.NextPageToken;
+    if (calls >= maxPages && token) throw new Error(`cost: more than ${maxPages} pages for ${query.TimePeriod.Start} → ${query.TimePeriod.End}; refusing to keep paying`);
+  } while (token);
+  return { results, calls };
+}
+
+/** The rows of a wider answer that fall inside a narrower window (so one call serves both the 30- and the 7-day fold). Pure. */
+export function within(resultsByTime, window) {
+  return (resultsByTime ?? []).filter((r) => r.TimePeriod?.Start >= window.start && r.TimePeriod?.Start < window.end);
 }
 
 export function kindOf(service) {

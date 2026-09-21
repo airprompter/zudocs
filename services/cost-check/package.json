@@ -2,7 +2,7 @@
   "name": "@zudocs/cost-check",
   "version": "0.1.0",
   "private": true,
-  "description": "The Zudocs monthly cost check: one Lambda in us-east-1 that runs the same Cost Explorer query as `npm run cost:report`, files cost/YYYY-MM.json in the trail bucket and puts the Zudocs/Cost expectedMonthlyUsd metric. Invoked by an EventBridge Scheduler schedule on the first of the month (and by hand).",
+  "description": "The Zudocs monthly cost check: one Lambda in us-east-1 that runs the same Cost Explorer query as `npm run cost:report`, files cost/YYYY-MM.json in the trail bucket and puts the Zudocs/Cost expectedMonthlyUsd metric. Invoked by an EventBridge Scheduler schedule on the third of the month (and by hand).",
   "license": "BSD-3-Clause",
   "type": "module",
   "scripts": {

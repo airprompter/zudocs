@@ -14,7 +14,7 @@
  *   runtime roles in phase 3), a management-events trail, and a cost anomaly
  *   monitor. The IAM policy the budget action will attach exists from day one.
  * - Phase 8: the **monthly cost check** — a small Lambda (`services/cost-check`)
- *   an EventBridge Scheduler schedule invokes on the first of the month; it runs
+ *   an EventBridge Scheduler schedule invokes on the third of the month; it runs
  *   the same Cost Explorer query as `npm run cost:report`, files `cost/YYYY-MM.json`
  *   in the trail bucket (whose expiry rule now covers the trail's own prefix only,
  *   so the record outlives the trail's ninety days) and puts `Zudocs/Cost` metrics.
@@ -46,8 +46,8 @@ export interface SiteStackProps extends cdk.StackProps {
 export const BUDGET_NAME = "zudocs-monthly";
 export const COST_CHECK_FUNCTION_NAME = "zudocs-cost-check";
 export const COST_CHECK_SCHEDULE_NAME = "zudocs-cost-check-monthly";
-/** The first of every month at 06:00 UTC: the previous month is complete and Cost Explorer has settled it. */
-export const COST_CHECK_CRON_UTC = "cron(0 6 1 * ? *)";
+/** The third of every month at 06:00 UTC: Cost Explorer settles a day about a day late, so on the third the previous month is whole. */
+export const COST_CHECK_CRON_UTC = "cron(0 6 3 * ? *)";
 /** Where the monthly documents go in the trail bucket (outside the trail's own `AWSLogs/` prefix and its expiry). */
 export const COST_PREFIX = "cost/";
 export const COST_METRIC_NAMESPACE = "Zudocs/Cost";
@@ -241,7 +241,7 @@ export class SiteStack extends cdk.Stack {
       code: lambda.Code.fromAsset(props.assets.costCheck),
       memorySize: 256,
       timeout: cdk.Duration.seconds(60),
-      logGroup: new logs.LogGroup(this, "CostCheckLogs", { logGroupName: `/aws/lambda/${COST_CHECK_FUNCTION_NAME}`, retention: logs.RetentionDays.ONE_MONTH, removalPolicy: cdk.RemovalPolicy.DESTROY }),
+      logGroup: new logs.LogGroup(this, "CostCheckLogs", { logGroupName: `/aws/lambda/${COST_CHECK_FUNCTION_NAME}`, retention: logs.RetentionDays.ONE_WEEK, removalPolicy: cdk.RemovalPolicy.DESTROY }),
       environment: { COST_BUCKET: this.trailBucket.bucketName, COST_PREFIX, BUDGET_NAME, ACCOUNT_ID: this.account },
     });
     // Cost Explorer has no resource-level scope; the budget, the prefix and the metric namespace do.
@@ -253,7 +253,7 @@ export class SiteStack extends cdk.Stack {
     schedulerRole.addToPolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [this.costCheck.functionArn] }));
     new scheduler.CfnSchedule(this, "CostCheckMonthly", {
       name: COST_CHECK_SCHEDULE_NAME,
-      description: "Zudocs: the monthly cost check on the first of the month (the previous month's document and the Zudocs/Cost metrics)",
+      description: "Zudocs: the monthly cost check on the third of the month, once Cost Explorer has settled the previous month (its document and the Zudocs/Cost metrics)",
       scheduleExpression: COST_CHECK_CRON_UTC,
       scheduleExpressionTimezone: "UTC",
       flexibleTimeWindow: { mode: "OFF" },

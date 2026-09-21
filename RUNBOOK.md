@@ -142,7 +142,9 @@ The eu-west host is put to sleep every night and woken for a session — the pla
   00:00–08:00 UTC), invoking the power function `zudocs-power` with `{ action: "sleep", by: "the nightly schedule" }`.
   **No schedule starts the host.** The schedule's sleep is refused while **demo mode is on** (a session is never
   stopped by a clock; demo mode lapses on its own after four hours) and while the **wire is cut** (the rule restores
-  the wire within fifteen minutes; the next attempt sleeps) — each refusal is a `power` row on the timeline.
+  the wire within fifteen minutes; the next of the three attempts sleeps — a refusal of the last one at 10:40 means
+  the host stays awake until the next morning, about $0.34: click *Sleep* when a session ends) — each refusal is a
+  `power` row on the timeline.
 - **Wake**: the desk's presenter panel, *Wake the fleet* — or `npm run host:wake -- --wait` from the owner's profile,
   which returns when the host's row is fresh and both workers report (about three minutes: EC2 start ~30 s, the
   daemon's `ExecStartPre` re-reads the Agent key from SSM, the workers wait for the socket and re-attach, the row
@@ -175,8 +177,9 @@ document parses, says on and its `until` is ahead and within four hours; a lapse
 document is off, with the reason on the eu-west card's *cadence* line. A read that fails (throttled, refused) keeps
 the last reading and says so on the card. Switching on is felt within two minutes (the next ticket is pulled forward);
 switching off lets the ticket already due run. The parameter is created *off* by `ZudocsSharedHost`; the desk's
-writes drift it from the template on purpose, and CloudFormation rewrites it only if that resource's own properties
-change. The puller's demo cadence is separate and stays a deploy flag (below).
+writes drift it from the template on purpose, and CloudFormation rewrites it (to off) only when that resource's own
+properties change — or the stack's tags (`app.ts`), which every taggable resource carries. The puller's demo cadence
+is separate and stays a deploy flag (below).
 
 ## The cost report, the monthly check, the budget
 
@@ -185,8 +188,10 @@ AWS_PROFILE=zudocs npm run cost:report                # last 7 / 30 days by serv
 AWS_PROFILE=zudocs npm run cost:report -- --write     # and docs/COST.md's numbers section (between its markers; the explanations are hand-written)
 ```
 
-Two Cost Explorer calls a run ($0.01 each). The **monthly check** (`services/cost-check`, `zudocs-cost-check` in
-us-east-1) runs on the first of the month at 06:00 UTC from the Scheduler schedule `zudocs-cost-check-monthly`: the
+One Cost Explorer query a run ($0.01 a page; the seven-day fold comes from the thirty-day answer). The **monthly
+check** (`services/cost-check`, `zudocs-cost-check` in us-east-1) runs on the third of the month at 06:00 UTC (Cost
+Explorer settles a day about a day late; on the third the previous month is whole) from the Scheduler schedule
+`zudocs-cost-check-monthly`: the
 previous month by service and by day, the last seven days, the budget → `cost/YYYY-MM.json` in the trail bucket
 (RETAIN; the trail's 90-day expiry covers only its own `AWSLogs/` prefix) and the metrics `Zudocs/Cost`
 `expectedMonthlyUsd`, `monthUsd` (dimension `month`) and `budgetActualUsd`. By hand:
@@ -232,8 +237,8 @@ has the lines and `npm run cost:report` the numbers.
   *started, the workers have not reported* for more than ten minutes after a wake: the boot did not come back —
   `npm run eu:proof -- --cli status` through Run Command, or the host's log group `/zudocs/eu-host`.
 - The host would not sleep (a `power` row says `refused: wire_cut` or `demo_mode_on`): restore the wire, or wait for
-  demo mode to lapse (four hours) or switch it off; the next scheduled attempt sleeps. `several_instances` is a
-  replacement in progress — wait for it.
+  demo mode to lapse (four hours) or switch it off; the next of the morning's three attempts sleeps, or tomorrow's —
+  click *Sleep*. `several_instances` is a replacement in progress — wait for it.
 - The eu-west card's *cadence* line says the switch could not be read: the host's role reads the demo-mode parameter
   by name; the last reading stands. `(expired)` beside *demo mode off* is normal — the four hours are up.
 - The release bar reads *FROZEN* and nobody froze: `npm run demo:console -- board` shows `frozen`; `unfreeze`.

@@ -18,7 +18,7 @@ import { test } from "node:test";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer } from "aws-lambda";
 import { DEMO_MODE_MAX_HOURS, demoModeDocument, parseDemoMode } from "../src/demoMode.js";
 import { createHandler } from "../src/handler.js";
-import { RECONCILE_GRACE_SECONDS, needsReconcile, powerView, type PowerAnswer, type PowerMarker } from "../src/hostPower.js";
+import { RECONCILE_GIVE_UP_MINUTES, RECONCILE_GRACE_SECONDS, needsReconcile, powerView, type PowerAnswer, type PowerMarker } from "../src/hostPower.js";
 import type { Host } from "../src/runtime.js";
 import type { Customer, StatusRow, Store, Ticket, TimelineEvent } from "../src/store.js";
 
@@ -60,6 +60,7 @@ test("the card's power view: the marker and the row's age folded into a phase; a
   assert.equal(needsReconcile(marker("stopping", -5_000), NOW), false, "within the grace the function is left alone");
   assert.equal(needsReconcile(marker("stopping", -(RECONCILE_GRACE_SECONDS + 1) * 1000), NOW), true);
   assert.equal(needsReconcile(marker("pending", -60_000), NOW), true);
+  assert.equal(needsReconcile(marker("pending", -(RECONCILE_GIVE_UP_MINUTES + 1) * 60_000), NOW), false, "half an hour in transition: the tick's problem, not every poll's (a replacement has no instance to reconcile with)");
 });
 
 // --- handler --------------------------------------------------------------------------------------------------------------
@@ -210,7 +211,9 @@ test("handler: /state folds the eu-west row's marker into a power view and asks 
   assert.equal(settled.calls.filter((c) => c.startsWith("power:")).length, 0, "a settled marker asks nothing of the function");
   assert.equal(s.body.hosts.find((h: { hostId: string }) => h.hostId === "us-east-1/lambda")?.powerView, undefined, "only the eu-west host has a power view");
 
-  const transition = fakeHost({ euRow: { power: { state: "pending", since: iso(-60_000), at: iso(-60_000), by: "seth@zudocs.com", instanceId: "i-eu" } } });
+  // The handler reads the clock itself: a marker a minute old by that clock (past the grace, well before the give-up).
+  const minuteAgo = new Date(Date.now() - 60_000).toISOString();
+  const transition = fakeHost({ euRow: { power: { state: "pending", since: minuteAgo, at: minuteAgo, by: "seth@zudocs.com", instanceId: "i-eu" } } });
   const t = parse(await createHandler(async () => transition)(event("GET", "/state")));
   assert.ok(transition.calls.includes("power:tick:seth@zudocs.com"), "a marker in transition past the grace: the poll asks the function to look now");
   assert.equal(t.body.hosts.find((h: { hostId: string }) => h.hostId === "eu-west-1/ec2").powerView.phase, "started", "the function's fresh marker (running) is what the card gets, and the row predates it");

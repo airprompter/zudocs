@@ -39,8 +39,8 @@ const or = (value, placeholder) => (value && String(value).trim() ? String(value
 export function emptyVersionedBucketCommands(bucket, region) {
   const b = or(bucket, "<bucket>");
   return [
-    `aws s3api list-object-versions --region ${region} --bucket ${b} --output json --query '{Objects: [Versions[].{Key:Key,VersionId:VersionId}, DeleteMarkers[].{Key:Key,VersionId:VersionId}][] | [0:1000]}' > /tmp/zudocs-versions.json   # repeat until Objects is empty`,
-    `aws s3api delete-objects --region ${region} --bucket ${b} --delete file:///tmp/zudocs-versions.json`,
+    `aws s3api list-object-versions --region ${region} --bucket ${b} --output json --query '{Objects: [Versions[].{Key:Key,VersionId:VersionId}, DeleteMarkers[].{Key:Key,VersionId:VersionId}][] | [0:1000]}' > /tmp/zudocs-versions.json   # a thousand at a time`,
+    `jq -e '.Objects | length > 0' /tmp/zudocs-versions.json && aws s3api delete-objects --region ${region} --bucket ${b} --delete file:///tmp/zudocs-versions.json   # repeat both lines until Objects is [] (delete-objects refuses an empty list)`,
     `aws s3api delete-bucket --region ${region} --bucket ${b}`,
   ];
 }
@@ -59,9 +59,10 @@ export function leftovers({ account, outputs = {}, region = "us-east-1", environ
   return [
     {
       what: "The hosted zone (ZudocsDns, RETAIN)",
-      why: "the registrar points at its name servers; deleting it while the registrar does is an outage on zudocs.com — repoint first",
+      why: "the registrar points at its name servers (deleting it while the registrar does is an outage on zudocs.com — repoint first); the site's certificate validated through DNS and CloudFormation leaves its validation CNAMEs (_xxx.zudocs.com, _xxx.www…, _xxx.desk…) in the zone, so the delete is refused until they are gone",
       commands: [
-        `aws route53 list-resource-record-sets --hosted-zone-id ${zoneId} --query "ResourceRecordSets[?Type!='NS' && Type!='SOA']"   # every record the stacks left (there should be none after the stacks are gone)`,
+        `aws route53 list-resource-record-sets --hosted-zone-id ${zoneId} --query "ResourceRecordSets[?Type!='NS' && Type!='SOA']" > /tmp/zudocs-records.json   # the ACM validation CNAMEs and anything else left`,
+        `for r in $(jq -c '.[]' /tmp/zudocs-records.json); do aws route53 change-resource-record-sets --hosted-zone-id ${zoneId} --change-batch "{\"Changes\":[{\"Action\":\"DELETE\",\"ResourceRecordSet\":$r}]}"; done`,
         `aws route53 delete-hosted-zone --id ${zoneId}   # refused until only the NS and SOA records remain`,
       ],
     },

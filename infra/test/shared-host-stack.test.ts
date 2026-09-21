@@ -179,6 +179,7 @@ test("phase 8: the power function starts and stops only instances carrying the h
   assert.deepEqual(actionsOf(timeline), ["dynamodb:PutItem"]);
   assert.equal(timeline.Resource, "arn:aws:dynamodb:us-east-1:111122223333:table/zudocs-desk-events");
   assert.ok(!statements.some((st) => actionsOf(st).some((a) => /SecurityGroup(Egress|Ingress)/.test(a) && st.Sid?.startsWith("Power"))), "the power function never touches the wire's rules");
+  assert.ok(!statements.some((st) => actionsOf(st).some((a) => /ssm:(Put|Delete)Parameter/.test(a))), "nothing in this stack writes a parameter: the workers cannot flip their own cadence, the power function cannot either");
   sharedHost.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: "rate(5 minutes)", Description: Match.stringLikeRegexp("power marker"), Targets: [Match.objectLike({ Input: JSON.stringify({ action: "tick" }) })] });
   const schedules = Object.values(sharedHost.findResources("AWS::Scheduler::Schedule") as Resources);
   assert.equal(schedules.length, 1, "one schedule: the sleep; no schedule starts the host");
@@ -189,6 +190,8 @@ test("phase 8: the power function starts and stops only instances carrying the h
   assert.equal(sleep.ScheduleExpressionTimezone, "UTC");
   assert.deepEqual(sleep.FlexibleTimeWindow, { Mode: "OFF" });
   assert.deepEqual(JSON.parse(sleep.Target.Input), { action: "sleep", by: SCHEDULE_BY }, "signed as the schedule, so demo mode can refuse it");
+  assert.deepEqual(sleep.Target.RetryPolicy, { MaximumRetryAttempts: 0 }, "no retries: the three cron attempts are the retry, and a refusal is not an error");
+  assert.equal(sleep.State, "ENABLED");
   const invokes = statements.filter((st) => actionsOf(st).includes("lambda:InvokeFunction"));
   assert.equal(invokes.length, 1, "the scheduler's role invokes the power function and nothing else");
   assert.ok(JSON.stringify(invokes[0]!.Resource).includes("Power"), "the power function by reference");

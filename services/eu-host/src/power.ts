@@ -13,11 +13,14 @@
  * - `wake`: `StartInstances` when stopped; the marker says `pending`, then `running` on the tick; the daemon's unit
  *   re-reads the Agent key from SSM before it starts, the workers re-attach, and their rows follow within minutes.
  * - `tick` (every five minutes) and `status`: reconcile the marker with what EC2 says — a host someone stopped or
- *   started outside the desk is shown as it is, with the instant the tick found it. A `stopping → stopped` or
- *   `pending → running` step keeps the marker's `since`, so *asleep since* is when the sleep began.
+ *   started outside the desk is shown as it is (a running one dated from EC2's launch time, a stopped one from the
+ *   instant the tick found it). A `stopping → stopped` or `pending → running` step keeps the marker's `since`, so
+ *   *asleep since* is when the sleep began. A tick that finds nothing to reconcile with (no live instance, two of
+ *   them during a replacement) answers so and writes no row.
  *
- * The marker is written with a condition that the host's row exists: this function never creates a bare row the
- * card cannot render. Every change is a `power` row on the desk's timeline. IAM: start and stop only on instances
+ * The marker is written with a condition that the host's row exists (this function never creates a bare row the
+ * card cannot render) and that the marker is still the one this invocation read (a tick that lost the race to the
+ * presenter's own click drops its write). Every change is a `power` row on the desk's timeline. IAM: start and stop only on instances
  * carrying the Name tag; describe is read-only; one SSM parameter (the demo-mode switch) by name.
  *
  * @example
@@ -98,8 +101,11 @@ export interface PowerPorts {
   ec2: Pick<EC2Client, "send">;
   ssm: Pick<SSMClient, "send">;
   readMarker: () => Promise<PowerMarker | null>;
-  /** SET the marker on the host's row; resolves false when the row does not exist (nothing is created). */
-  writeMarker: (marker: PowerMarker) => Promise<boolean>;
+  /**
+   * SET the marker on the host's row, only if the row exists (nothing is created) and its marker is still the one
+   * that was read (`previousAt`; a write that lost the race to the presenter's own is dropped, not layered over it).
+   */
+  writeMarker: (marker: PowerMarker, previousAt: string | null) => Promise<"written" | "no_row" | "raced">;
   appendEvent: (event: Record<string, unknown>) => Promise<void>;
   now: () => number;
 }
@@ -115,13 +121,16 @@ export function liveInstanceOf(reservations: Array<{ Instances?: Array<{ Instanc
 
 /**
  * The marker the tick writes when EC2's state differs from the row's: the same sleep or wake keeps its `since`
- * (stopping → stopped, pending → running); anything else is a new run of the state, dated now. Pure.
+ * (stopping → stopped, pending → running); a host found running without a wake of ours is dated from EC2's launch
+ * time (which moves on every start from stopped — so the workers' last row is newer than it and the card reads
+ * awake at once, not "coming up" for a status interval); anything else is a new run of the state, dated now. Pure.
  */
-export function reconciledMarker(previous: PowerMarker | null, state: PowerState, instanceId: string, nowMs: number, by: string): PowerMarker | null {
+export function reconciledMarker(previous: PowerMarker | null, state: PowerState, instanceId: string, nowMs: number, by: string, launchTime: string | null = null): PowerMarker | null {
   if (previous && previous.state === state && previous.instanceId === instanceId) return null;
   const at = new Date(nowMs).toISOString();
   const continues = previous && previous.instanceId === instanceId && ((previous.state === "stopping" && state === "stopped") || (previous.state === "pending" && state === "running"));
-  return { state, since: continues ? previous!.since : at, at, by: continues ? previous!.by : by, instanceId };
+  const since = continues ? previous!.since : state === "running" && launchTime && Date.parse(launchTime) <= nowMs ? launchTime : at;
+  return { state, since, at, by: continues ? previous!.by : by, instanceId };
 }
 
 const describeInstance = async (ports: PowerPorts): Promise<{ instance: Instance | null; refusal: string | null; count: number }> => {
@@ -152,13 +161,24 @@ export async function power(event: PowerEvent, ports: PowerPorts): Promise<Power
   const found = await describeInstance(ports);
   const previous = await ports.readMarker();
   const answer = (state: PowerState | null, instanceId: string | null, changed: boolean, refusal: string | null, marker: PowerMarker | null, message: string): PowerAnswer => ({ action, hostId: env.hostId, instanceId, state, changed, refusal, marker, message });
-  const record = async (marker: PowerMarker, extra: Record<string, unknown> = {}): Promise<void> => {
-    const written = await ports.writeMarker(marker);
-    if (!written) console.log(JSON.stringify({ source: "zudocs-power", event: "marker_not_written", reason: "the host's status row does not exist yet" }));
+  let known = previous;
+  const record = async (marker: PowerMarker, extra: Record<string, unknown> = {}): Promise<boolean> => {
+    const outcome = await ports.writeMarker(marker, known?.at ?? null);
+    if (outcome === "raced") {
+      // Someone (the presenter's own sleep or wake, another tick) wrote a newer marker between the read and this write: theirs stands.
+      console.log(JSON.stringify({ source: "zudocs-power", event: "marker_raced", state: marker.state }));
+      return false;
+    }
+    if (outcome === "no_row") console.log(JSON.stringify({ source: "zudocs-power", event: "marker_not_written", reason: "the host's status row does not exist yet" }));
+    else known = marker;
     await ports.appendEvent({ at: marker.at, kind: "power", host: env.hostId, forHost: env.hostId, action, state: marker.state, by: marker.by, instanceId: marker.instanceId, ...extra }).catch(() => undefined);
+    return true;
   };
+  // A refusal to an act (sleep, wake) is a timeline row; a tick or a status that finds nothing to reconcile with
+  // (no live instance, two of them) says so in its answer only — a replacement in flight would otherwise write a row
+  // every five minutes, and every desk poll one more.
   const refuse = async (refusal: string, message: string, state: PowerState | null, instanceId: string | null): Promise<PowerAnswer> => {
-    await ports.appendEvent({ at: at(), kind: "power", host: env.hostId, forHost: env.hostId, action, state, by, instanceId, refusal }).catch(() => undefined);
+    if (action === "sleep" || action === "wake") await ports.appendEvent({ at: at(), kind: "power", host: env.hostId, forHost: env.hostId, action, state, by, instanceId, refusal }).catch(() => undefined);
     return answer(state, instanceId, false, refusal, previous, message);
   };
 
@@ -170,10 +190,13 @@ export async function power(event: PowerEvent, ports: PowerPorts): Promise<Power
 
   // Reconcile first: whatever the action, the marker says what EC2 says.
   let marker = previous;
-  const reconciled = reconciledMarker(previous, instance.state, instance.instanceId, now(), `observed by ${action === "tick" ? "the tick" : "the desk"}`);
+  const reconciled = reconciledMarker(previous, instance.state, instance.instanceId, now(), action === "tick" ? "the tick" : "the desk", instance.launchTime);
   if (reconciled) {
-    marker = reconciled;
-    await record(reconciled, { observed: true });
+    if (await record(reconciled, { observed: true })) marker = reconciled;
+    else {
+      marker = (await ports.readMarker()) ?? previous;
+      known = marker;
+    }
   }
 
   switch (action) {
@@ -221,13 +244,16 @@ export const handler = async (event: PowerEvent): Promise<PowerAnswer> => {
       const out = await ddb.send(new GetCommand({ TableName: env.statusTable, Key: { hostId: env.hostId }, ProjectionExpression: "#p", ExpressionAttributeNames: { "#p": "power" } }));
       return (out.Item?.power as PowerMarker | undefined) ?? null;
     },
-    writeMarker: async (marker) => {
+    writeMarker: async (marker, previousAt) => {
+      // The row must exist, and its marker must still be the one this invocation read (or none): a lost race is dropped.
+      const unchanged = previousAt === null ? "attribute_not_exists(#p)" : "#p.#at = :prev";
       try {
-        await ddb.send(new UpdateCommand({ TableName: env.statusTable, Key: { hostId: env.hostId }, UpdateExpression: "SET #p = :m", ConditionExpression: "attribute_exists(hostId)", ExpressionAttributeNames: { "#p": "power" }, ExpressionAttributeValues: { ":m": marker } }));
-        return true;
+        await ddb.send(new UpdateCommand({ TableName: env.statusTable, Key: { hostId: env.hostId }, UpdateExpression: "SET #p = :m", ConditionExpression: `attribute_exists(hostId) AND (${unchanged})`, ExpressionAttributeNames: { "#p": "power", "#at": "at" }, ExpressionAttributeValues: { ":m": marker, ...(previousAt === null ? {} : { ":prev": previousAt }) } }));
+        return "written";
       } catch (error) {
-        if ((error as Error).name === "ConditionalCheckFailedException") return false;
-        throw error;
+        if ((error as Error).name !== "ConditionalCheckFailedException") throw error;
+        const row = await ddb.send(new GetCommand({ TableName: env.statusTable, Key: { hostId: env.hostId }, ProjectionExpression: "hostId" }));
+        return row.Item ? "raced" : "no_row";
       }
     },
     appendEvent: async (e) => {

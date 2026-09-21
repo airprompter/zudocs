@@ -27,7 +27,9 @@ test("the leftovers: every retained or hand-made thing with a command, filled fr
     for (const c of l.commands) assert.ok(!/apa_|apr_|AKIA/.test(c));
   }
   const zone = left.find((l) => l.what.includes("hosted zone"));
-  assert.ok(zone.commands.some((c) => c.includes("delete-hosted-zone --id Z0123")));
+  assert.ok(zone.commands.some((c) => c.includes("delete-hosted-zone --id Z0123")), "the zone by its id");
+  assert.ok(zone.commands.some((c) => c.includes("change-resource-record-sets --hosted-zone-id Z0123") && c.includes("DELETE")), "the certificate's validation CNAMEs are deleted first: CloudFormation leaves them and the zone delete is refused with them there");
+  assert.ok(zone.why.includes("validation CNAME"), "and the why says so");
   const pool = left.find((l) => l.what.includes("user pool"));
   assert.ok(pool.commands.some((c) => c.includes("--deletion-protection INACTIVE")), "deletion protection is on; the command turns it off first");
   assert.ok(pool.commands.some((c) => c.includes("delete-user-pool --region us-east-1 --user-pool-id us-east-1_abc")));
@@ -42,7 +44,7 @@ test("the leftovers: every retained or hand-made thing with a command, filled fr
   const bare = leftovers({ account: "111122223333" });
   assert.ok(bare.find((l) => l.what.includes("hosted zone")).commands[0].includes("<zone id"), "no outputs: a placeholder that says how to find the id");
   assert.ok(bare.find((l) => l.what.includes("exchange bucket")).commands[0].includes("zudocs-exchange-111122223333"), "the exchange bucket's name is derivable from the account");
-  assert.deepEqual(emptyVersionedBucketCommands("b", "eu-west-1").map((c) => c.split(" ")[1]), ["s3api", "s3api", "s3api"]);
+  assert.deepEqual(emptyVersionedBucketCommands("b", "eu-west-1").map((c) => c.split(" ")[0]), ["aws", "jq", "aws"], "list, delete when non-empty, remove the bucket");
 });
 
 test("the plan: a dry run says so, names what is present and absent, and prints every leftover with its commands", () => {

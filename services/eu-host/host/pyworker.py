@@ -80,7 +80,7 @@ def parse_demo_mode(text: Optional[str], now: float) -> dict[str, Any]:
         return {**off, "reason": "unparseable"}
     if not isinstance(doc, dict):
         return {**off, "reason": "unparseable"}
-    by = doc.get("by") if isinstance(doc.get("by"), str) and doc.get("by").strip() else None
+    by = doc.get("by").strip()[:120] if isinstance(doc.get("by"), str) and doc.get("by").strip() else None
     if doc.get("mode") == "off":
         return {"mode": "off", "until": None, "by": by, "reason": None}
     if doc.get("mode") != "on":

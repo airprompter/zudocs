@@ -9,7 +9,8 @@
  *   `stopped`, `pending` or `running` with the instant it began. `powerView` folds the marker and the row's age
  *   into what the card says — *asleep since …* rather than a stale, degraded host — and `needsReconcile` says when
  *   a poll should ask the function to look now (a marker still in transition, older than a short grace), so the
- *   card settles within a poll or two of a click instead of at the next five-minute tick.
+ *   card settles within a poll or two of a click instead of at the next five-minute tick — and stops asking after
+ *   thirty minutes in transition, when the tick alone keeps looking (a replacement in flight has no instance yet).
  * - **Demo mode**: one SSM String parameter in the host's region, written by the desk (on for at most four hours,
  *   or off) and read by the workers every minute (`demoMode.ts` holds the document's rules); the desk reads it
  *   for the panel through a short cache so a poll costs no cross-region call.
@@ -59,6 +60,8 @@ export interface PowerView {
 
 /** Seconds a marker in transition is left alone before a poll asks the function to look (EC2 takes ~30–90 s either way). */
 export const RECONCILE_GRACE_SECONDS = 20;
+/** Minutes after which a marker still in transition is the tick's problem, not every poll's (a replacement in flight has no instance to reconcile with). */
+export const RECONCILE_GIVE_UP_MINUTES = 30;
 
 /** The marker and the row's own timestamp folded into what the card says. Pure. */
 export function powerView(marker: PowerMarker | null | undefined, writtenAt: string | null | undefined, nowMs: number): PowerView {
@@ -82,11 +85,12 @@ export function powerView(marker: PowerMarker | null | undefined, writtenAt: str
   }
 }
 
-/** A poll should ask the power function to look now: the marker is in transition and older than the grace. Pure. */
+/** A poll should ask the power function to look now: the marker is in transition, older than the grace and younger than the give-up. Pure. */
 export function needsReconcile(marker: PowerMarker | null | undefined, nowMs: number): boolean {
   if (!marker) return false;
   if (marker.state !== "stopping" && marker.state !== "pending") return false;
-  return nowMs - Date.parse(marker.at) >= RECONCILE_GRACE_SECONDS * 1000;
+  const age = nowMs - Date.parse(marker.at);
+  return age >= RECONCILE_GRACE_SECONDS * 1000 && age < RECONCILE_GIVE_UP_MINUTES * 60_000;
 }
 
 /** The power function, invoked synchronously by ARN in its own region; a function error is thrown with its message. */
@@ -106,8 +110,8 @@ export interface DemoModePorts {
   write(mode: DemoMode, by: string): Promise<DemoModeDoc & { parameter: string }>;
 }
 
-/** Seconds the desk keeps a reading of the switch: a poll every ten seconds costs a cross-region call every thirty. */
-export const DEMO_MODE_CACHE_SECONDS = 30;
+/** Seconds the desk keeps a reading of the switch: one cross-region read per poll at most, so a write on another warm container shows within a poll. */
+export const DEMO_MODE_CACHE_SECONDS = 10;
 
 /** The real ports over SSM in the host's region, by parameter name; a fake in tests. */
 export function createDemoModePorts(region: string, parameter: string, now: () => number = Date.now): DemoModePorts {

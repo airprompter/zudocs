@@ -46,7 +46,7 @@ export interface SiteStackProps extends cdk.StackProps {
 export const BUDGET_NAME = "zudocs-monthly";
 export const COST_CHECK_FUNCTION_NAME = "zudocs-cost-check";
 export const COST_CHECK_SCHEDULE_NAME = "zudocs-cost-check-monthly";
-/** The third of every month at 06:00 UTC: Cost Explorer settles a day about a day late, so on the third the previous month is whole. */
+/** The third of every month at 06:00 UTC: Cost Explorer settles a day about a day late, so by the third every day of the previous month is in. */
 export const COST_CHECK_CRON_UTC = "cron(0 6 3 * ? *)";
 /** Where the monthly documents go in the trail bucket (outside the trail's own `AWSLogs/` prefix and its expiry). */
 export const COST_PREFIX = "cost/";

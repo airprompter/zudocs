@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { FIXED_SERVICES, MONTH_DAYS, NUMBERS_END, NUMBERS_START, budgetOf, costQuery, costWindow, expectedMonthlyUsd, kindOf, monthWindow, monthlyDocument, previousMonth, projectedSplit, renderNumbersSection, renderReport, spliceNumbers, summarise } from "../lib/cost.mjs";
+import { FIXED_SERVICES, MONTH_DAYS, NUMBERS_END, NUMBERS_START, budgetOf, costAndUsagePages, costQuery, costWindow, expectedMonthlyUsd, kindOf, monthWindow, monthlyDocument, previousMonth, projectedSplit, renderNumbersSection, renderReport, spliceNumbers, summarise, within } from "../lib/cost.mjs";
 
 const NOW = new Date("2026-09-21T14:30:00.000Z");
 const group = (service, amount) => ({ Keys: [service], Metrics: { UnblendedCost: { Amount: String(amount), Unit: "USD" } } });
@@ -103,4 +103,22 @@ test("the monthly document: the month's numbers, the seven-day projection, the b
   assert.deepEqual(doc.monthByDay.map((d) => d.day), ["2026-09-18", "2026-09-19", "2026-09-20"]);
   assert.equal(doc.budget, null);
   assert.equal(doc.generatedAt, "2026-09-21T14:30:00.000Z");
+});
+
+test("the pager follows NextPageToken to the end, counts its calls, and refuses to keep paying past ten pages; `within` keeps the rows of a narrower window", async () => {
+  const pages = { undefined: { ResultsByTime: [day("2026-09-01", [])], NextPageToken: "b" }, b: { ResultsByTime: [day("2026-09-02", [])], NextPageToken: "c" }, c: { ResultsByTime: [day("2026-09-03", [])] } };
+  const sent = [];
+  const { results, calls } = await costAndUsagePages(async (q) => { sent.push(q.NextPageToken); return pages[q.NextPageToken]; }, costQuery(costWindow(NOW, 30)));
+  assert.equal(calls, 3);
+  assert.deepEqual(sent, [undefined, "b", "c"]);
+  assert.deepEqual(results.map((r) => r.TimePeriod.Start), ["2026-09-01", "2026-09-02", "2026-09-03"]);
+  let n = 0;
+  await assert.rejects(costAndUsagePages(async () => { n += 1; return { ResultsByTime: [], NextPageToken: "more" }; }, costQuery(costWindow(NOW, 30))), /more than 10 pages/);
+  assert.equal(n, 10, "ten pages were paid for, not eleven");
+  const thirty = [];
+  for (let i = 30; i >= 1; i -= 1) thirty.push(day(new Date(Date.UTC(2026, 8, 21) - i * 86_400_000).toISOString().slice(0, 10), [group("Amazon Bedrock", 0.1)]));
+  const week = within(thirty, costWindow(NOW, 7));
+  assert.equal(week.length, 7);
+  assert.deepEqual([week[0].TimePeriod.Start, week.at(-1).TimePeriod.Start], ["2026-09-14", "2026-09-20"], "the seven full days before today, today excluded");
+  assert.equal(summarise(week, costWindow(NOW, 7)).total, 0.7);
 });

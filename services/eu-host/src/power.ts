@@ -133,6 +133,23 @@ export function reconciledMarker(previous: PowerMarker | null, state: PowerState
   return { state, since, at, by: continues ? previous!.by : by, instanceId };
 }
 
+/**
+ * The UpdateItem input that writes the marker: the row must exist, and its marker must be the one that was read
+ * (none when `previousAt` is null). Every placeholder in the names and values maps is referenced by the expressions
+ * (DynamoDB refuses an unused one) — the test pins that for both branches. Pure.
+ */
+export function markerUpdateInput(table: string, hostId: string, marker: PowerMarker, previousAt: string | null): { TableName: string; Key: { hostId: string }; UpdateExpression: string; ConditionExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, unknown>; ReturnValuesOnConditionCheckFailure: "ALL_OLD" } {
+  return {
+    TableName: table,
+    Key: { hostId },
+    UpdateExpression: "SET #p = :m",
+    ConditionExpression: previousAt === null ? "attribute_exists(hostId) AND attribute_not_exists(#p)" : "attribute_exists(hostId) AND #p.#at = :prev",
+    ExpressionAttributeNames: { "#p": "power", ...(previousAt === null ? {} : { "#at": "at" }) },
+    ExpressionAttributeValues: { ":m": marker, ...(previousAt === null ? {} : { ":prev": previousAt }) },
+    ReturnValuesOnConditionCheckFailure: "ALL_OLD",
+  };
+}
+
 const describeInstance = async (ports: PowerPorts): Promise<{ instance: Instance | null; refusal: string | null; count: number }> => {
   const out = await ports.ec2.send(new DescribeInstancesCommand({ Filters: [{ Name: "tag:Name", Values: [ports.env.nameTag] }, { Name: "instance-state-name", Values: [...LIVE_STATES] }] }));
   return liveInstanceOf(out.Reservations ?? []);
@@ -162,6 +179,7 @@ export async function power(event: PowerEvent, ports: PowerPorts): Promise<Power
   const previous = await ports.readMarker();
   const answer = (state: PowerState | null, instanceId: string | null, changed: boolean, refusal: string | null, marker: PowerMarker | null, message: string): PowerAnswer => ({ action, hostId: env.hostId, instanceId, state, changed, refusal, marker, message });
   let known = previous;
+  let changed = false;
   const record = async (marker: PowerMarker, extra: Record<string, unknown> = {}): Promise<boolean> => {
     const outcome = await ports.writeMarker(marker, known?.at ?? null);
     if (outcome === "raced") {
@@ -169,10 +187,32 @@ export async function power(event: PowerEvent, ports: PowerPorts): Promise<Power
       console.log(JSON.stringify({ source: "zudocs-power", event: "marker_raced", state: marker.state }));
       return false;
     }
-    if (outcome === "no_row") console.log(JSON.stringify({ source: "zudocs-power", event: "marker_not_written", reason: "the host's status row does not exist yet" }));
-    else known = marker;
+    if (outcome === "no_row") {
+      // No status row yet (the workers never wrote one): nothing to mark and no row on the timeline — a tick every five
+      // minutes would otherwise fill it; the log says so and the answer carries the state.
+      console.log(JSON.stringify({ source: "zudocs-power", event: "marker_not_written", reason: "the host's status row does not exist yet", state: marker.state }));
+      return false;
+    }
+    known = marker;
+    changed = true;
     await ports.appendEvent({ at: marker.at, kind: "power", host: env.hostId, forHost: env.hostId, action, state: marker.state, by: marker.by, instanceId: marker.instanceId, ...extra }).catch(() => undefined);
     return true;
+  };
+  /**
+   * The act's own marker, after Stop/StartInstances was issued. A desk poll that saw EC2 move may have written the
+   * same transition first (`observed`, by the desk): then this write loses the race, the stored marker is re-read
+   * and, when it is the same transition, written once more with the presenter's name and instant on it — the act
+   * happened, and the card and the timeline say who did it.
+   */
+  const settle = async (next: PowerMarker): Promise<PowerMarker> => {
+    if (await record(next)) return next;
+    const stored = await ports.readMarker();
+    if (stored && stored.state === next.state && stored.instanceId === next.instanceId) {
+      known = stored;
+      const signed: PowerMarker = { ...next, at: at() };
+      if (await record(signed)) return signed;
+    }
+    return (await ports.readMarker()) ?? next;
   };
   // A refusal to an act (sleep, wake) is a timeline row; a tick or a status that finds nothing to reconcile with
   // (no live instance, two of them) says so in its answer only — a replacement in flight would otherwise write a row
@@ -202,7 +242,7 @@ export async function power(event: PowerEvent, ports: PowerPorts): Promise<Power
   switch (action) {
     case "status":
     case "tick":
-      return answer(instance.state, instance.instanceId, reconciled !== null, null, marker, `${env.hostId} is ${instance.state}${marker && marker.state === "stopped" ? ` (asleep since ${marker.since})` : ""}`);
+      return answer(instance.state, instance.instanceId, changed, null, marker, `${env.hostId} is ${instance.state}${marker && marker.state === "stopped" ? ` (asleep since ${marker.since})` : ""}`);
     case "sleep": {
       if (instance.state === "stopped" || instance.state === "stopping") return answer(instance.state, instance.instanceId, false, null, marker, `${env.hostId} is already ${instance.state}`);
       if (instance.state === "pending") return refuse("instance_pending", `${env.hostId} is starting; wait for it to run before putting it to sleep`, instance.state, instance.instanceId);
@@ -212,16 +252,14 @@ export async function power(event: PowerEvent, ports: PowerPorts): Promise<Power
         if (demo.mode === "on") return refuse("demo_mode_on", `demo mode is on until ${demo.until ?? "?"} (${demo.by ?? "unknown"}): the schedule does not stop a host mid-session`, instance.state, instance.instanceId);
       }
       await ports.ec2.send(new StopInstancesCommand({ InstanceIds: [instance.instanceId] }));
-      const next: PowerMarker = { state: "stopping", since: at(), at: at(), by, instanceId: instance.instanceId };
-      await record(next);
+      const next = await settle({ state: "stopping", since: at(), at: at(), by, instanceId: instance.instanceId });
       return answer("stopping", instance.instanceId, true, null, next, `${env.hostId} is going to sleep (${instance.instanceId}); the card reads asleep when EC2 reports it stopped — only its volume bills until it is woken`);
     }
     case "wake": {
       if (instance.state === "running" || instance.state === "pending") return answer(instance.state, instance.instanceId, false, null, marker, `${env.hostId} is already ${instance.state === "running" ? "awake" : "starting"}`);
       if (instance.state === "stopping") return refuse("instance_stopping", `${env.hostId} is still stopping; wake it once it is stopped (a minute)`, instance.state, instance.instanceId);
       await ports.ec2.send(new StartInstancesCommand({ InstanceIds: [instance.instanceId] }));
-      const next: PowerMarker = { state: "pending", since: at(), at: at(), by, instanceId: instance.instanceId };
-      await record(next);
+      const next = await settle({ state: "pending", since: at(), at: at(), by, instanceId: instance.instanceId });
       return answer("pending", instance.instanceId, true, null, next, `${env.hostId} is waking (${instance.instanceId}): the daemon re-reads its key and the workers re-attach; their rows follow within about three minutes`);
     }
     default:
@@ -246,14 +284,13 @@ export const handler = async (event: PowerEvent): Promise<PowerAnswer> => {
     },
     writeMarker: async (marker, previousAt) => {
       // The row must exist, and its marker must still be the one this invocation read (or none): a lost race is dropped.
-      const unchanged = previousAt === null ? "attribute_not_exists(#p)" : "#p.#at = :prev";
       try {
-        await ddb.send(new UpdateCommand({ TableName: env.statusTable, Key: { hostId: env.hostId }, UpdateExpression: "SET #p = :m", ConditionExpression: `attribute_exists(hostId) AND (${unchanged})`, ExpressionAttributeNames: { "#p": "power", "#at": "at" }, ExpressionAttributeValues: { ":m": marker, ...(previousAt === null ? {} : { ":prev": previousAt }) } }));
+        await ddb.send(new UpdateCommand(markerUpdateInput(env.statusTable, env.hostId, marker, previousAt)));
         return "written";
       } catch (error) {
         if ((error as Error).name !== "ConditionalCheckFailedException") throw error;
-        const row = await ddb.send(new GetCommand({ TableName: env.statusTable, Key: { hostId: env.hostId }, ProjectionExpression: "hostId" }));
-        return row.Item ? "raced" : "no_row";
+        // The refused write carries the row as it stands (ALL_OLD): a row means the marker moved under us; none means there is no row.
+        return (error as { Item?: unknown }).Item ? "raced" : "no_row";
       }
     },
     appendEvent: async (e) => {

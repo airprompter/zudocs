@@ -28,7 +28,9 @@ test("the leftovers: every retained or hand-made thing with a command, filled fr
   }
   const zone = left.find((l) => l.what.includes("hosted zone"));
   assert.ok(zone.commands.some((c) => c.includes("delete-hosted-zone --id Z0123")), "the zone by its id");
-  assert.ok(zone.commands.some((c) => c.includes("change-resource-record-sets --hosted-zone-id Z0123") && c.includes("DELETE")), "the certificate's validation CNAMEs are deleted first: CloudFormation leaves them and the zone delete is refused with them there");
+  const cnames = zone.commands.find((c) => c.includes("change-resource-record-sets --hosted-zone-id Z0123"));
+  assert.ok(cnames && cnames.includes("DELETE") && cnames.includes("jq '{Changes: map(") && !/\$r\b/.test(cnames), "the certificate's validation CNAMEs are deleted first, in one batch jq builds (a shell loop over records would word-split and mis-quote)");
+  assert.ok(zone.commands[0].includes("--output json"), "the listing is JSON whatever the CLI's default output");
   assert.ok(zone.why.includes("validation CNAME"), "and the why says so");
   const pool = left.find((l) => l.what.includes("user pool"));
   assert.ok(pool.commands.some((c) => c.includes("--deletion-protection INACTIVE")), "deletion protection is on; the command turns it off first");

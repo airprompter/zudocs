@@ -50,6 +50,9 @@ test("the card's power view: the marker and the row's age folded into a phase; a
   assert.equal(powerView(marker("stopping", -10_000), iso(-5_000), NOW).phase, "going_to_sleep", "stopping reads as going to sleep whatever the row's age (the workers write once more while the OS halts)");
   assert.deepEqual(powerView(marker("stopped", -3_600_000, -3_000_000), iso(-3_650_000), NOW), { phase: "asleep", since: iso(-3_600_000), by: "the nightly schedule", label: "asleep" }, "asleep since the sleep began, not since the tick found it stopped");
   assert.equal(powerView(marker("pending", -20_000), iso(-3_650_000), NOW).phase, "waking");
+  assert.equal(powerView(marker("pending", -20_000), iso(-3_650_000), NOW).label, "waking");
+  assert.equal(powerView(marker("pending", -900_000), iso(-3_650_000), NOW).label, "waking, longer than expected — see the timeline", "a transition ten minutes old is said, not left hanging");
+  assert.equal(powerView(marker("stopping", -900_000), iso(-3_650_000), NOW).label, "going to sleep, longer than expected — see the timeline");
   assert.equal(powerView(marker("running", -120_000, -60_000), iso(-3_650_000), NOW).phase, "started", "running per EC2 but the workers' row predates the start");
   assert.equal(powerView(marker("running", -120_000, -60_000), iso(-3_650_000), NOW).label, "started, the workers are coming up");
   assert.equal(powerView(marker("running", -900_000, -800_000), iso(-3_650_000), NOW).label, "started, the workers have not reported", "ten minutes without a row is said, not hidden");

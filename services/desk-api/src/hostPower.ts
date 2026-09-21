@@ -66,13 +66,15 @@ export const RECONCILE_GIVE_UP_MINUTES = 30;
 /** The marker and the row's own timestamp folded into what the card says. Pure. */
 export function powerView(marker: PowerMarker | null | undefined, writtenAt: string | null | undefined, nowMs: number): PowerView {
   if (!marker) return { phase: "awake", since: null, by: null, label: "awake" };
+  // A transition older than ten minutes is said: EC2 takes a minute or two; longer means something the timeline explains (a replacement, an instance that never came back).
+  const long = nowMs - Date.parse(marker.since) > 600_000;
   switch (marker.state) {
     case "stopping":
-      return { phase: "going_to_sleep", since: marker.since, by: marker.by, label: "going to sleep" };
+      return { phase: "going_to_sleep", since: marker.since, by: marker.by, label: long ? "going to sleep, longer than expected — see the timeline" : "going to sleep" };
     case "stopped":
       return { phase: "asleep", since: marker.since, by: marker.by, label: "asleep" };
     case "pending":
-      return { phase: "waking", since: marker.since, by: marker.by, label: "waking" };
+      return { phase: "waking", since: marker.since, by: marker.by, label: long ? "waking, longer than expected — see the timeline" : "waking" };
     case "running": {
       // Running per EC2; awake once the workers have written a row since the start began (their boot takes minutes).
       const reported = writtenAt ? Date.parse(writtenAt) > Date.parse(marker.since) : false;

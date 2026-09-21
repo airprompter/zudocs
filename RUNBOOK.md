@@ -190,7 +190,8 @@ AWS_PROFILE=zudocs npm run cost:report -- --write     # and docs/COST.md's numbe
 
 One Cost Explorer query a run ($0.01 a page; the seven-day fold comes from the thirty-day answer). The **monthly
 check** (`services/cost-check`, `zudocs-cost-check` in us-east-1) runs on the third of the month at 06:00 UTC (Cost
-Explorer settles a day about a day late; on the third the previous month is whole) from the Scheduler schedule
+Explorer settles a day about a day late; by the third every day of the previous month is in, though amounts are
+refined until the bill is finalised) from the Scheduler schedule
 `zudocs-cost-check-monthly`: the
 previous month by service and by day, the last seven days, the budget → `cost/YYYY-MM.json` in the trail bucket
 (RETAIN; the trail's 90-day expiry covers only its own `AWSLogs/` prefix) and the metrics `Zudocs/Cost`

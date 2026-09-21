@@ -17,14 +17,14 @@ import { test } from "node:test";
 import { DescribeInstancesCommand, DescribeSecurityGroupsCommand, StartInstancesCommand, StopInstancesCommand } from "@aws-sdk/client-ec2";
 import { GetParameterCommand } from "@aws-sdk/client-ssm";
 import { TicketCadence, demoModeDocument } from "../src/demoMode.js";
-import { SCHEDULE_BY, liveInstanceOf, power, readEnv, reconciledMarker, type PowerMarker, type PowerPorts } from "../src/power.js";
+import { SCHEDULE_BY, liveInstanceOf, markerUpdateInput, power, readEnv, reconciledMarker, type PowerMarker, type PowerPorts } from "../src/power.js";
 
 const NOW = Date.parse("2026-09-21T10:00:00.000Z");
 const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
 
 const LAUNCHED = new Date(NOW - 86_400_000);
 
-function fake(options: { instances?: Array<{ id: string; state: string; groups?: string[]; launched?: Date }>; wireCut?: boolean; demoMode?: string | null; marker?: PowerMarker | null; rowExists?: boolean; now?: number; raceOnce?: PowerMarker } = {}) {
+function fake(options: { instances?: Array<{ id: string; state: string; groups?: string[]; launched?: Date }>; wireCut?: boolean; demoMode?: string | null; marker?: PowerMarker | null; rowExists?: boolean; now?: number; raceOnce?: PowerMarker | ((attempted: PowerMarker) => PowerMarker) } = {}) {
   const instances = options.instances ?? [{ id: "i-live", state: "running", groups: ["sg-1"] }];
   const calls: string[] = [];
   const events: Record<string, unknown>[] = [];
@@ -72,7 +72,7 @@ function fake(options: { instances?: Array<{ id: string; state: string; groups?:
       if (options.rowExists === false) return "no_row";
       if (race) {
         // Someone else's write landed between the read and this write (the presenter's own click, another tick).
-        marker = race;
+        marker = typeof race === "function" ? race(m) : race;
         race = null;
         calls.push(`raced:${m.state}`);
         return "raced";
@@ -90,6 +90,22 @@ function fake(options: { instances?: Array<{ id: string; state: string; groups?:
   };
   return { ports, calls, events, instances, marker: () => marker, advance: (ms: number) => { now += ms; } };
 }
+
+test("the marker's UpdateItem input: every placeholder referenced in both branches (DynamoDB refuses an unused name), the row must exist, the old row comes back on a refusal", () => {
+  const marker: PowerMarker = { state: "stopping", since: iso(0), at: iso(0), by: "x", instanceId: "i" };
+  for (const previousAt of [null, iso(-1000)]) {
+    const input = markerUpdateInput("s", "eu-west-1/ec2", marker, previousAt);
+    const expressions = `${input.UpdateExpression} ${input.ConditionExpression}`;
+    for (const name of Object.keys(input.ExpressionAttributeNames)) assert.ok(expressions.includes(name), `${name} is referenced (previousAt ${previousAt})`);
+    for (const value of Object.keys(input.ExpressionAttributeValues)) assert.ok(expressions.includes(value), `${value} is referenced (previousAt ${previousAt})`);
+    for (const ref of expressions.match(/[#:][a-z]+/g) ?? []) assert.ok(ref in input.ExpressionAttributeNames || ref in input.ExpressionAttributeValues, `${ref} is declared (previousAt ${previousAt})`);
+    assert.ok(input.ConditionExpression.startsWith("attribute_exists(hostId) AND "), "never creates a row");
+    assert.equal(input.ReturnValuesOnConditionCheckFailure, "ALL_OLD");
+  }
+  assert.equal(markerUpdateInput("s", "h", marker, null).ConditionExpression, "attribute_exists(hostId) AND attribute_not_exists(#p)");
+  assert.equal(markerUpdateInput("s", "h", marker, iso(-1000)).ConditionExpression, "attribute_exists(hostId) AND #p.#at = :prev");
+  assert.deepEqual(markerUpdateInput("s", "h", marker, null).ExpressionAttributeNames, { "#p": "power" }, "no #at when there is nothing to compare with");
+});
 
 test("the environment: every name required, the parameter a name", () => {
   const env = readEnv({ NAME_TAG: "zudocs-eu-host", HOST_ID: "eu-west-1/ec2", DYNAMODB_REGION: "us-east-1", STATUS_TABLE: "s", EVENTS_TABLE: "e", DEMO_MODE_PARAMETER: "/zudocs/dev/demo-mode" });
@@ -222,8 +238,9 @@ test("the tick reconciles: stopping → stopped keeps since (asleep since the sl
   const noRow = fake({ instances: [{ id: "i-live", state: "stopped" }], rowExists: false });
   const n = await power({ action: "tick" }, noRow.ports);
   assert.equal(n.state, "stopped");
+  assert.equal(n.changed, false, "nothing was written");
   assert.equal(noRow.marker(), null, "no row, no marker: a bare row the card cannot render is never created");
-  assert.equal(noRow.events.length, 1, "the timeline still says what was found");
+  assert.equal(noRow.events.length, 0, "and no row on the timeline either (a tick every five minutes would fill it); the answer carries the state");
 
   // The race: the tick read `running` (no marker), then the presenter's sleep wrote `stopping` before the tick's write landed.
   const presenters: PowerMarker = { state: "stopping", since: iso(-1000), at: iso(-1000), by: "seth@zudocs.com", instanceId: "i-live" };
@@ -232,7 +249,21 @@ test("the tick reconciles: stopping → stopped keeps since (asleep since the sl
   assert.ok(raced.calls.includes("raced:stopping"), "the conditional write refused");
   assert.equal(raced.events.length, 0, "no row layered over the presenter's");
   assert.deepEqual(r.marker, presenters, "the answer carries the marker that won");
+  assert.equal(r.changed, false, "a tick whose write lost the race changed nothing");
   assert.equal(raced.marker()!.by, "seth@zudocs.com", "the presenter's sleep stands");
+
+  // The other way round: the presenter's sleep issued StopInstances, and a desk poll observed `stopping` and wrote
+  // first. The act happened; the stored marker is the same transition, so it is written once more with the
+  // presenter's name on it — the card and the timeline say who put the host to sleep.
+  const observedFirst = fake({ instances: [{ id: "i-live", state: "running", groups: ["sg-1"] }], marker: { state: "running", since: iso(-3_600_000), at: iso(-3_600_000), by: "the tick", instanceId: "i-live" }, raceOnce: (attempted) => ({ ...attempted, by: "the desk", at: iso(-1) }) });
+  const s2 = await power({ action: "sleep", by: "seth@zudocs.com" }, observedFirst.ports);
+  assert.ok(observedFirst.calls.includes("stop:i-live"), "the instance was stopped");
+  assert.ok(observedFirst.calls.includes("raced:stopping"), "the first marker write lost to the poll's observation");
+  assert.equal(observedFirst.marker()!.state, "stopping");
+  assert.equal(observedFirst.marker()!.by, "seth@zudocs.com", "signed by the presenter after all");
+  assert.equal(s2.marker!.by, "seth@zudocs.com", "and the answer carries what is stored");
+  assert.equal(s2.changed, true);
+  assert.equal(observedFirst.events.filter((e) => e.state === "stopping").length, 1, "one sleep row, the presenter's");
 });
 
 test("the ticket cadence under the switch: due once per interval; switching on pulls the next ticket to within the demo interval; switching off never pushes a due ticket out", () => {

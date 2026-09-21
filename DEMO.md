@@ -85,8 +85,9 @@ deployed.
 (staging's generation, the reply's sealed settings — `temperatureMilli 300, maxOutputTokens 600`), the subject hash
 computed on the desk (the customer id never leaves), then the stream replayed at the cadence it arrived, the done
 frame (arm, price in micro-dollars, the price book), the feedback filed against the run's reference, and the
-OpenAI-compatible call: `temperature 1.9` and `top_p 0.1` on the request marked *ignored*, the version's sealed
-settings beside them, the route's answer with its `runRef`. **On dev today the hosted run route answers `internal
+OpenAI-compatible call: `temperature 1.9` and `top_p 0.1` on the request marked *ignored by contract* (the release
+owns its settings; the response carries no settings, so the mark is the contract's word, not something the route
+reported), the version's sealed settings beside them, the route's answer with its `runRef`. **On dev today the hosted run route answers `internal
 (500)`** for every run (platform issue #906, a DynamoDB condition-expression bug in the meter's reservation) — the
 panel shows the refusal in the route's words and the catalogue read that did work. Say so, or skip the click.
 
@@ -129,8 +130,10 @@ row** — *one approval unlocks the whole plan; the host walks it on its own clo
 
 Click **Replay 30** (us-east runs the inbox round-robin; two to three minutes) and, with **T-1041** selected, **Run
 T-1041 on eu-west-1** three or four times for different tickets. The **Experiments** panel (under the ticket)
-fills: per arm — runs by host, the judge's mean, cost per run, checks, thumbs — and the stickiness line: *N
-customers seen on both us-east and eu-west, every host agrees* with the customer → arm pairs. Say: *the arm is a
+fills: per arm — runs by host, the judge's mean, cost per run, checks, thumbs — and the stickiness line, *on the
+weights in force*: *N seen on more than one host under the same release — every host agrees* with the customer →
+arm pairs (one row per customer, slot and release: after the dial a customer whose bucket moved reads control on the
+old release and candidate on the new one, by design — never a disagreement). Say: *the arm is a
 hash of the release's salt and the customer id, computed on each host; no coordination, and the air-gapped host's
 probe landed on the same arm offline.* At 10 % the candidate is a share of *customers* (twelve seeded), so the
 panel says how many landed there — one or two, sometimes none; that is what 10 % means.
@@ -167,8 +170,9 @@ Each is one command; each prints the refusal as the platform gave it.
   approve it**; say why. Click **Golden set now** on the presenter panel: the active release passes 5/5. Then
   `advance`: the next promotion stages in its place, the host settles the old row *settled on the host* (superseded,
   naming the generation staged instead) on its next tick, and a click on it after that is refused.
-- The eu-west shell row on the presenter panel (Run Command; the API queues the command and the CLI's own document
-  lands on the timeline and under the buttons within seconds — `doctor` takes up to a minute): **policy show** —
+- The eu-west shell row on the presenter panel (Run Command through the desk's own document, whose parameter can only
+  be one of these five names; the API queues the command and the CLI's own document lands on the timeline and under
+  the buttons within seconds — `doctor` takes up to a minute): **policy show** —
   *in force unlock_required (local); the console says auto — advisory here*; **rollback** — *generation G-1 live —
   a forced downgrade, stamped on evidence*; the eu-west card reads *forced downgrade* within a minute, and the fleet
   page shows the instance's forced local rollback after its next heartbeat (up to five minutes — not at once); the

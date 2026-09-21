@@ -50,10 +50,17 @@ Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack
   call with `temperature 1.9` / `top_p 0.1` the release ignores, beside the catalogue's sealed `inference`. The run
   key is read from SSM by NAME on the first call and held in memory; a refusal is recorded in the route's words.
 - `GET /arms` (`arms.ts`): the per-arm fold of the runs and feedback tables (runs by host, judge mean, cost mean,
-  checks, thumbs) and the stickiness table (per customer, the arm each host served). `GET /approvals` rows carry the
-  ramp plan this host read from the same generation.
-- Presenter actions: `host_cli` (an allowlisted `zudocs-cli` line on the eu-west host through Run Command by Name
-  tag; the CLI's document comes back and lands on the timeline), `policy` (`ap.setApplyPolicy`), `golden`
+  checks, thumbs) and the stickiness table — one row per customer, slot **and release** (the weights in force: a dial
+  is a new generation, and a customer whose bucket moved with it landed on the control before and the candidate after,
+  by design; hosts are compared only under the same release, so the panel never reads *control+candidate* after a
+  dial). `GET /approvals` rows carry the ramp plan this host read from the same generation.
+- The compat record's `ignoredByContract` (`hosted.ts`) is a constant — the contract's word that the release owns
+  `temperature` and `top_p`; the response carries no settings, so nothing observes the ignoring, and the desk's chip
+  says *ignored by contract* rather than pretending the route reported it.
+- Presenter actions: `host_cli` (an allowlisted `zudocs-cli` command on the eu-west host through Run Command by Name
+  tag, sent as the one parameter of the desk's own Command document `zudocs-desk-host-cli` — allowed values are the
+  allowlist, the shell line is fixed, the role may send no other document; the CLI's document comes back, goes through
+  the strips' key-shaped scan (`redact.ts`) and lands on the timeline), `policy` (`ap.setApplyPolicy`), `golden`
   (`ap.golden()` on the active release; counts only), `reset` (clear runs, feedback, approvals, events, counters;
   re-seed), `replay` up to 30.
 - `/state` carries `frozen` (the manifest's `disable` directive as `status().disabled.agent`, with one fixed

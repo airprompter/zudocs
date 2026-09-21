@@ -53,8 +53,11 @@ On the eu-west host the same commands run as the daemon's user through `zudocs-c
 (`npm run eu:proof -- --cli "policy show"`), or one click on the desk's presenter panel (the *eu-west shell* row:
 `policy show`, `status`, `doctor`, `unlock`, `rollback` — an allowlist; the API queues the command as a job the
 Lambda hands itself and the CLI's document lands on the timeline, because the HTTP API caps an integration at 30 s;
-the Lambda's role may run Run Command's shell document only on the instance carrying the `zudocs-eu-host` Name
-tag). Not on the list: `apply` (the daemon owns that store; a second writer is not a drill) and `policy set` (the
+the Lambda's role may send exactly one Run Command document — the eu-west stack's `zudocs-desk-host-cli`, whose one
+parameter's allowed values are that allowlist and whose shell line is fixed, so SSM refuses any other value before it
+reaches the host — and only to the instance carrying the `zudocs-eu-host` Name tag; never `AWS-RunShellScript`. The
+CLI's stdout and stderr go through the strips' key-shaped scan before the row is written; a hit is redacted and the
+row says so). Not on the list: `apply` (the daemon owns that store; a second writer is not a drill) and `policy set` (the
 daemon runs with `--apply-policy unlock_required`, a local policy the CLI's `policy set` does not loosen — the
 loosening drill is the us-east host's own `setApplyPolicy`, the presenter's *set auto*).
 

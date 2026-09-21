@@ -56,7 +56,10 @@ test("fleet agreement: every fresh row at the generation; a stale optional host 
   const airgapUp = fleetAgreement([row("us-east-1/lambda", 9, 1), row("ap-southeast-1/airgap", 8, 2, "airgapped")], 9, { now });
   assert.equal(airgapUp.agree, false, "an air-gapped host that is up and behind counts");
   assert.equal(fleetAgreement([], 9, { now }).agree, false, "nothing reporting is no agreement");
-  assert.deepEqual(armsByCustomer([{ customerId: "c1", tag: "support.reply", arms: { a: "control" }, consistent: true }, { customerId: "c1", tag: "support.triage", arms: { a: "candidate" }, consistent: true }], "support.reply"), { c1: { arms: { a: "control" }, consistent: true } });
+  assert.deepEqual(armsByCustomer([{ customerId: "c1", tag: "support.reply", generation: 5, arms: { a: "control" }, consistent: true }, { customerId: "c1", tag: "support.triage", generation: 5, arms: { a: "candidate" }, consistent: true }], "support.reply"), { c1: { arms: { a: "control" }, consistent: true, generation: 5 } });
+  const dialled = [{ customerId: "c1", tag: "support.reply", generation: 6, arms: { a: "candidate" }, consistent: true }, { customerId: "c1", tag: "support.reply", generation: 5, arms: { a: "control" }, consistent: true }];
+  assert.deepEqual(armsByCustomer(dialled, "support.reply"), { c1: { arms: { a: "candidate" }, consistent: true, generation: 6 } }, "the newest release's row wins after a dial");
+  assert.deepEqual(armsByCustomer(dialled, "support.reply", 5), { c1: { arms: { a: "control" }, consistent: true, generation: 5 } }, "a generation asked for is the one answered");
 });
 
 test("the console client: benign warnings are acknowledged once, a real blocker comes back as a document, a refusal names the code", async () => {

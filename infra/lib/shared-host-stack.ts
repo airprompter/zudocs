@@ -17,6 +17,10 @@
  *   script or the pinned AMI replaces the instance (`userDataCausesReplacement`): the host is cattle, its store is
  *   rebuilt from a sync — and, under `unlock_required`, the first release lands staged for the desk to approve.
  * - The wire function (Node 22 arm64, `services/eu-host/src/wire.ts`) with the EventBridge tick every five minutes.
+ * - The desk's host-CLI Run Command document (phase 6 addendum): a Command document in this region whose one
+ *   parameter's allowed values are exactly the desk's allowlist (`services/desk-api/src/hostCliDocument.ts`) and whose
+ *   shell line is fixed — the desk function may send this document and no other, so its role is never arbitrary
+ *   root on a host that holds the Agent key.
  *
  * Two things a synth cannot catch: the eu-west SSM parameter must exist before the daemon can start (the boot writes
  * the env file from it and fails loudly otherwise; `AWS_REGION=eu-west-1 ZUDOCS_SSM_KEY_ID=alias/aws/ssm bash
@@ -28,11 +32,12 @@
  * ```
  */
 import * as cdk from "aws-cdk-lib";
-import { aws_ec2 as ec2, aws_events as events, aws_events_targets as targets, aws_iam as iam, aws_lambda as lambda, aws_logs as logs, aws_s3_assets as assets } from "aws-cdk-lib";
+import { aws_ec2 as ec2, aws_events as events, aws_events_targets as targets, aws_iam as iam, aws_lambda as lambda, aws_logs as logs, aws_s3_assets as assets, aws_ssm as ssm } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HOST_CLI_DOCUMENT_NAME, hostCliDocumentContent } from "../../services/desk-api/src/hostCliDocument.js";
 import { CATALOGUE } from "../../services/desk-api/src/modelCatalogue.js";
 import type { ZudocsConfig } from "./config.js";
 import { TABLE_NAMES, tableNameOf, type AirPrompterIds } from "./desk-stack.js";
@@ -179,6 +184,17 @@ export class SharedHostStack extends cdk.Stack {
     this.wire.addToRolePolicy(new iam.PolicyStatement({ actions: ["ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupEgress", "ec2:CreateTags", "ec2:DeleteTags"], resources: [groupArn] }));
     this.wire.addToRolePolicy(new iam.PolicyStatement({ actions: ["dynamodb:PutItem"], resources: [eventsTableArn] }));
     new events.Rule(this, "WireTick", { description: "Zudocs: restore the eu-west host's egress when a cut is older than the limit", schedule: events.Schedule.rate(cdk.Duration.minutes(5)), targets: [new targets.LambdaFunction(this.wire, { event: events.RuleTargetInput.fromObject({ action: "tick" }) })] });
+
+    // --- The desk's host-CLI document ---------------------------------------------------------------------------
+    // A change to the allowlist is a new document version (the default follows); the desk stack grants SendCommand on this ARN only.
+    new ssm.CfnDocument(this, "HostCliDocument", {
+      name: HOST_CLI_DOCUMENT_NAME,
+      documentType: "Command",
+      documentFormat: "JSON",
+      targetType: "/AWS::EC2::Instance",
+      updateMethod: "NewVersion",
+      content: hostCliDocumentContent(),
+    });
 
     new cdk.CfnOutput(this, "InstanceId", { value: this.instance.instanceId });
     new cdk.CfnOutput(this, "HostId", { value: hostId, description: "The host's row in the status table" });

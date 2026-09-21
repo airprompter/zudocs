@@ -155,7 +155,10 @@ if (flag("--hosted")) {
     ok(`hosted catalogue: staging generation ${h.catalogue.generation}, reply on ${h.catalogue.slot?.model} with ${JSON.stringify(h.catalogue.slot?.inference)}; ${h.subjectHash ? `subject hash computed on the desk (${h.subjectHash.slice(0, 12)}…)` : `no experiment on staging (${h.catalogue.experiments.length} listed), so no subject hash — the customer id never leaves the desk either way`}`);
     if (h.stream.result) ok(`hosted stream: ${h.stream.deltas.length} deltas, ${badge({ tag: "support.reply", versionId: h.stream.result.versionId, generation: h.stream.result.generation, model: h.stream.result.model, arm: h.stream.result.arm })} · ${h.stream.result.priceMicros} µ$ · feedback ${h.feedback?.accepted}`);
     else gap(`hosted run refused by the route: ${h.stream.refusal?.code} (HTTP ${h.stream.refusal?.status}) ${h.stream.refusal?.message} — recorded as such; platform issue #906`);
-    check(h.compat?.request.temperature === 1.9 && h.compat.ignored.includes("temperature"), `compatible endpoint called with temperature ${h.compat?.request.temperature} (ignored by contract) beside the sealed ${JSON.stringify(h.catalogue.slot?.inference)}; it answered HTTP ${h.compat?.response.status}${h.compat?.response.runRef ? ` runRef ${h.compat.response.runRef.slice(0, 10)}…` : ""}`);
+    // `ignoredByContract` is the contract's word, not the route's: the response carries no settings, so nothing here can observe the ignoring. Informational unless the route answered.
+    const compatLine = `compatible endpoint called with temperature ${h.compat?.request.temperature} / top_p ${h.compat?.request.top_p} (ignored by contract: ${(h.compat?.ignoredByContract ?? []).join(", ")} — the response carries no settings) beside the sealed ${JSON.stringify(h.catalogue.slot?.inference)}; it answered HTTP ${h.compat?.response.status}${h.compat?.response.runRef ? ` runRef ${h.compat.response.runRef.slice(0, 10)}…` : ""}`;
+    if (h.compat?.response.status === 200) check(h.compat.request.temperature === 1.9 && h.compat.response.runRef !== null, compatLine);
+    else ok(`${compatLine} (informational: the route did not answer 200, so the call is recorded, not asserted)`);
   }
 }
 
@@ -233,12 +236,14 @@ check(replayDone.done >= 12, `replay done: ${replayDone.done}/${replayDone.reque
 await desk.waitFor("eu-west to run its queue", async () => ((await eventsOfKind(since4, "ticket_run", EU)).length >= 4 ? true : null), { timeoutMs: 240_000, everyMs: 10_000 }).catch(() => fail("eu-west ran fewer than four queued tickets in four minutes"));
 const arms4 = (await desk.api("GET", "/arms")).json;
 const replyArms = arms4.arms.filter((a) => a.tag === "support.reply" && a.arm !== "none");
-const candidateCustomers = arms4.stickiness.filter((s) => s.tag === "support.reply" && Object.values(s.arms).includes("candidate")).length;
-const seenCustomers = arms4.stickiness.filter((s) => s.tag === "support.reply").length;
+// One stickiness row per customer, slot and release (the weights in force): the counts here are for the split's own generation.
+const sticky4 = arms4.stickiness.filter((s) => s.tag === "support.reply" && s.generation === exp.pointer.generation);
+const candidateCustomers = sticky4.filter((s) => Object.values(s.arms).includes("candidate")).length;
+const seenCustomers = sticky4.length;
 ok(`per-arm results on the desk: ${replyArms.map((a) => `${a.arm} ${a.versionId}: ${a.runs} runs (${Object.entries(a.hosts).map(([h, n]) => `${h.split("/")[0]} ${n}`).join(", ")}), judge ${a.judgeMean ?? "—"}, cost ${a.costMeanUsd?.toFixed(5) ?? "—"}, 👍${a.feedback.up} 👎${a.feedback.down}`).join(" · ")}`);
 ok(`at 10 %, ${candidateCustomers} of ${seenCustomers} customers landed on the candidate (a share of customers, not of runs)`);
-const both = arms4.stickiness.filter((s) => s.tag === "support.reply" && Object.keys(s.arms).length >= 2);
-check(both.length >= 2 && both.every((s) => s.consistent), `sticky across hosts: ${both.length} customers seen on both us-east and eu-west, ${both.filter((s) => s.consistent).length} on the same arm on both (${both.map((s) => `${s.customerId} ${Object.values(s.arms)[0]}`).join(", ")})`);
+const both = sticky4.filter((s) => Object.keys(s.arms).length >= 2);
+check(both.length >= 2 && both.every((s) => s.consistent), `sticky across hosts on the weights in force (#${exp.pointer.generation}): ${both.length} customers seen on both us-east and eu-west, ${both.filter((s) => s.consistent).length} on the same arm on both (${both.map((s) => `${s.customerId} ${Object.values(s.arms)[0]}`).join(", ")})`);
 if (flag("--airgap")) {
   const ag = await desk.hostRow(AIRGAP);
   if (ag?.airgap?.renders?.last?.arm) ok(`the air-gapped host's last probe (${ag.airgap.renders.last.subject}) landed on arm ${ag.airgap.renders.last.arm} — computed offline from the same manifest`);
@@ -258,8 +263,8 @@ try {
   ok(`Replay 12 (${replay2.status}): ${done2.done} runs`);
   const armsT = (await desk.api("GET", "/arms")).json;
   const triageArms = armsT.arms.filter((a) => a.tag === "support.triage" && a.arm !== "none");
-  const byCustomer = armsByCustomer(armsT.stickiness, "support.triage");
-  const replyBy = armsByCustomer(armsT.stickiness, "support.reply");
+  const byCustomer = armsByCustomer(armsT.stickiness, "support.triage", expT.pointer.generation);
+  const replyBy = armsByCustomer(armsT.stickiness, "support.reply", expT.pointer.generation);
   const combos = new Set(Object.keys(byCustomer).filter((c) => replyBy[c]).map((c) => `${Object.values(replyBy[c].arms)[0]}/${Object.values(byCustomer[c].arms)[0]}`));
   check(triageArms.length === 2, `triage arms on the desk: ${triageArms.map((a) => `${a.arm} ${a.versionId}: ${a.runs}`).join(" · ")}`);
   check(combos.size >= 2, `independent splits: reply/triage combinations seen ${[...combos].join(", ")}`);
@@ -284,8 +289,12 @@ const sinceReplay3 = new Date().toISOString();
 const replay3 = await desk.api("POST", "/presenter/replay", { n: 12 });
 await desk.waitFor("the third replay", async () => (await eventsOfKind(sinceReplay3, "replay_done", EAST))[0] ?? null, { timeoutMs: 240_000, everyMs: 10_000 });
 const arms50 = (await desk.api("GET", "/arms")).json;
-const cand50 = arms50.stickiness.filter((s) => s.tag === "support.reply" && Object.values(s.arms).includes("candidate")).length;
-ok(`at 50 % (replay ${replay3.status}): ${cand50} of ${arms50.stickiness.filter((s) => s.tag === "support.reply").length} customers on the candidate`);
+const sticky50 = arms50.stickiness.filter((s) => s.tag === "support.reply" && s.generation === dialed.pointer.generation);
+const cand50 = sticky50.filter((s) => Object.values(s.arms).includes("candidate")).length;
+ok(`at 50 % (replay ${replay3.status}, #${dialed.pointer.generation}): ${cand50} of ${sticky50.length} customers on the candidate`);
+// A dial moves buckets by design: the rows from before it are compared on their own weights, and none reads "control+candidate".
+const moved = arms50.stickiness.filter((s) => s.tag === "support.reply" && s.generation !== dialed.pointer.generation && Object.keys(s.arms).length >= 2);
+check(arms50.stickiness.every((s) => !Object.values(s.arms).some((a) => a.includes("+"))) && [...sticky50, ...moved].filter((s) => Object.keys(s.arms).length >= 2).every((s) => s.consistent), `stickiness after the dial: ${sticky50.filter((s) => Object.keys(s.arms).length >= 2).length} customers on both hosts at #${dialed.pointer.generation} agree, ${moved.length} earlier rows kept on their own weights — no host reads control+candidate`);
 const winner = await con.promote({ environment: ENV, releaseDigest: e1.candidate.releaseDigest, notes: "Zudocs demo, beat 4: the candidate promoted as the winner" });
 const afterWin = await con.experiments.read({ environment: ENV, experimentId: e1.experimentId });
 check(afterWin.experiment.status === "promoted", `winner promoted: generation ${winner.generation}; the experiment is ${afterWin.experiment.status}`);

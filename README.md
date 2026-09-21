@@ -75,8 +75,8 @@ Phase 6 is the story. `DEMO.md` scripts nine beats (twenty minutes; the first fo
 `npm run demo:dryrun` performs every click and console act against the live deployment and asserts what the
 prospect would see; `npm run demo:reset` implements *reset means advance* (two fresh canonical generations, every
 drill undone by moving forward). On the desk: **Run on staging** (AirPrompter's hosted execution with a run key —
-the stream replayed as it arrived, the feedback, and the OpenAI-compatible call with the caller's temperature shown
-ignored beside the version's sealed settings; on dev today the hosted run route answers `internal (500)`, platform
+the stream replayed as it arrived, the feedback, and the OpenAI-compatible call with the caller's temperature marked
+*ignored by contract* beside the version's sealed settings; on dev today the hosted run route answers `internal (500)`, platform
 issue #906, and the panel says so), the **Experiments** panel (per-arm results from the desk's own records, and the
 same customer on the same arm on every host), the ramp plan on the eu-west approval row (one approval for the whole
 plan), the freeze banding every ticket with the SDK's reason (Run stays clickable and answers `423 frozen`),

@@ -18,6 +18,7 @@ import { Match } from "aws-cdk-lib/assertions";
 import { CATALOGUE } from "../../services/desk-api/src/modelCatalogue.js";
 import { STACK_IDS } from "../lib/app.js";
 import { TABLE_NAMES } from "../lib/desk-stack.js";
+import { HOST_CLI_COMMANDS, HOST_CLI_DOCUMENT_NAME, HOST_CLI_RUN_COMMAND, hostCliDocumentContent } from "../../services/desk-api/src/hostCliDocument.js";
 import { EU_HOST_ROLE_NAME, WIRE_FUNCTION_NAME, readPins } from "../lib/shared-host-names.js";
 import { USER_DATA_TEMPLATE, renderUserData } from "../lib/shared-host-stack.js";
 import { PINS, actionsOf, statementsOf, synthAll, type Resources } from "./fixtures.js";
@@ -132,4 +133,24 @@ test("user data rendering: every placeholder replaced, none left, nothing shell-
   assert.ok(rendered.includes("zudocs-import.timer"), "the import timer is installed and enabled");
   assert.ok(rendered.startsWith("#!/bin/bash"));
   assert.equal(PINS.pythonSdk.packages.length, 5);
+});
+
+test("the desk's host-CLI document: a Command document by its fixed name in this region, one parameter whose allowed values are exactly the allowlist, one fixed shell line, new versions on change", () => {
+  const { sharedHost } = synthAll();
+  const documents = Object.values(sharedHost.findResources("AWS::SSM::Document") as Resources);
+  assert.equal(documents.length, 1, "one document");
+  const [doc] = documents;
+  assert.equal(doc!.Properties.Name, HOST_CLI_DOCUMENT_NAME);
+  assert.equal(doc!.Properties.DocumentType, "Command");
+  assert.equal(doc!.Properties.UpdateMethod, "NewVersion", "a changed allowlist is a new version, not a failed update");
+  assert.equal(doc!.Properties.TargetType, "/AWS::EC2::Instance");
+  const content = doc!.Properties.Content as ReturnType<typeof hostCliDocumentContent>;
+  assert.deepEqual(content, hostCliDocumentContent());
+  assert.deepEqual(content.parameters.command.allowedValues, Object.keys(HOST_CLI_COMMANDS), "the allowed values are the allowlist, no more");
+  assert.deepEqual(Object.keys(content.parameters).sort(), ["command", "executionTimeout"], "no free-text parameter at all");
+  assert.equal(content.mainSteps.length, 1);
+  assert.deepEqual(content.mainSteps[0].inputs.runCommand, [HOST_CLI_RUN_COMMAND], "the one shell line; the parameter can only be an allowlisted name");
+  for (const [name, line] of Object.entries(HOST_CLI_COMMANDS)) assert.equal(HOST_CLI_RUN_COMMAND.replace("{{ command }}", name), line, `${name}: the document runs the line the allowlist records`);
+  assert.match(content.parameters.executionTimeout.allowedPattern, /^\^\[1-9\]/, "the timeout is digits only");
+  assert.ok(!JSON.stringify(content).includes("AWS-RunShellScript"));
 });

@@ -90,9 +90,11 @@ export function fleetAgreement(hosts, generation, { optional = ["ap-southeast-1/
 }
 
 /** The customers on each arm per the desk's stickiness table, for one experiment's slot; pure. */
-export function armsByCustomer(stickiness, tag) {
+export function armsByCustomer(stickiness, tag, generation = null) {
   const out = {};
-  for (const s of stickiness.filter((s) => s.tag === tag)) out[s.customerId] = { arms: s.arms, consistent: s.consistent };
+  // One row per customer, slot and release (the weights in force): with no generation asked for, the newest release's row wins.
+  const rows = stickiness.filter((s) => s.tag === tag && (generation === null || s.generation === generation)).sort((a, b) => (a.generation ?? -1) - (b.generation ?? -1));
+  for (const s of rows) out[s.customerId] = { arms: s.arms, consistent: s.consistent, generation: s.generation ?? null };
   return out;
 }
 

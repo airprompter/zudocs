@@ -47,14 +47,14 @@ export interface HostedRun {
   catalogue: { generation: number; releaseDigest: string; slot: { tag: string; model: string; inference: Record<string, unknown> | null; variables: string[] } | null; experiments: Array<{ experimentId: string; tag: string | null; arms: string[] }> };
   stream: { deltas: Array<{ atMs: number; text: string }>; firstByteMs: number | null; result: { runId: string; runRef: string; output: string; model: string; versionId: string; arm: string; generation: number; usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number }; latencyMs: number; priceMicros: number; priceBookRevision: string; stopReason: string; source: string } | null; refusal: HostedRefusal | null };
   feedback: { accepted: boolean; attributedTo: Record<string, unknown> | null; refusal: HostedRefusal | null } | null;
-  compat: { request: { url: string; model: string; temperature: number; top_p: number; variables: string[] }; response: { status: number; runRef: string | null; runId: string | null; model: string | null; finishReason: string | null; usage: Record<string, unknown> | null; text: string | null; error: Record<string, unknown> | null }; ignored: string[] } | null;
+  compat: { request: { url: string; model: string; temperature: number; top_p: number; variables: string[] }; response: { status: number; runRef: string | null; runId: string | null; model: string | null; finishReason: string | null; usage: Record<string, unknown> | null; text: string | null; error: Record<string, unknown> | null }; ignoredByContract: string[] } | null;
   durationMs: number; ok: boolean; gaps: string[];
 }
 export type AnyRun = Run | HostedRun;
 export const isHostedRun = (run: AnyRun): run is HostedRun => run.kind === "hosted";
 /** The per-arm fold of the desk's own records (`GET /arms`) and the ramp plans this host walks. */
 export interface ArmSummary { tag: string; arm: string; versionId: string; model: string; runs: number; hosts: Record<string, number>; judgeMean: number | null; judged: number; costMeanUsd: number | null; costed: number; checksPassed: number; checksFailed: number; latencyMeanMs: number | null; errors: number; feedback: { up: number; down: number; accepted: number; edited: number } }
-export interface Stickiness { customerId: string; tag: string; arms: Record<string, string>; consistent: boolean }
+export interface Stickiness { customerId: string; tag: string; generation: number | null; arms: Record<string, string>; consistent: boolean }
 export interface Ramp { experimentId: string; tag: string | null; arms: string[]; weightBps: number[]; step: number; nextStepAt: string | null; plan: Array<{ notBefore: string; weightBps: number[] }>; readBy?: string }
 export interface Arms { arms: ArmSummary[]; stickiness: Stickiness[]; ramps: Ramp[]; readAt: string; runsRead: number }
 export interface HostStatus {

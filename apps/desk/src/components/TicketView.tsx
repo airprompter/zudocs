@@ -104,10 +104,11 @@ function HostedPanel({ run }: { run: HostedRun }) {
             <div>
               <p className="eyebrow">The request (what the caller asked)</p>
               <dl className="kv">
-                <div><dt>temperature</dt><dd>{run.compat.request.temperature} <span className="refusal">ignored</span></dd></div>
-                <div><dt>top_p</dt><dd>{run.compat.request.top_p} <span className="refusal">ignored</span></dd></div>
+                <div><dt>temperature</dt><dd>{run.compat.request.temperature} <span className="refusal" title={TOOLTIPS.ignoredByContract}>{run.compat.ignoredByContract.includes("temperature") ? "ignored by contract" : "sent"}</span></dd></div>
+                <div><dt>top_p</dt><dd>{run.compat.request.top_p} <span className="refusal" title={TOOLTIPS.ignoredByContract}>{run.compat.ignoredByContract.includes("top_p") ? "ignored by contract" : "sent"}</span></dd></div>
                 <div><dt>variables</dt><dd>{run.compat.request.variables.join(", ") || "—"} <span className="muted">via airprompter.variables</span></dd></div>
               </dl>
+              <p className="muted fine">ignored by contract: the release owns these settings, and the response carries no settings — the chip is the contract's word, not something the route reported.</p>
             </div>
             <div>
               <p className="eyebrow">The run's settings (sealed on the version)</p>

@@ -16,6 +16,10 @@
  * host's own apply policy — an operator's act, the one way a pin loosens), `golden` (run the active release's golden
  * sets now and show the report) and `reset` (clear the desk's records and re-seed: the reset script's last step).
  * A frozen environment (a `disable` directive on the manifest) refuses every run with the SDK's own reason.
+ * Phase 8 adds three more: `sleep_host` and `wake_host` (the eu-west host stopped and started through the power
+ * function; the card reads asleep since / waking from the row's marker, and a poll that finds the marker in
+ * transition asks the function to look now) and `demo_mode` (the eu-west workers' cadence switch, on for at most
+ * four hours or off). `host_cli` is refused while the host is asleep instead of timing out on Run Command.
  *
  * Errors answer as JSON with a class and a message; ticket bodies, rendered text and keys never reach a log line.
  *
@@ -30,6 +34,7 @@ import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyResultV2, 
 import { normalizeFeedback } from "@airprompter/agent-sdk";
 import { foldArms } from "./arms.js";
 import { HOST_CLI_COMMANDS, documentOf, isHostCliCommand, type HostCliCommand } from "./hostCli.js";
+import { needsReconcile, powerView, type PowerMarker } from "./hostPower.js";
 import { redactKeyShaped } from "./redact.js";
 import { hostedConfigured, hostedRun } from "./hosted.js";
 import { MODELS } from "./modelCatalogue.js";
@@ -237,16 +242,26 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       // API, and the one answering this poll must know the freeze, the generation and the ramp the others do.
       await ap.invoke(async () => undefined);
       const day = dayOf(new Date().toISOString());
-      const [hosts, used] = await Promise.all([store.listStatus(), store.readRunSlots(day)]);
+      const [hosts, used, demoMode] = await Promise.all([store.listStatus(), store.readRunSlots(day), host.demoMode ? host.demoMode.read().catch((error: Error) => ({ mode: "off" as const, until: null, by: null, reason: `unreadable: ${error.name}`, parameter: env.demoModeParameter })) : Promise.resolve(null)]);
+      // The eu-west host's power (phase 8): the marker folded into what the card says; a marker still in transition
+      // past its grace makes this poll ask the power function to look now, so the card settles without the tick.
+      const euHostId = `${env.euHost.region}/ec2`;
+      const euRow = hosts.find((h) => h.hostId === euHostId) as (StatusRow & { power?: PowerMarker }) | undefined;
+      if (euRow && env.powerFunctionArn && needsReconcile(euRow.power ?? null, Date.now())) {
+        const looked = await host.power("tick", by).catch(() => null);
+        if (looked?.marker) euRow.power = looked.marker;
+      }
+      const withPower = hosts.map((h) => (h.hostId === euHostId ? { ...h, powerView: powerView((h as { power?: PowerMarker }).power ?? null, h.writtenAt, Date.now()) } : h));
       return {
         statusCode: 200,
         body: {
           host: { hostId: env.hostId, region: env.region, sdk: host.sdk, instanceId: ap.instanceId, startedAt: host.startedAt, invocations: host.invocations, coldStart: host.coldStart, status: ap.status(), healthz: ap.healthz(), models: MODELS, stateDir: env.stateDir },
-          hosts,
+          hosts: withPower,
           cap: { day, used, cap: env.dailyRunCap },
           airprompter: { baseUrl: env.airprompter.baseUrl, environment: env.airprompter.environment, agentId: env.airprompter.agentId },
           // What the presenter panel may offer: the wire buttons exist only when the eu-west stack is deployed.
-          features: { wire: env.wireFunctionArn !== "", nudge: env.nudgeQueueUrl !== "", hosted: hostedConfigured(env), hostCli: env.wireFunctionArn !== "" },
+          features: { wire: env.wireFunctionArn !== "", nudge: env.nudgeQueueUrl !== "", hosted: hostedConfigured(env), hostCli: env.wireFunctionArn !== "", power: env.powerFunctionArn !== "", demoMode: host.demoMode !== null },
+          demoMode,
           hosted: hostedConfigured(env) ? { target: env.hosted.target, runUrl: env.hosted.runUrl } : null,
           frozen: frozenOf(host),
           hostCliCommands: Object.keys(HOST_CLI_COMMANDS),
@@ -406,6 +421,8 @@ async function presenter(host: Host, action: string, body: Record<string, unknow
       const command = body.command;
       if (!isHostCliCommand(command)) return { statusCode: 400, body: { error: "no_such_command", message: `the desk runs exactly these on the host: ${Object.keys(HOST_CLI_COMMANDS).join(", ")}`, commands: Object.keys(HOST_CLI_COMMANDS) } };
       if (!env.functionName) return { statusCode: 501, body: { error: "no_self_invoke", message: "the host CLI needs the function's own name (AWS_LAMBDA_FUNCTION_NAME)" } };
+      const asleep = await euHostPower(host);
+      if (asleep.phase !== "awake") return { statusCode: 409, body: { error: "host_asleep", command, power: asleep, message: `the eu-west host is ${asleep.label}${asleep.since ? ` since ${asleep.since}` : ""}: nothing to run the CLI on — wake the fleet first` } };
       const requestedAt = at();
       const job: HostCliJob = { hostCli: { command, by, requestedAt } };
       await new LambdaClient({ region: env.region }).send(new InvokeCommand({ FunctionName: env.functionName, InvocationType: "Event", Payload: Buffer.from(JSON.stringify(job)) }));
@@ -438,9 +455,42 @@ async function presenter(host: Host, action: string, body: Record<string, unknow
       await host.writeStatus();
       return { statusCode: 200, body: { action, ...counts, message: `cleared ${counts.runs} runs, ${counts.feedback} feedback rows, ${counts.approvals} approvals, ${counts.events} events, ${counts.counters} counters; seeded ${counts.customers} customers and ${counts.tickets} tickets` } };
     }
+    case "sleep_host":
+    case "wake_host": {
+      // The eu-west power function: StopInstances / StartInstances on the tagged instance, its own answer back (a
+      // refusal names why: the wire is cut, a replacement is in progress, the instance is between states).
+      if (!env.powerFunctionArn) return { statusCode: 501, body: { error: "no_power_function", message: "the eu-west stack (ZudocsSharedHost) is not deployed: no host to sleep or wake" } };
+      const power = action === "sleep_host" ? "sleep" : "wake";
+      let answer;
+      try {
+        answer = await host.power(power, by);
+      } catch (error) {
+        return { statusCode: 502, body: { error: "power_failed", action, message: (error as Error).message.slice(0, 300) } };
+      }
+      await store.appendEvent({ at: at(), kind: "presenter", host: env.hostId, action, by, forHost: answer.hostId ?? null, state: answer.state ?? null, outcome: answer.refusal ? `refused: ${answer.refusal}` : answer.changed ? answer.state : "already" });
+      const { action: powerAction, ...rest } = answer;
+      if (answer.refusal) return { statusCode: 409, body: { action, power: powerAction, ...rest, error: answer.refusal } };
+      return { statusCode: 200, body: { action, power: powerAction, ...rest } };
+    }
+    case "demo_mode": {
+      // The eu-west workers' cadence switch: on (until four hours from now) or off; the workers read it within a minute.
+      if (!host.demoMode) return { statusCode: 501, body: { error: "no_demo_mode", message: "this deployment names no demo-mode parameter (DEMO_MODE_PARAMETER)" } };
+      const value = body.value;
+      if (value !== "on" && value !== "off") return { statusCode: 400, body: { error: "no_such_mode", message: "value is on or off" } };
+      const written = await host.demoMode.write(value, by);
+      await store.appendEvent({ at: at(), kind: "demo_mode", host: env.hostId, mode: written.mode, until: written.until, by, parameter: written.parameter, forHost: `${env.euHost.region}/ec2` });
+      return { statusCode: 200, body: { action, ...written, message: written.mode === "on" ? `demo mode on until ${written.until}: the eu-west workers run a ticket every two minutes (Python: five) within a minute, and the nightly sleep skips the host while it is on` : "demo mode off: the eu-west workers return to a ticket an hour (Python: every two) at their next read" } };
+    }
     default:
-      return { statusCode: 404, body: { error: "no_such_action", actions: ["heartbeat", "upload", "sync", "seed", "replay", "enqueue", "cut_wire", "restore_wire", "nudge", "host_cli", "policy", "golden", "reset"] } };
+      return { statusCode: 404, body: { error: "no_such_action", actions: ["heartbeat", "upload", "sync", "seed", "replay", "enqueue", "cut_wire", "restore_wire", "nudge", "host_cli", "policy", "golden", "reset", "sleep_host", "wake_host", "demo_mode"] } };
   }
+}
+
+/** The eu-west host's power as its status row says it (phase 8): awake when there is no marker or no row at all. */
+async function euHostPower(host: Host): Promise<ReturnType<typeof powerView>> {
+  const euHostId = `${host.env.euHost.region}/ec2`;
+  const row = (await host.store.listStatus()).find((h) => h.hostId === euHostId) as (StatusRow & { power?: PowerMarker }) | undefined;
+  return powerView(row?.power ?? null, row?.writtenAt ?? null, Date.now());
 }
 
 /**

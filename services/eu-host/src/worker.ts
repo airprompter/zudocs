@@ -12,10 +12,12 @@
  * - **status**: every 30 s the daemon's documents, merged into the host's row (with the worker's part beside them);
  *   every health transition is a timeline row.
  * - **the SDK**, attached in `sync: "daemon"` mode once the daemon serves a generation, and re-attached if it is
- *   lost; then **tickets**: every `ZUDOCS_TICKET_INTERVAL_SECONDS` one inbox ticket (the presenter's queue first,
- *   within ten seconds) through the same `runTicket` the us-east host uses — `support.triage` then `support.reply`
- *   on the release's models through Bedrock in us-east-1, the judge, the checks — with feedback filed from the SDK's
- *   own check verdicts, the record in the runs table with `host: eu-west-1/ec2`, under the fleet's shared daily cap.
+ *   lost; then **tickets**: every `ZUDOCS_TICKET_INTERVAL_SECONDS` (an hour idle; `ZUDOCS_DEMO_TICKET_INTERVAL_SECONDS`,
+ *   two minutes, while the demo-mode parameter the worker reads every minute says on — `demoMode.ts`) one inbox
+ *   ticket (the presenter's queue first, within ten seconds) through the same `runTicket` the us-east host uses —
+ *   `support.triage` then `support.reply` on the release's models through Bedrock in us-east-1, the judge, the
+ *   checks — with feedback filed from the SDK's own check verdicts, the record in the runs table with
+ *   `host: eu-west-1/ec2`, under the fleet's shared daily cap. The status row carries the cadence in force.
  *
  * Logs are JSON lines with ids and counts — never a render, a ticket or an answer.
  *
@@ -28,6 +30,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { AirPrompterAgent, DaemonClient, SDK_NAME, SDK_VERSION, daemonSocketPath, isDaemonError, type Healthz } from "@airprompter/agent-sdk";
 import { createCallers } from "../../desk-api/src/bedrock.js";
@@ -37,6 +40,7 @@ import { runTicket, type StepRecord } from "../../desk-api/src/run.js";
 import type { RunHost } from "../../desk-api/src/runtime.js";
 import { createStore, dayOf, type Store, type Ticket } from "../../desk-api/src/store.js";
 import { ApprovalWatcher } from "./approvals.js";
+import { TicketCadence, parseDemoMode, readDemoModeParameter, type DemoModeDoc } from "./demoMode.js";
 import { readHostEnv, type HostEnv } from "./hostEnv.js";
 import { readDaemonHealthz } from "./daemonHealthz.js";
 import { statusFields, type DaemonStatusDoc } from "./statusRow.js";
@@ -235,6 +239,29 @@ async function main(): Promise<void> {
     }
   };
 
+  // --- Demo mode: the SSM switch, read every minute; the cadence under it ---------------------------------------
+  const ssm = new SSMClient({ region: env.region });
+  const cadence = new TicketCadence({ idle: env.ticketIntervalSeconds, demo: env.demoTicketIntervalSeconds }, "off", Date.now(), 120_000);
+  let demoMode: DemoModeDoc = { mode: "off", until: null, by: null, reason: "not_read_yet" };
+  let demoModeReadAt: string | null = null;
+  let demoModeError: string | null = null;
+  const readDemoMode = async (): Promise<void> => {
+    try {
+      const text = await readDemoModeParameter(ssm, env.demoModeParameter);
+      const next = parseDemoMode(text, Date.now());
+      demoModeReadAt = new Date().toISOString();
+      demoModeError = null;
+      const changed = cadence.setMode(next.mode, Date.now());
+      if (changed || next.mode !== demoMode.mode || next.reason !== demoMode.reason) log({ event: "demo_mode", mode: next.mode, until: next.until, reason: next.reason, by: next.by, ticketIntervalSeconds: cadence.intervalSeconds, nextTicketAt: cadence.nextAt });
+      demoMode = next;
+    } catch (error) {
+      // The last reading stands (a throttled or refused read never flips the cadence); the row says the read failed.
+      demoModeError = `${(error as Error).name}: ${(error as Error).message.slice(0, 160)}`;
+      log({ event: "demo_mode_unreadable", parameter: env.demoModeParameter, reason: demoModeError });
+    }
+  };
+  const cadenceFields = () => ({ demoMode: demoMode.mode, until: demoMode.until, by: demoMode.by, reason: demoMode.reason, ticketIntervalSeconds: cadence.intervalSeconds, idleIntervalSeconds: env.ticketIntervalSeconds, demoIntervalSeconds: env.demoTicketIntervalSeconds, nextTicketAt: cadence.nextAt, parameter: env.demoModeParameter, readAt: demoModeReadAt, error: demoModeError });
+
   // --- The status row ------------------------------------------------------------------------------------------------
   let tickets = 0;
   let lastHealth: string | null = null;
@@ -247,9 +274,9 @@ async function main(): Promise<void> {
       // The daemon is restarting (or answered status but not healthz): the last status block stands, the health says
       // why, and the worker's part says whether it is attached.
       verdict.reasons = [d ? "daemon_healthz_unavailable" : "daemon_unreachable"];
-      await store.updateStatus(env.hostId, { region: env.region, kind: "daemon", sdk, writtenAt: new Date().toISOString(), healthz: { ok: false, status: "failing", reasons: verdict.reasons }, worker: { instanceId: ap?.instanceId ?? null, sdk, startedAt, tickets, source: ap ? "daemon" : null, attached: ap?.status().daemon?.attached ?? false, healthz: ap?.healthz().status ?? "unknown", reasons: ap?.healthz().reasons ?? [] }, ec2 });
+      await store.updateStatus(env.hostId, { region: env.region, kind: "daemon", sdk, writtenAt: new Date().toISOString(), healthz: { ok: false, status: "failing", reasons: verdict.reasons }, worker: { instanceId: ap?.instanceId ?? null, sdk, startedAt, tickets, source: ap ? "daemon" : null, attached: ap?.status().daemon?.attached ?? false, healthz: ap?.healthz().status ?? "unknown", reasons: ap?.healthz().reasons ?? [] }, ec2, cadence: cadenceFields() });
     } else {
-      await store.updateStatus(env.hostId, statusFields({ hostId: env.hostId, region: env.region, daemon: d, healthz: h, worker: ap?.status() ?? null, workerHealthz: ap?.healthz() ?? null, sdk, tickets, startedAt, now: new Date().toISOString(), ec2 }));
+      await store.updateStatus(env.hostId, { ...statusFields({ hostId: env.hostId, region: env.region, daemon: d, healthz: h, worker: ap?.status() ?? null, workerHealthz: ap?.healthz() ?? null, sdk, tickets, startedAt, now: new Date().toISOString(), ec2 }), cadence: cadenceFields() });
     }
     const health = `${verdict.status}:${verdict.reasons.join(",")}`;
     if (lastHealth !== null && health !== lastHealth) {
@@ -278,10 +305,11 @@ async function main(): Promise<void> {
     // watcher's ticks keep trying and the row appears once it does.
     log({ event: "reconcile_failed", reason: (error as Error).message.slice(0, 200) });
   }
+  await readDemoMode();
   await writeStatus().catch((error) => log({ event: "status_write_failed", reason: (error as Error).message }));
   await attach();
   const now = latest as DaemonStatusDoc | null;
-  log({ event: "serving", hostId: env.hostId, generation: now?.generation ?? null, stagedGeneration: now?.stagedGeneration ?? null, attached: ap !== null, settledApprovals: settled, ec2: ec2?.instanceId ?? null });
+  log({ event: "serving", hostId: env.hostId, generation: now?.generation ?? null, stagedGeneration: now?.stagedGeneration ?? null, attached: ap !== null, settledApprovals: settled, ec2: ec2?.instanceId ?? null, demoMode: demoMode.mode, ticketIntervalSeconds: cadence.intervalSeconds });
 
   // --- Tickets -----------------------------------------------------------------------------------------------------------
   const cursor = { last: null as string | null };
@@ -342,7 +370,9 @@ async function main(): Promise<void> {
       if (action === "activated") await writeStatus().catch((error) => log({ event: "status_write_failed", reason: (error as Error).message }));
     })(), 5_000),
     setInterval(() => void writeStatus().catch((error) => log({ event: "status_write_failed", reason: (error as Error).message })), env.statusIntervalSeconds * 1000),
-    setInterval(() => void runOne("timer"), env.ticketIntervalSeconds * 1000),
+    // The ticket timer under the demo-mode switch: looked at every ten seconds, due once per interval in force.
+    setInterval(() => { if (cadence.due(Date.now())) void runOne("timer"); }, 10_000),
+    setInterval(() => void readDemoMode(), env.demoModePollSeconds * 1000),
     // The presenter's queue is looked at every ten seconds: "run this ticket on eu-west now" runs within that.
     setInterval(() => void runOne("queue"), 10_000),
   ];

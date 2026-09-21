@@ -1,8 +1,9 @@
 # Runbook
 
 The operator's side of the demo company: where every key lives and how to rotate it, the drills the CLI runs,
-how to replace a host, the reset, the vendoring pull request, and the weekly workflow. DEMO.md is what the
-presenter does; this is what keeps it true. Every command here takes secrets from the environment or from SSM by
+how to replace a host, the reset, the vendoring pull request, the weekly workflow — and, since phase 8, the steady
+state: the eu-west host asleep at night and woken for a session, the demo-mode cadence switch, the cost report, the
+monthly cost check and the teardown. DEMO.md is what the presenter does; this is what keeps it true. Every command here takes secrets from the environment or from SSM by
 name — never argv, never git, never a log, never a GitHub secret.
 
 ## Keys, exactly
@@ -132,15 +133,115 @@ commit (`continue-on-error` until it accepts a hosted environment — SDK #50 �
 `telemetry validate` over a spool-writer segment, and `npm test`. `pull --check --max-behind` needs the Agent key,
 so it is the owner's: `npm run vendor -- --check` (exit 3 when the committed bundle is behind).
 
-## The puller's demo cadence and the fleet's cost
+## Sleep and wake (the eu-west host)
+
+The eu-west host is put to sleep every night and woken for a session — the plan's "compute → near zero" (docs/COST.md).
+
+- **The schedule**: EventBridge Scheduler `zudocs-eu-host-sleep`, `cron(0,20,40 10 * * ? *)` UTC (three idempotent
+  attempts twenty minutes apart at ten in the morning UTC — night on both US coasts; the owner's sessions cluster
+  00:00–08:00 UTC), invoking the power function `zudocs-power` with `{ action: "sleep", by: "the nightly schedule" }`.
+  **No schedule starts the host.** The schedule's sleep is refused while **demo mode is on** (a session is never
+  stopped by a clock; demo mode lapses on its own after four hours) and while the **wire is cut** (the rule restores
+  the wire within fifteen minutes; the next of the three attempts sleeps — a refusal of the last one at 10:40 means
+  the host stays awake until the next morning, about $0.34: click *Sleep* when a session ends) — each refusal is a
+  `power` row on the timeline.
+- **Wake**: the desk's presenter panel, *Wake the fleet* — or `npm run host:wake -- --wait` from the owner's profile,
+  which returns when the host's row is fresh and both workers report (about three minutes: EC2 start ~30 s, the
+  daemon's `ExecStartPre` re-reads the Agent key from SSM, the workers wait for the socket and re-attach, the row
+  is written). The store is on the root volume, so the generation is what it was; a promotion made while the host
+  slept lands **staged** under `unlock_required` — the Approvals section shows it, approve it.
+- **Sleep**: *Sleep* on the panel, or `npm run host:sleep`. A ticket in flight on the host is lost (the cap slot stays
+  taken). `npm run host:status` prints EC2's state, the marker and the row.
+- **What the card says**: the row's `power` marker — `going to sleep`, `asleep since …`, `waking`, `started, the
+  workers are coming up` — with a dashed border; never *stale* or *degraded* for a host that is off. The marker is
+  written by the power function (a sleep or a wake at once; the tick every five minutes reconciles it with what EC2
+  says, so a host stopped or started outside the desk is shown as it is), and a desk poll that finds the marker in
+  transition past twenty seconds asks the function to look now. The host CLI row answers `409 host_asleep` while the
+  host sleeps instead of timing out on Run Command.
+- **The address changes on every start** (no Elastic IP is allocated — nothing to pay for while asleep). Nothing
+  depends on it: the group has no inbound rule, Run Command targets the instance by its Name tag, the wire's rules are
+  by destination, every call the host makes is outbound.
+- **Before a reset or a dry run**, the host must be awake: `npm run demo:reset` checks the marker first and stops with
+  the wake command when it is not. The **IAM** of the power function: `ec2:StartInstances` / `StopInstances` only on
+  instances carrying the `zudocs-eu-host` Name tag (a replacement in progress — two instances with the tag — is
+  refused), read-only describes, the demo-mode parameter, the status row's marker and the timeline.
+
+## Demo mode (the eu-west workers' cadence)
+
+Idle, the eu-west workers run one inbox ticket an hour (Node) and every two hours (Python) — cents a day (docs/COST.md).
+**Demo mode** drops that to every two and five minutes so the eu-west card moves while a prospect watches: the
+presenter panel's *demo mode on* (or `npm run demo:mode -- on`) writes the SSM String `/zudocs/dev/demo-mode` in
+eu-west-1 — `{"mode":"on","until":<now + 4 h>,"by":…}` — which both workers read every minute; *off* (or
+`demo:mode -- off`) writes off. The rules are fail-closed (`services/desk-api/src/demoMode.ts`): on only while the
+document parses, says on and its `until` is ahead and within four hours; a lapsed, missing, overlong or unreadable
+document is off, with the reason on the eu-west card's *cadence* line. A read that fails (throttled, refused) keeps
+the last reading and says so on the card. Switching on is felt within two minutes (the next ticket is pulled forward);
+switching off lets the ticket already due run. The parameter is created *off* by `ZudocsSharedHost`; the desk's
+writes drift it from the template on purpose, and CloudFormation rewrites it (to off) only when that resource's own
+properties change — or the stack's tags (`app.ts`), which every taggable resource carries. The puller's demo cadence
+is separate and stays a deploy flag (below).
+
+## The cost report, the monthly check, the budget
+
+```sh
+AWS_PROFILE=zudocs npm run cost:report                # last 7 / 30 days by service and by day, the budget, fixed vs variable, the expected month
+AWS_PROFILE=zudocs npm run cost:report -- --write     # and docs/COST.md's numbers section (between its markers; the explanations are hand-written)
+```
+
+One Cost Explorer query a run ($0.01 a page; the seven-day fold comes from the thirty-day answer). The **monthly
+check** (`services/cost-check`, `zudocs-cost-check` in us-east-1) runs on the third of the month at 06:00 UTC (Cost
+Explorer settles a day about a day late; by the third every day of the previous month is in, though amounts are
+refined until the bill is finalised) from the Scheduler schedule
+`zudocs-cost-check-monthly`: the
+previous month by service and by day, the last seven days, the budget → `cost/YYYY-MM.json` in the trail bucket
+(RETAIN; the trail's 90-day expiry covers only its own `AWSLogs/` prefix) and the metrics `Zudocs/Cost`
+`expectedMonthlyUsd`, `monthUsd` (dimension `month`) and `budgetActualUsd`. By hand:
+`aws lambda invoke --function-name zudocs-cost-check --payload '{"month":"2026-09"}' /dev/stdout` (a month still
+running is filed up to yesterday and marked `partial`). The budget `zudocs-monthly` ($30; e-mail at 100 % and
+166 %, forecast at 100 %, the Bedrock deny action at 100 %) and the anomaly monitor e-mail on their own — no
+GitHub workflow is involved, because a scheduled workflow would need cloud credentials in the repository.
+
+## Teardown
+
+Owner-only, never from CI (`scripts/teardown.mjs` refuses under `CI`):
+
+```sh
+AWS_PROFILE=zudocs npm run teardown -- --dry-run     # the plan against the live account: nothing is deleted
+AWS_PROFILE=zudocs npm run teardown                  # type the account id when asked; ~25 minutes
+```
+
+The stacks go in the order they can: `ZudocsAirgap` (if present), `ZudocsDesk` (it imports the site's certificate
+and user pool and names the eu-west role, the wire and power functions and the nudge queue), `ZudocsFleet`,
+`ZudocsSharedHost` (the instance is terminated, its volume with it), `ZudocsSite` (it imports the zone), `ZudocsDns`,
+`ZudocsCi` (the deploy role, last) — straight through CloudFormation (`DeleteStack` + wait), so no build, no synth
+and no `BUDGET_EMAIL` are needed. Then the plan lists **what `cdk destroy` leaves**, each with the exact commands:
+the hosted zone (RETAIN — repoint the registrar first), the Cognito pool (RETAIN, deletion protection on), the
+exchange bucket (RETAIN, versioned: every version and delete marker), the trail bucket (RETAIN), the SSM
+SecureStrings the owner wrote (the Agent key in three regions, the staging run key — and revoke both keys in the
+console), the KMS key pending deletion (30 days, $1/month until then), the log groups the custom-resource providers
+created, the `CDKToolkit` bootstrap in three regions (not Zudocs's own — only when the account is being emptied),
+the GitHub OIDC provider (only if `ZudocsCi` created it), and the reminders outside this account: the registrar's
+name servers back to the management account's zone, the SES forwarder and the delegation record in the management
+account, and the laptop's `~/.config/zudocs/*.env`.
+
+## The puller's demo cadence
 
 The puller pulls every five minutes (one CDN read when idle); `--context demo=true` on a `ZudocsFleet` deploy makes
 it one minute. The presenter's *Nudge the fleet* makes any wait seconds, so the deployed cadence stays at five.
 The air-gapped host costs while it is up (`airgap:up` before a session, `airgap:down` after); everything else is
-on-demand tables, one `t4g.micro`, two Lambdas and the desk's CloudFront — Budgets reports cents per month so far.
+on-demand tables, one `t4g.micro` (asleep at night), a handful of Lambdas and the desk's CloudFront — docs/COST.md
+has the lines and `npm run cost:report` the numbers.
 
 ## When something is wrong
 
+- The eu-west card reads *asleep since …*: the nightly schedule; *Wake the fleet* (or `npm run host:wake -- --wait`).
+  *started, the workers have not reported* for more than ten minutes after a wake: the boot did not come back —
+  `npm run eu:proof -- --cli status` through Run Command, or the host's log group `/zudocs/eu-host`.
+- The host would not sleep (a `power` row says `refused: wire_cut` or `demo_mode_on`): restore the wire, or wait for
+  demo mode to lapse (four hours) or switch it off; the next of the morning's three attempts sleeps, or tomorrow's —
+  click *Sleep*. `several_instances` is a replacement in progress — wait for it.
+- The eu-west card's *cadence* line says the switch could not be read: the host's role reads the demo-mode parameter
+  by name; the last reading stands. `(expired)` beside *demo mode off* is normal — the four hours are up.
 - The release bar reads *FROZEN* and nobody froze: `npm run demo:console -- board` shows `frozen`; `unfreeze`.
 - us-east stays *staged* after a promotion: the golden set failed (the card's *golden* line); `advance`.
 - eu-west shows *forced downgrade*: a rollback drill; the next promotion carries it forward (`advance`, approve).

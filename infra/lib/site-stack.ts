@@ -13,16 +13,23 @@
  * - The monthly budget (e-mail alerts; the Bedrock deny action attaches to the
  *   runtime roles in phase 3), a management-events trail, and a cost anomaly
  *   monitor. The IAM policy the budget action will attach exists from day one.
+ * - Phase 8: the **monthly cost check** — a small Lambda (`services/cost-check`)
+ *   an EventBridge Scheduler schedule invokes on the third of the month; it runs
+ *   the same Cost Explorer query as `npm run cost:report`, files `cost/YYYY-MM.json`
+ *   in the trail bucket (whose expiry rule now covers the trail's own prefix only,
+ *   so the record outlives the trail's ninety days) and puts `Zudocs/Cost` metrics.
+ *   Its IAM: Cost Explorer reads, one budget, one metric namespace, one prefix.
  *
  * @example
  * ```ts
- * new SiteStack(app, "ZudocsSite", { config, zone: dns.zone, env: { account: config.account, region: config.regions.site } });
+ * new SiteStack(app, "ZudocsSite", { config, zone: dns.zone, env: { account: config.account, region: config.regions.site }, assets: { costCheck: "…/services/cost-check/dist" } });
  * ```
  */
 import * as cdk from "aws-cdk-lib";
-import { aws_budgets as budgets, aws_ce as ce, aws_certificatemanager as acm, aws_cloudfront as cloudfront, aws_cloudfront_origins as origins, aws_cloudtrail as cloudtrail, aws_cognito as cognito, aws_iam as iam, aws_route53 as route53, aws_route53_targets as targets, aws_s3 as s3, aws_s3_deployment as deploy } from "aws-cdk-lib";
+import { aws_budgets as budgets, aws_ce as ce, aws_certificatemanager as acm, aws_cloudfront as cloudfront, aws_cloudfront_origins as origins, aws_cloudtrail as cloudtrail, aws_cognito as cognito, aws_iam as iam, aws_lambda as lambda, aws_logs as logs, aws_route53 as route53, aws_route53_targets as targets, aws_s3 as s3, aws_s3_deployment as deploy, aws_scheduler as scheduler } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import type { ZudocsConfig } from "./config.js";
@@ -31,10 +38,21 @@ export interface SiteStackProps extends cdk.StackProps {
   readonly config: ZudocsConfig;
   /** The zone from `ZudocsDns`; the certificate validates through it. */
   readonly zone: route53.IHostedZone;
+  /** Built artefacts: the bundled cost-check function (`services/cost-check/dist`). */
+  readonly assets: { readonly costCheck: string };
 }
 
 /** The monthly budget's name: the desk stack's Bedrock deny action is attached to it by name. */
 export const BUDGET_NAME = "zudocs-monthly";
+export const COST_CHECK_FUNCTION_NAME = "zudocs-cost-check";
+export const COST_CHECK_SCHEDULE_NAME = "zudocs-cost-check-monthly";
+/** The third of every month at 06:00 UTC: Cost Explorer settles a day about a day late, so by the third every day of the previous month is in. */
+export const COST_CHECK_CRON_UTC = "cron(0 6 3 * ? *)";
+/** Where the monthly documents go in the trail bucket (outside the trail's own `AWSLogs/` prefix and its expiry). */
+export const COST_PREFIX = "cost/";
+export const COST_METRIC_NAMESPACE = "Zudocs/Cost";
+/** The management-events trail's bucket, exported for the teardown's list of what outlives the stacks. */
+export const TRAIL_PREFIX = "AWSLogs/";
 
 /** The Cognito hosted-UI prefix is unique per region across all accounts, so it is derived from ours (never the id itself). */
 export function cognitoDomainPrefix(account: string): string {
@@ -51,11 +69,15 @@ export class SiteStack extends cdk.Stack {
   readonly proofClient: cognito.UserPoolClient;
   /** Attached to every runtime role by the budget action when spend crosses the monthly line. */
   readonly bedrockDenyPolicy: iam.ManagedPolicy;
+  /** The trail's bucket (RETAIN): the trail's own objects under `AWSLogs/`, the monthly cost documents under `cost/`. */
+  readonly trailBucket: s3.Bucket;
+  readonly costCheck: lambda.Function;
 
   constructor(scope: Construct, id: string, props: SiteStackProps) {
     super(scope, id, props);
     const { config, zone } = props;
     const { domain } = config;
+    for (const [name, path] of Object.entries(props.assets)) if (!existsSync(path)) throw new Error(`site stack: the ${name} artefact is missing at ${path} — run \`npm run build\` first`);
 
     // --- Certificate (CloudFront needs it in us-east-1) --------------------------------------
     this.certificate = new acm.Certificate(this, "Certificate", {
@@ -199,13 +221,46 @@ export class SiteStack extends cdk.Stack {
         thresholdExpression: JSON.stringify({ Dimensions: { Key: "ANOMALY_TOTAL_IMPACT_ABSOLUTE", MatchOptions: ["GREATER_THAN_OR_EQUAL"], Values: ["5"] } }),
       });
     }
-    const trailBucket = new s3.Bucket(this, "TrailBucket", {
+    this.trailBucket = new s3.Bucket(this, "TrailBucket", {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
-      lifecycleRules: [{ expiration: cdk.Duration.days(90) }],
+      // The trail's objects expire; the monthly cost documents under `cost/` do not.
+      lifecycleRules: [{ id: "trail-90d", prefix: TRAIL_PREFIX, expiration: cdk.Duration.days(90) }],
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
-    new cloudtrail.Trail(this, "Trail", { trailName: "zudocs-management", bucket: trailBucket, isMultiRegionTrail: true, includeGlobalServiceEvents: true, enableFileValidation: true, sendToCloudWatchLogs: false });
+    new cloudtrail.Trail(this, "Trail", { trailName: "zudocs-management", bucket: this.trailBucket, isMultiRegionTrail: true, includeGlobalServiceEvents: true, enableFileValidation: true, sendToCloudWatchLogs: false });
+
+    // --- The monthly cost check (phase 8) -------------------------------------------------------
+    this.costCheck = new lambda.Function(this, "CostCheck", {
+      functionName: COST_CHECK_FUNCTION_NAME,
+      description: "Zudocs: the monthly cost check — Cost Explorer by service and by day, the budget, the expected month; files cost/YYYY-MM.json and puts Zudocs/Cost metrics",
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(props.assets.costCheck),
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(60),
+      logGroup: new logs.LogGroup(this, "CostCheckLogs", { logGroupName: `/aws/lambda/${COST_CHECK_FUNCTION_NAME}`, retention: logs.RetentionDays.ONE_WEEK, removalPolicy: cdk.RemovalPolicy.DESTROY }),
+      environment: { COST_BUCKET: this.trailBucket.bucketName, COST_PREFIX, BUDGET_NAME, ACCOUNT_ID: this.account },
+    });
+    // Cost Explorer has no resource-level scope; the budget, the prefix and the metric namespace do.
+    this.costCheck.addToRolePolicy(new iam.PolicyStatement({ sid: "CostExplorerRead", actions: ["ce:GetCostAndUsage"], resources: ["*"] }));
+    this.costCheck.addToRolePolicy(new iam.PolicyStatement({ sid: "BudgetRead", actions: ["budgets:ViewBudget"], resources: [`arn:${this.partition}:budgets::${this.account}:budget/${BUDGET_NAME}`] }));
+    this.costCheck.addToRolePolicy(new iam.PolicyStatement({ sid: "CostDocument", actions: ["s3:PutObject"], resources: [this.trailBucket.arnForObjects(`${COST_PREFIX}*`)] }));
+    this.costCheck.addToRolePolicy(new iam.PolicyStatement({ sid: "CostMetric", actions: ["cloudwatch:PutMetricData"], resources: ["*"], conditions: { StringEquals: { "cloudwatch:namespace": COST_METRIC_NAMESPACE } } }));
+    const schedulerRole = new iam.Role(this, "CostCheckScheduleRole", { assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"), description: "Assumed by EventBridge Scheduler to invoke the monthly cost check" });
+    schedulerRole.addToPolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [this.costCheck.functionArn] }));
+    new scheduler.CfnSchedule(this, "CostCheckMonthly", {
+      name: COST_CHECK_SCHEDULE_NAME,
+      description: "Zudocs: the monthly cost check on the third of the month, once Cost Explorer has settled the previous month (its document and the Zudocs/Cost metrics)",
+      scheduleExpression: COST_CHECK_CRON_UTC,
+      scheduleExpressionTimezone: "UTC",
+      flexibleTimeWindow: { mode: "OFF" },
+      state: "ENABLED",
+      target: { arn: this.costCheck.functionArn, roleArn: schedulerRole.roleArn, input: JSON.stringify({}), retryPolicy: { maximumRetryAttempts: 2 } },
+    });
+    new cdk.CfnOutput(this, "TrailBucketName", { value: this.trailBucket.bucketName, description: "The trail's bucket (RETAIN): AWSLogs/ for the trail, cost/ for the monthly cost documents" });
+    new cdk.CfnOutput(this, "CostCheckFunctionName", { value: this.costCheck.functionName });
   }
 }

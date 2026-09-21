@@ -14,8 +14,8 @@ import * as cdk from "aws-cdk-lib";
 import { Match } from "aws-cdk-lib/assertions";
 import { STACK_IDS } from "../lib/app.js";
 import { readConfig } from "../lib/config.js";
-import { cognitoDomainPrefix } from "../lib/site-stack.js";
-import { CONTEXT, synthAll } from "./fixtures.js";
+import { COST_CHECK_CRON_UTC, COST_CHECK_FUNCTION_NAME, COST_CHECK_SCHEDULE_NAME, cognitoDomainPrefix } from "../lib/site-stack.js";
+import { CONTEXT, actionsOf, statementsOf, synthAll } from "./fixtures.js";
 
 const synth = synthAll;
 
@@ -149,4 +149,35 @@ test("CI: a native OIDC provider; the deploy role trusts one repository's main b
   const statements = (policies[0]!.Properties.PolicyDocument as { Statement: Array<{ Action: unknown; Resource: string[] }> }).Statement;
   assert.deepEqual(statements.map((s) => s.Action), ["sts:AssumeRole"], "the only action");
   assert.deepEqual([...statements[0]!.Resource].sort(), ["us-east-1", "eu-west-1", "ap-southeast-1"].map((r) => `arn:aws:iam::111122223333:role/cdk-hnb659fds-*-111122223333-${r}`).sort());
+});
+
+test("phase 8: the monthly cost check — a small function on a Scheduler schedule on the third of the month; Cost Explorer read, one budget, one prefix of the trail bucket, one metric namespace; the trail's expiry covers its own prefix only", () => {
+  const { site } = synth();
+  site.hasResourceProperties("AWS::Lambda::Function", { FunctionName: COST_CHECK_FUNCTION_NAME, Runtime: "nodejs22.x", Architectures: ["arm64"], Handler: "index.handler", Timeout: 60, Environment: { Variables: Match.objectLike({ COST_PREFIX: "cost/", BUDGET_NAME: "zudocs-monthly", ACCOUNT_ID: "111122223333" }) } });
+  const statements = statementsOf(site);
+  const ce = statements.find((st) => st.Sid === "CostExplorerRead")!;
+  assert.deepEqual(actionsOf(ce), ["ce:GetCostAndUsage"], "reads cost; never GetCostForecast, never a write");
+  const budget = statements.find((st) => st.Sid === "BudgetRead")!;
+  assert.deepEqual(actionsOf(budget), ["budgets:ViewBudget"]);
+  assert.equal(budget.Resource, "arn:aws:budgets::111122223333:budget/zudocs-monthly", "the one budget by ARN");
+  const put = statements.find((st) => st.Sid === "CostDocument")!;
+  assert.deepEqual(actionsOf(put), ["s3:PutObject"]);
+  assert.ok(JSON.stringify(put.Resource).includes("TrailBucket") && JSON.stringify(put.Resource).includes("/cost/*"), "the cost/ prefix of the trail bucket, nothing else there and no read");
+  const metric = statements.find((st) => st.Sid === "CostMetric")!;
+  assert.deepEqual(actionsOf(metric), ["cloudwatch:PutMetricData"]);
+  assert.deepEqual(metric.Condition, { StringEquals: { "cloudwatch:namespace": "Zudocs/Cost" } });
+  const schedules = Object.values(site.findResources("AWS::Scheduler::Schedule") as Resources);
+  assert.equal(schedules.length, 1);
+  assert.equal(schedules[0]!.Properties.Name, COST_CHECK_SCHEDULE_NAME);
+  assert.equal(schedules[0]!.Properties.ScheduleExpression, COST_CHECK_CRON_UTC);
+  assert.equal(schedules[0]!.Properties.ScheduleExpression, "cron(0 6 3 * ? *)", "the third of the month, 06:00 UTC: Cost Explorer settles a day about a day late");
+  assert.equal(schedules[0]!.Properties.ScheduleExpressionTimezone, "UTC");
+  const invokes = statements.filter((st) => actionsOf(st).includes("lambda:InvokeFunction"));
+  assert.equal(invokes.length, 1, "the scheduler's role invokes the cost check and nothing else");
+  const [trail] = Object.values(site.findResources("AWS::S3::Bucket", { Properties: { LifecycleConfiguration: Match.anyValue() } }) as Resources).filter((b) => JSON.stringify(b.Properties.LifecycleConfiguration).includes("AWSLogs/")) as Array<{ Properties: Record<string, any>; DeletionPolicy?: string }>;
+  assert.ok(trail, "the trail bucket's rule names the trail's prefix");
+  assert.deepEqual(trail!.Properties.LifecycleConfiguration.Rules, [{ ExpirationInDays: 90, Id: "trail-90d", Prefix: "AWSLogs/", Status: "Enabled" }], "the trail's objects expire; cost/ documents do not");
+  assert.equal(trail!.DeletionPolicy, "Retain");
+  site.hasOutput("TrailBucketName", {});
+  site.hasOutput("CostCheckFunctionName", {});
 });

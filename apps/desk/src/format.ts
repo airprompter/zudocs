@@ -39,6 +39,8 @@ export const TOOLTIPS = {
   frozen: "A signed disable directive on the manifest: a host that syncs stops rendering the moment the manifest verifies. On the daemon host the workers render from the active release, so the frozen generation takes effect there when it is approved (SDK #51). Only the console lifts it.",
   golden: "The golden set: cases with expected outputs, run against the pinned model on this host before a staged release activates (under auto too). Below the floor, the release stays staged.",
   policyLocal: "This host's own apply policy, set by an operator through the SDK. auto loosens a pin the console tightened; unlock_required tightens it by hand. The console's setting is advisory once a host is pinned.",
+  power: "The eu-west host is a t4g.micro the desk stops and starts at EC2: asleep, only its 8 GiB volume bills (no Elastic IP is allocated; the address changes on start and nothing depends on it). A schedule puts it to sleep every night; nothing starts it but you. On start the daemon re-reads its Agent key from SSM and the workers re-attach — about three minutes to a fresh row.",
+  demoMode: "The eu-west workers' cadence: idle, a ticket an hour (Node) and every two hours (Python) — cents a day. Demo mode drops that to every two and five minutes for at most four hours, then lapses on its own; the workers read the switch every minute, and the nightly sleep skips the host while it is on.",
 } as const;
 
 /** A model's answer as a class-name suffix: lower-case letters and dashes only (an answer is data, a class is not). */

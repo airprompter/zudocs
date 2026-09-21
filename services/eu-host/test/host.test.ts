@@ -47,9 +47,49 @@ test("zudocs.env: identifiers, table names, regions and cadences; the host id is
   assert.throws(() => renderHostEnv({ ...CONFIG, organizationId: 'a"b' }, CONTEXT, {}), /misread/);
   const env = readHostEnv(Object.fromEntries(Object.entries(lines)));
   assert.equal(env.hostId, "eu-west-1/ec2");
-  assert.equal(env.ticketIntervalSeconds, 600);
+  assert.equal(env.ticketIntervalSeconds, 3600, "idle: a ticket an hour (phase 8)");
+  assert.equal(env.demoTicketIntervalSeconds, 120, "demo mode: every two minutes");
+  assert.equal(env.demoModeParameter, "/zudocs/dev/demo-mode", "the switch, by name, in the host's region");
+  assert.equal(env.demoModePollSeconds, 60);
+  assert.equal(lines.ZUDOCS_PY_TICKET_INTERVAL_SECONDS, "7200");
+  assert.equal(lines.ZUDOCS_PY_DEMO_TICKET_INTERVAL_SECONDS, "300");
+  assert.equal(readHostEnv({ ...lines, ZUDOCS_DEMO_MODE_PARAMETER: "" }).demoModeParameter, "/zudocs/dev/demo-mode", "the default follows the environment");
+  assert.throws(() => readHostEnv({ ...lines, ZUDOCS_DEMO_MODE_PARAMETER: "on" }), /starts with \//);
   assert.throws(() => readHostEnv({ ...lines, AIRPROMPTER_AGENT_KEY: "apa_x" }), /only the daemon holds the key/);
   assert.throws(() => readHostEnv({ ...lines, ZUDOCS_TICKET_INTERVAL_SECONDS: "5" }), /at least 30/);
+});
+
+test("the Python worker parses the demo-mode document by the same rules as the Node side (python3 on this machine; skipped without it)", (t) => {
+  let python: string;
+  try {
+    python = execFileSync("sh", ["-c", "command -v python3"], { encoding: "utf8" }).trim();
+  } catch {
+    t.skip("python3 is not installed");
+    return;
+  }
+  const now = Date.parse("2026-09-21T16:00:00.000Z") / 1000;
+  const probe = `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("pyworker", sys.argv[1])
+# The module imports the SDK and LiteLLM at the top; stub what is not installed here so the pure function loads.
+import types
+for name in ["boto3", "litellm", "airprompter_agent", "airprompter_agent.integrations", "airprompter_agent.integrations.litellm", "airprompter_agent_core", "airprompter_agent_sync", "airprompter_agent_sync.sync", "airprompter_agent_sync.sync.daemon", "airprompter_agent_telemetry", "airprompter_agent_telemetry.spool", "airprompter_agent_telemetry.spool.writer"]:
+    m = types.ModuleType(name); sys.modules[name] = m
+sys.modules["airprompter_agent"].AirPrompterAgent = object; sys.modules["airprompter_agent"].SDK_NAME = "x"
+lit = sys.modules["airprompter_agent.integrations.litellm"]; lit.AirPrompterLiteLLMCallback = type("C", (), {}); lit.litellm_inference = lambda *a, **k: None; lit.litellm_metadata = lambda *a, **k: None
+sys.modules["airprompter_agent_core"].SDK_VERSION = "0"
+d = sys.modules["airprompter_agent_sync.sync.daemon"]; d.DaemonClient = object; d.daemon_socket_path = lambda **k: ""
+sys.modules["airprompter_agent_telemetry.spool.writer"].Observation = object
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+now = float(sys.argv[2])
+cases = json.loads(sys.argv[3])
+print(json.dumps([mod.parse_demo_mode(c, now) for c in cases]))
+`;
+  const cases = ['{"mode":"on","until":"2026-09-21T17:00:00.000Z","by":"seth@zudocs.com"}', '{"mode":"on","until":"2026-09-21T15:59:59.000Z"}', '{"mode":"on"}', '{"mode":"on","until":"2026-09-22T16:00:00.000Z"}', '{"mode":"maybe"}', "on", "", '{"mode":"off","by":"x"}'];
+  const out = JSON.parse(execFileSync(python, ["-c", probe, join(host, "pyworker.py"), String(now), JSON.stringify(cases)], { encoding: "utf8" }));
+  assert.deepEqual(out.map((r: { mode: string; reason: string | null }) => [r.mode, r.reason]), [["on", null], ["off", "expired"], ["off", "no_expiry"], ["off", "too_long"], ["off", "unknown_mode"], ["off", "unparseable"], ["off", "absent"], ["off", null]]);
+  assert.equal(out[0].until, "2026-09-21T17:00:00.000Z");
+  assert.equal(out[0].by, "seth@zudocs.com");
 });
 
 test("requirements.txt: the five distributions by the pinned commit with the litellm extras on agent and runtime, then LiteLLM's peers; a bad commit is refused", () => {

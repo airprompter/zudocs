@@ -27,12 +27,18 @@ https://api-dev.airprompter.com)"`), plus the AirPrompter console open on the **
 
 ## Before the session (15 minutes, the day of)
 
+0. **Wake the fleet (≈2 min)**: the eu-west host sleeps every night (RUNBOOK.md › Sleep and wake). Click **Wake the
+   fleet** on the presenter panel — or `npm run host:wake -- --wait` — and wait for its card to read `ok` again
+   (about three minutes: the daemon re-reads its key, the workers re-attach). Then **demo mode on** (the same row of
+   the panel): the eu-west workers run a ticket every two minutes for the next four hours instead of one an hour, so
+   the card moves while you talk; it lapses on its own. The reset refuses to run against a sleeping host.
 1. **Reset** from the last session: `npm run demo:reset` (session token, `ZUDOCS_PROOF_PASSWORD`, `AWS_PROFILE=zudocs`).
    It ends experiments, unfreezes, puts the policies back, purges the nudge queue, restores the wire, promotes two
    fresh canonical generations and approves each on eu-west, clears the desk's records, re-seeds the inbox, bumps
    the desk Lambda's `STATE_EPOCH` and ends when every status row agrees. ~4 minutes. (RUNBOOK.md › Reset.)
-2. **Wake the fleet**: `npm run airgap:up` (~6 minutes; the air-gapped host publishes its key, the puller re-seals
-   the held generation, the card appears). Optional in the five-minute cut. The puller's demo cadence (a pull every
+2. **Wake the air-gapped host**: `npm run airgap:up` (~6 minutes; the air-gapped host publishes its key, the puller
+   re-seals the held generation, the card appears). Optional in the five-minute cut; a separate owner step, never
+   from the desk's *Wake the fleet* (that one starts the eu-west host). The puller's demo cadence (a pull every
    minute instead of five) is a deploy flag (`--context demo=true`, RUNBOOK.md); the presenter's **Nudge the fleet**
    makes the wait seconds either way, so leave the deployed cadence alone.
 3. **Cut the wire** for beat 7 five minutes before you start if you want the degraded card ready when you get there
@@ -236,8 +242,12 @@ first-run form (no diff, one apply, no rollback) and says so. The opening beat i
 
 ## After the session
 
-`npm run demo:reset`. It prints what it did and ends when every status row agrees on the new generation; then
-`npm run airgap:down` (the exchange keeps everything; the card fades in fifteen minutes). Twenty sessions are about
+1. `npm run demo:reset`. It prints what it did and ends when every status row agrees on the new generation.
+2. `npm run airgap:down` (the exchange keeps everything; the card fades in fifteen minutes).
+3. **Sleep** on the presenter panel (or `npm run host:sleep`): the eu-west host would go to sleep on its own at ten in
+   the morning UTC, but until then it bills ($0.34 a day); demo mode lapses within four hours either way. Within
+   fifteen minutes of a wire cut the sleep is refused (`wire_cut`) until the rule restores the wire — *Restore the
+   wire* first, or wait. Twenty sessions are about
 160 generations — fine. Thumbs filed during the session stay in the organisation's rollout results.
 
 ## The five-minute cut

@@ -6,7 +6,7 @@
  * Stack ids and what deploys them:
  *   ZudocsCi          the owner's session only (it is what CI assumes)
  *   ZudocsDns         the owner's session first (the registrar is repointed at its output), then CI
- *   ZudocsSite        CI (and the owner's session for the first deploy)
+ *   ZudocsSite        CI (and the owner's session for the first deploy); needs `npm run build` since phase 8 (the cost check)
  *   ZudocsSharedHost  CI: the eu-west-1 host (the daemon, two workers, the wire function); needs `npm run build`
  *   ZudocsFleet       CI: the ap-southeast-1 puller, the releases table, the exchange bucket, the nudge queue; needs `npm run build`
  *   ZudocsDesk        CI (the desk API, its tables and key, the desk SPA); needs `npm run build` first. Ordered after
@@ -46,12 +46,14 @@ export const DEFAULT_ASSETS = Object.freeze({
   deskSite: join(repoRoot, "apps", "desk", "dist"),
   euHostBundle: join(repoRoot, "services", "eu-host", "dist", "bundle"),
   wire: join(repoRoot, "services", "eu-host", "dist", "wire"),
+  power: join(repoRoot, "services", "eu-host", "dist", "power"),
   puller: join(repoRoot, "services", "puller", "dist"),
   airgapBundle: join(repoRoot, "services", "airgap", "dist", "bundle"),
+  costCheck: join(repoRoot, "services", "cost-check", "dist"),
 });
 
 export interface BuildOptions {
-  readonly assets?: { readonly deskApi: string; readonly deskSite: string; readonly euHostBundle: string; readonly wire: string; readonly puller: string; readonly airgapBundle: string };
+  readonly assets?: { readonly deskApi: string; readonly deskSite: string; readonly euHostBundle: string; readonly wire: string; readonly power: string; readonly puller: string; readonly airgapBundle: string; readonly costCheck: string };
   readonly airprompter?: AirPrompterIds;
   readonly pins?: Pins;
   readonly airgapPins?: AirgapPins;
@@ -64,8 +66,8 @@ export function buildStacks(app: cdk.App, config: ZudocsConfig, options: BuildOp
   const airprompter = options.airprompter ?? readAirPrompterIds();
   const ci = new CiStack(app, STACK_IDS.ci, { config, env, tags, description: "Zudocs: GitHub OIDC deploy role (deployed by the owner, never by CI)" });
   const dns = new DnsStack(app, STACK_IDS.dns, { config, env, tags, description: "Zudocs: the hosted zone and the root mailbox's records" });
-  const site = new SiteStack(app, STACK_IDS.site, { config, zone: dns.zone, env, tags, description: "Zudocs: landing page, sign-in, budget, trail" });
-  const sharedHost = new SharedHostStack(app, STACK_IDS.sharedHost, { config, env: { account: config.account, region: config.regions.sharedHost }, tags, assets: { euHostBundle: assets.euHostBundle, wire: assets.wire }, airprompter, ...(options.pins ? { pins: options.pins } : {}), description: "Zudocs: the eu-west-1 shared host (airprompterd, a Node and a Python worker) and the wire function" });
+  const site = new SiteStack(app, STACK_IDS.site, { config, zone: dns.zone, env, tags, assets: { costCheck: assets.costCheck }, description: "Zudocs: landing page, sign-in, budget, trail, the monthly cost check" });
+  const sharedHost = new SharedHostStack(app, STACK_IDS.sharedHost, { config, env: { account: config.account, region: config.regions.sharedHost }, tags, assets: { euHostBundle: assets.euHostBundle, wire: assets.wire, power: assets.power }, airprompter, ...(options.pins ? { pins: options.pins } : {}), description: "Zudocs: the eu-west-1 shared host (airprompterd, a Node and a Python worker) and the wire function" });
   const fleetEnv = { account: config.account, region: config.regions.fleet };
   const fleet = new FleetStack(app, STACK_IDS.fleet, { config, env: fleetEnv, tags, assets: { puller: assets.puller }, airprompter, description: "Zudocs: the ap-southeast-1 fleet — the puller, the releases table, the exchange bucket, the nudge queue" });
   const desk = new DeskStack(app, STACK_IDS.desk, { config, site, zone: dns.zone, env, tags, assets: { deskApi: assets.deskApi, deskSite: assets.deskSite }, airprompter, description: "Zudocs: the desk API (the AirPrompter SDK on Lambda), its tables and key, the desk app" });

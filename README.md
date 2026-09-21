@@ -11,18 +11,19 @@ Everything here depends only on what any customer has: the public npm and PyPI p
 CLI, the public root key, and keys issued in the AirPrompter console. No prompt text is committed. No key
 is ever in this repository, on a command line, or in a log.
 
-## What is here today (phases 1–6)
+## What is here today (phases 1–6 and 8; phase 7, the prod cutover, is deferred)
 
 ```
 infra/             CDK: ZudocsCi (the deploy role), ZudocsDns (the zone), ZudocsSite (landing page, sign-in, budget,
-                   trail), ZudocsDesk (the desk API, its tables and key, the desk app) in us-east-1;
-                   ZudocsSharedHost (the daemon host and the wire function) in eu-west-1; ZudocsFleet (the puller, the
+                   trail, the monthly cost check), ZudocsDesk (the desk API, its tables and key, the desk app) in us-east-1;
+                   ZudocsSharedHost (the daemon host, the wire and power functions, the nightly sleep, the demo-mode switch) in eu-west-1; ZudocsFleet (the puller, the
                    releases table, the exchange bucket, the nudge queue) and ZudocsAirgap (the air-gapped host, on demand) in
                    ap-southeast-1
 apps/landing/      the public site at zudocs.com
 apps/desk/         the desk at desk.zudocs.com: React + Vite, hosted-UI sign-in, the run panel, the fleet, approvals, the timeline
 services/desk-api/ the us-east-1 host: one Lambda running the Agent SDK in on_invoke mode (docs/DESK.md)
-services/eu-host/  the eu-west-1 host: airprompterd, the Node and Python workers, the import timer, the units, the boot script, the wire (docs/EU-WEST.md)
+services/eu-host/  the eu-west-1 host: airprompterd, the Node and Python workers, the import timer, the units, the boot script, the wire, the power (docs/EU-WEST.md)
+services/cost-check/ the monthly cost check: Cost Explorer → cost/YYYY-MM.json in the trail bucket + Zudocs/Cost metrics (docs/COST.md)
 services/puller/   the ap-southeast-1 puller: pointer-first pullBundle into the releases table and the exchange bucket, the nudge's consumer (docs/FLEET.md)
 services/airgap/   the ap-southeast-1 air-gapped host: the offline runtime, the keygen, the export timer, the units, the boot script (docs/FLEET.md)
 airprompter.config.json   where the prompts live in AirPrompter: identifiers only, never a key
@@ -31,11 +32,12 @@ keys/              public root JWKs the hosts and the verify action pin (dev tod
 vendored/          the one bundle in git: the zudocs-ci Agent's placeholder slot, verified weekly with no key (vendored/README.md)
 scripts/           prompts-seed, dev-smoke, dev-proof, desk-proof, eu-host-proof, fleet-proof, airgap (up / down / status / run),
                    demo-console (the presenter's console acts), demo-dryrun (the nine beats, asserted), demo-reset (reset means
-                   advance), strip.sh (the recorded CLI strips), vendor.sh (the vendoring PR), ci-telemetry-validate,
+                   advance), power (host:sleep / host:wake / host:status / demo:mode), cost-report, teardown (dry run or for real),
+                   strip.sh (the recorded CLI strips), vendor.sh (the vendoring PR), ci-telemetry-validate,
                    check-vendored, ssm-put-agent-key.sh, cognito-users.sh, account-baseline.sh, check-headers, check-keys
 docs/              ARCHITECTURE.md, PROMPTS.md (the slots, variables, checks, golden set, models), DESK.md (the us-east host
                    and the app), EU-WEST.md (the daemon host, the approval, the wire), FLEET.md (the puller, the exchange, the
-                   air-gapped host, export/import), strips/ (the recorded terminal strips)
+                   air-gapped host, export/import), COST.md (every line, the two knobs, what was not built), strips/ (the recorded terminal strips)
 DEMO.md            the nine-beat script for the presenter: clicks, what the prospect sees, timings, before and after
 RUNBOOK.md         the operator's side: every key and its rotation, the drills, host replacement, the reset, the vendoring PR
 ```
@@ -85,11 +87,22 @@ through Run Command (`policy show`, `rollback`, `unlock`, `status`, `doctor`), t
 on us-east (a failing set leaves it staged under `auto`), and the recorded strips under `docs/strips/`. The weekly
 *Vendored bundle* workflow verifies the committed bundle with no key. See `docs/ARCHITECTURE.md`.
 
+Phase 8 is the steady state. The eu-west host **sleeps every night** (an EventBridge Scheduler schedule stops it at
+ten in the morning UTC; nothing starts it but the owner — **Wake the fleet** on the presenter panel or
+`npm run host:wake -- --wait`, about three minutes to a fresh row: the daemon re-reads its key from SSM, the workers
+re-attach, the store on the root volume is what it was) and the card says *asleep since …* rather than degraded;
+**demo mode** (a switch the desk writes and the workers read every minute, four hours at most) turns the idle cadence
+of a ticket an hour into one every two minutes for a session; `npm run cost:report` reads Cost Explorer and the
+budget and writes `docs/COST.md`'s numbers; a monthly Lambda files `cost/YYYY-MM.json` and a `Zudocs/Cost` metric;
+`npm run teardown` (dry run, or the account id typed) destroys every stack in the order they can be and lists what
+CloudFormation leaves. Phase 7, the prod cutover, is deferred.
+
 ## Present it
 
 ```sh
 eval "$(.bin/airprompter login --email you@zudocs.com --base-url https://api-dev.airprompter.com)"
 export AWS_PROFILE=zudocs ZUDOCS_PROOF_PASSWORD='…'
+npm run host:wake -- --wait              # the eu-west host sleeps at night: wake it (~3 minutes); demo:mode -- on for the session's cadence
 npm run demo:reset                       # before a session: reset means advance (~4 minutes)
 npm run airgap:up                        # wake the air-gapped host (~6 minutes; optional in the five-minute cut)
 npm run demo:console -- change-words     # every console act of DEMO.md as one command
@@ -114,7 +127,7 @@ npm run dev:proof               # the same render against AirPrompter dev: two c
 ```sh
 npm install
 npm run check-headers && npm run check-keys && npm run typecheck && npm test
-npm run build          # the desk API bundle, the desk app, the eu-west host bundle and the wire function — the stacks deploy these
+npm run build          # the desk API bundle, the desk app, the eu-west host bundle, the wire and power functions, the puller, the cost check — the stacks deploy these
 npm run synth          # CDK synth with a placeholder account and no budget e-mail: no credentials needed
 ```
 

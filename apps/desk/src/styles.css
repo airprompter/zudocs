@@ -157,6 +157,9 @@ mark.fence { background: none; color: var(--muted); text-decoration: underline d
 .hosts p, .timeline p { padding: 0 16px; }
 .host { margin: 0 16px 10px; border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
 .host.stale { opacity: 0.55; }
+.host.asleep { opacity: 0.8; border-style: dashed; }
+.health-asleep { background: var(--rule-soft); color: var(--muted); }
+.health-transition { background: var(--amber-soft); color: var(--amber); }
 .host.degraded { border-color: var(--amber); }
 .host .staged { color: var(--amber); font-weight: 600; }
 .host .refusal { color: var(--red); font-weight: 600; }

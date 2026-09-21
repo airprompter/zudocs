@@ -53,6 +53,19 @@ const desk = await connectDesk();
 const fleetRegion = process.env.ZUDOCS_FLEET_REGION ?? "ap-southeast-1";
 const EU = "eu-west-1/ec2";
 
+// --- 0. the eu-west host is awake (phase 8: the nightly schedule stops it; nothing but the owner starts it) ----------
+say("0. the eu-west host");
+{
+  const euRow = await desk.hostRow(EU);
+  const power = euRow?.powerView ?? null;
+  if (!power || power.phase === "awake") found(power ? "eu-west is awake" : "eu-west has no power marker (never slept)");
+  else if (power.phase === "started" || power.phase === "waking") found(`eu-west is ${power.label} since ${power.since}; its approvals in step 5 wait up to three minutes each`);
+  else {
+    say(`  ✗ eu-west is ${power.label} since ${power.since} (${power.by}): wake it first — the desk's "Wake the fleet" or \`npm run host:wake -- --wait\` (about three minutes) — and run the reset again`);
+    process.exit(3);
+  }
+}
+
 // --- 1. experiments end ------------------------------------------------------------------------------------------
 say("1. experiments");
 {

@@ -17,6 +17,12 @@
  *   script or the pinned AMI replaces the instance (`userDataCausesReplacement`): the host is cattle, its store is
  *   rebuilt from a sync — and, under `unlock_required`, the first release lands staged for the desk to approve.
  * - The wire function (Node 22 arm64, `services/eu-host/src/wire.ts`) with the EventBridge tick every five minutes.
+ * - Phase 8, the steady state: the **power function** (`services/eu-host/src/power.ts` — sleep, wake, a five-minute
+ *   tick that reconciles the status row's marker with EC2; start and stop only on instances carrying the host's Name
+ *   tag) and the **nightly sleep** (an EventBridge Scheduler schedule at `SLEEP_CRON_UTC`, no automatic start: the
+ *   fleet is woken on demand); and the **demo-mode parameter** (`/zudocs/<env>/demo-mode`, a String the desk writes
+ *   and the workers read every minute — the idle cadence's switch, `demoMode.ts`). The host's role reads that one
+ *   parameter beside the Agent key's.
  * - The desk's host-CLI Run Command document (phase 6 addendum): a Command document in this region whose one
  *   parameter's allowed values are exactly the desk's allowlist (`services/desk-api/src/hostCliDocument.ts`) and whose
  *   shell line is fixed — the desk function may send this document and no other, so its role is never arbitrary
@@ -28,11 +34,11 @@
  *
  * @example
  * ```ts
- * new SharedHostStack(app, "ZudocsSharedHost", { config, env: { account, region: config.regions.sharedHost }, assets: { euHostBundle: "…/services/eu-host/dist/bundle", wire: "…/services/eu-host/dist/wire" }, airprompter: ids });
+ * new SharedHostStack(app, "ZudocsSharedHost", { config, env: { account, region: config.regions.sharedHost }, assets: { euHostBundle: "…/services/eu-host/dist/bundle", wire: "…/services/eu-host/dist/wire", power: "…/services/eu-host/dist/power" }, airprompter: ids });
  * ```
  */
 import * as cdk from "aws-cdk-lib";
-import { aws_ec2 as ec2, aws_events as events, aws_events_targets as targets, aws_iam as iam, aws_lambda as lambda, aws_logs as logs, aws_s3_assets as assets, aws_ssm as ssm } from "aws-cdk-lib";
+import { aws_ec2 as ec2, aws_events as events, aws_events_targets as targets, aws_iam as iam, aws_lambda as lambda, aws_logs as logs, aws_s3_assets as assets, aws_scheduler as scheduler, aws_ssm as ssm } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -42,12 +48,12 @@ import { CATALOGUE } from "../../services/desk-api/src/modelCatalogue.js";
 import type { ZudocsConfig } from "./config.js";
 import { TABLE_NAMES, tableNameOf, type AirPrompterIds } from "./desk-stack.js";
 import { EXCHANGE, exchangeBucketName } from "./fleet-names.js";
-import { EU_HOST_LOG_GROUP, EU_HOST_NAME_TAG, EU_HOST_ROLE_NAME, WIRE_CUT_MAX_MINUTES, WIRE_FUNCTION_NAME, readPins, type Pins } from "./shared-host-names.js";
+import { EU_HOST_LOG_GROUP, EU_HOST_NAME_TAG, EU_HOST_ROLE_NAME, POWER_FUNCTION_NAME, POWER_TICK_MINUTES, SLEEP_CRON_UTC, SLEEP_SCHEDULE_NAME, WIRE_CUT_MAX_MINUTES, WIRE_FUNCTION_NAME, demoModeParameterName, readPins, type Pins } from "./shared-host-names.js";
 
 export interface SharedHostStackProps extends cdk.StackProps {
   readonly config: ZudocsConfig;
-  /** Built artefacts: the host bundle directory and the wire function's directory (`services/eu-host/dist`). */
-  readonly assets: { readonly euHostBundle: string; readonly wire: string };
+  /** Built artefacts: the host bundle directory, the wire function's and the power function's directories (`services/eu-host/dist`). */
+  readonly assets: { readonly euHostBundle: string; readonly wire: string; readonly power: string };
   readonly airprompter: AirPrompterIds;
   /** The pins (`services/eu-host/pins.json`); the default reads the file. */
   readonly pins?: Pins;
@@ -73,6 +79,7 @@ export class SharedHostStack extends cdk.Stack {
   readonly instance: ec2.Instance;
   readonly securityGroup: ec2.SecurityGroup;
   readonly wire: lambda.Function;
+  readonly power: lambda.Function;
   readonly role: iam.Role;
 
   constructor(scope: Construct, id: string, props: SharedHostStackProps) {
@@ -110,7 +117,10 @@ export class SharedHostStack extends cdk.Stack {
     // Session Manager and Run Command by their own actions — not AmazonSSMManagedInstanceCore, which also grants
     // ssm:GetParameter(s) on every parameter in the account; this host may read exactly one, below.
     this.role.addToPolicy(new iam.PolicyStatement({ sid: "SessionManager", actions: ["ssm:UpdateInstanceInformation", "ssm:ListAssociations", "ssm:ListInstanceAssociations", "ssm:DescribeAssociation", "ssm:GetDocument", "ssm:DescribeDocument", "ssm:UpdateAssociationStatus", "ssm:UpdateInstanceAssociationStatus", "ssm:PutInventory", "ssm:PutComplianceItems", "ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel", "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel", "ec2messages:AcknowledgeMessage", "ec2messages:DeleteMessage", "ec2messages:FailMessage", "ec2messages:GetEndpoint", "ec2messages:GetMessages", "ec2messages:SendReply"], resources: ["*"] }));
-    this.role.addToPolicy(new iam.PolicyStatement({ actions: ["ssm:GetParameter"], resources: [this.formatArn({ service: "ssm", resource: "parameter", resourceName: parameterName.slice(1) })] }));
+    // Two parameters by name: the Agent key (SecureString, the daemon's ExecStartPre) and the demo-mode switch (a String the workers read every minute).
+    const demoModeParameter = demoModeParameterName(airprompter.environment);
+    const demoModeArn = this.formatArn({ service: "ssm", resource: "parameter", resourceName: demoModeParameter.slice(1) });
+    this.role.addToPolicy(new iam.PolicyStatement({ actions: ["ssm:GetParameter"], resources: [this.formatArn({ service: "ssm", resource: "parameter", resourceName: parameterName.slice(1) }), demoModeArn] }));
     const tableArns = TABLE_NAMES.flatMap((name) => {
       const arn = `arn:${this.partition}:dynamodb:${tablesRegion}:${this.account}:table/${tableNameOf(name)}`;
       return name === "runs" ? [arn, `${arn}/index/*`] : [arn];
@@ -185,6 +195,52 @@ export class SharedHostStack extends cdk.Stack {
     this.wire.addToRolePolicy(new iam.PolicyStatement({ actions: ["dynamodb:PutItem"], resources: [eventsTableArn] }));
     new events.Rule(this, "WireTick", { description: "Zudocs: restore the eu-west host's egress when a cut is older than the limit", schedule: events.Schedule.rate(cdk.Duration.minutes(5)), targets: [new targets.LambdaFunction(this.wire, { event: events.RuleTargetInput.fromObject({ action: "tick" }) })] });
 
+    // --- Demo mode: the switch the desk writes and the workers read (phase 8) --------------------------------------
+    // Created off (a fresh deployment idles); the desk overwrites it during a session and the value drifts from this
+    // template on purpose — CloudFormation rewrites it only when this resource's own properties change.
+    new ssm.StringParameter(this, "DemoMode", { parameterName: demoModeParameter, stringValue: JSON.stringify({ mode: "off", by: "the stack", at: "1970-01-01T00:00:00.000Z" }), description: "Zudocs demo mode: {mode:on|off, until, by, at} — the eu-west workers' ticket cadence switch (written by the desk, expires on its own)" });
+
+    // --- The power function, its tick and the nightly sleep (phase 8) -----------------------------------------------
+    const statusTableArn = `arn:${this.partition}:dynamodb:${tablesRegion}:${this.account}:table/${tableNameOf("status")}`;
+    this.power = new lambda.Function(this, "Power", {
+      functionName: POWER_FUNCTION_NAME,
+      description: "Zudocs: sleeps and wakes the eu-west host (StopInstances / StartInstances on the tagged instance only); the tick reconciles the desk's marker with EC2",
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(props.assets.power),
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(30),
+      logGroup: new logs.LogGroup(this, "PowerLogs", { logGroupName: `/aws/lambda/${POWER_FUNCTION_NAME}`, retention: logs.RetentionDays.ONE_WEEK, removalPolicy: cdk.RemovalPolicy.DESTROY }),
+      environment: {
+        NAME_TAG: EU_HOST_NAME_TAG,
+        HOST_ID: hostId,
+        DYNAMODB_REGION: tablesRegion,
+        STATUS_TABLE: tableNameOf("status"),
+        EVENTS_TABLE: tableNameOf("events"),
+        DEMO_MODE_PARAMETER: demoModeParameter,
+      },
+    });
+    this.power.addToRolePolicy(new iam.PolicyStatement({ sid: "PowerDescribe", actions: ["ec2:DescribeInstances", "ec2:DescribeSecurityGroups"], resources: ["*"] }));
+    // Start and stop: any instance in this account and region — but only one that carries the host's Name tag.
+    this.power.addToRolePolicy(new iam.PolicyStatement({ sid: "PowerStartStop", actions: ["ec2:StartInstances", "ec2:StopInstances"], resources: [`arn:${this.partition}:ec2:${this.region}:${this.account}:instance/*`], conditions: { StringEquals: { "ec2:ResourceTag/Name": EU_HOST_NAME_TAG } } }));
+    this.power.addToRolePolicy(new iam.PolicyStatement({ sid: "PowerDemoMode", actions: ["ssm:GetParameter"], resources: [demoModeArn] }));
+    this.power.addToRolePolicy(new iam.PolicyStatement({ sid: "PowerMarker", actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"], resources: [statusTableArn] }));
+    this.power.addToRolePolicy(new iam.PolicyStatement({ sid: "PowerTimeline", actions: ["dynamodb:PutItem"], resources: [eventsTableArn] }));
+    new events.Rule(this, "PowerTick", { description: "Zudocs: reconcile the eu-west host's power marker with what EC2 says", schedule: events.Schedule.rate(cdk.Duration.minutes(POWER_TICK_MINUTES)), targets: [new targets.LambdaFunction(this.power, { event: events.RuleTargetInput.fromObject({ action: "tick" }) })] });
+    // The nightly sleep: EventBridge Scheduler, three attempts twenty minutes apart; no schedule ever starts the host.
+    const schedulerRole = new iam.Role(this, "SleepScheduleRole", { assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"), description: "Assumed by EventBridge Scheduler to invoke the power function for the nightly sleep" });
+    schedulerRole.addToPolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [this.power.functionArn] }));
+    new scheduler.CfnSchedule(this, "NightlySleep", {
+      name: SLEEP_SCHEDULE_NAME,
+      description: "Zudocs: put the eu-west host to sleep for the night (refused while demo mode is on or the wire is cut; woken on demand)",
+      scheduleExpression: SLEEP_CRON_UTC,
+      scheduleExpressionTimezone: "UTC",
+      flexibleTimeWindow: { mode: "OFF" },
+      state: "ENABLED",
+      target: { arn: this.power.functionArn, roleArn: schedulerRole.roleArn, input: JSON.stringify({ action: "sleep", by: "the nightly schedule" }), retryPolicy: { maximumRetryAttempts: 0 } },
+    });
+
     // --- The desk's host-CLI document ---------------------------------------------------------------------------
     // A change to the allowlist is a new document version (the default follows); the desk stack grants SendCommand on this ARN only.
     new ssm.CfnDocument(this, "HostCliDocument", {
@@ -200,6 +256,9 @@ export class SharedHostStack extends cdk.Stack {
     new cdk.CfnOutput(this, "HostId", { value: hostId, description: "The host's row in the status table" });
     new cdk.CfnOutput(this, "SecurityGroupId", { value: this.securityGroup.securityGroupId });
     new cdk.CfnOutput(this, "WireFunctionName", { value: this.wire.functionName });
+    new cdk.CfnOutput(this, "PowerFunctionName", { value: this.power.functionName });
+    new cdk.CfnOutput(this, "DemoModeParameterName", { value: demoModeParameter, description: "The demo-mode switch the desk writes and the workers read" });
+    new cdk.CfnOutput(this, "SleepSchedule", { value: SLEEP_CRON_UTC, description: "When the host is put to sleep (UTC); it is woken on demand" });
     new cdk.CfnOutput(this, "AgentKeyParameterName", { value: parameterName, description: `Write the Agent key here in ${this.region} as a SecureString (AWS_REGION=${this.region} ZUDOCS_SSM_KEY_ID=alias/aws/ssm scripts/ssm-put-agent-key.sh)` });
     new cdk.CfnOutput(this, "LogGroupName", { value: logGroup.logGroupName });
   }

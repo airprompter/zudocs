@@ -4,7 +4,10 @@
  * where it comes from, the lease as a countdown, the last heartbeat (or, on the daemon host, the daemon's last
  * contact: the socket does not carry the heartbeat), the sync outcome and failures, the spool, the health verdict
  * with its reasons, and how long ago the row was written (a host that stopped writing fades). The daemon host also
- * shows its attached workers and its import timer; the puller shows what the exchange holds and what its pulls cost;
+ * shows its attached workers, its ticket cadence under the demo-mode switch and its import timer — and, since phase
+ * 8, its power: a host the desk (or the nightly schedule) put to sleep reads *asleep since …* with a dashed border
+ * rather than a stale, degraded host, and *waking* / *started, the workers are coming up* on the way back (the API
+ * folds the row's marker into `powerView`); the puller shows what the exchange holds and what its pulls cost;
  * the air-gapped host shows that it has no route out, the key born on it, what it applied from the exchange, its
  * render probes (every one a refused observation — no model here) and its exports.
  *
@@ -32,16 +35,22 @@ function HostCard({ host }: { host: HostStatus }) {
   // A row written while the daemon was unreachable carries a health verdict and no status block: render what is there.
   const s = host.status ?? {};
   const z = host.healthz ?? {};
-  const stale = Date.now() - Date.parse(host.writtenAt) > 10 * 60_000;
-  const protection = String(s.storageProtection ?? "—");
   const daemon = host.kind === "daemon";
+  // Phase 8: a host asleep is not stale and not degraded — its rows are old because it is off, and the card says so.
+  const power = host.powerView ?? null;
+  const asleep = power !== null && (power.phase === "asleep" || power.phase === "going_to_sleep");
+  const transition = power !== null && (power.phase === "waking" || power.phase === "started" || power.phase === "going_to_sleep");
+  const stale = !asleep && !transition && Date.now() - Date.parse(host.writtenAt) > 10 * 60_000;
+  const protection = String(s.storageProtection ?? "—");
   const failures = Number(s.consecutiveSyncFailures ?? 0);
+  const cadence = host.cadence ?? null;
   return (
-    <article className={`host${stale ? " stale" : ""}${z.status === "degraded" ? " degraded" : ""}`}>
+    <article className={`host${stale ? " stale" : ""}${asleep ? " asleep" : ""}${!asleep && !transition && z.status === "degraded" ? " degraded" : ""}`}>
       <header>
         <strong>{host.region}</strong> <span className="muted" title={daemon ? TOOLTIPS.daemon : undefined}>· {daemon ? "daemon host" : host.kind}</span>
-        <span className={`chip health-${z.status ?? "unknown"}`}>{z.status ?? "—"}</span>
+        {asleep ? <span className="chip health-asleep" title={TOOLTIPS.power}>{power!.label}</span> : transition ? <span className="chip health-transition" title={TOOLTIPS.power}>{power!.label}</span> : <span className={`chip health-${z.status ?? "unknown"}`}>{z.status ?? "—"}</span>}
       </header>
+      {power && power.phase !== "awake" ? <p className="muted fine" title={TOOLTIPS.power}>{power.label} since {ago(power.since)} ({String(power.since).slice(11, 19)}Z) · by {power.by ?? "—"}{asleep ? " · the rows below are from before the sleep; only its volume bills" : " · the daemon re-reads its key from SSM and the workers re-attach"}</p> : null}
       <dl className="kv">
         <div><dt>release</dt><dd>#{s.generation ?? "—"} · {effectiveApplyState(s) ?? "—"}{s.stagedGeneration ? <span className="staged"> · staged #{s.stagedGeneration} awaiting approval</span> : ""}{s.forcedDowngrade ? <span className="refusal"> · forced downgrade</span> : ""}{s.lastRefusal && !staleRefusal(s) ? <span className="refusal"> · refused: {s.lastRefusal}</span> : ""}</dd></div>
         <div><dt title={TOOLTIPS.storage}>store key</dt><dd><span className={`chip protection-${protection}`}>{protection}</span>{protection === "file_key" ? <span className="muted"> · a 0600 file beside the store — doctor warns</span> : null}</dd></div>
@@ -61,15 +70,16 @@ function HostCard({ host }: { host: HostStatus }) {
           <>
             <div><dt>workers</dt><dd>{host.worker ? `node ${host.worker.sdk} · ${host.worker.tickets} ticket${host.worker.tickets === 1 ? "" : "s"} · ${host.worker.attached ? "attached" : "detached"}` : "node worker not reporting"}</dd></div>
             <div><dt></dt><dd>{host.python ? `${host.python.sdk} · ${host.python.runs} run${host.python.runs === 1 ? "" : "s"} · ${host.python.attached ? "attached" : "detached"} · written ${ago(host.python.writtenAt)}` : "python worker not reporting"}</dd></div>
+            <div><dt title={TOOLTIPS.demoMode}>cadence</dt><dd>{cadence ? <>a ticket every {Math.round(cadence.ticketIntervalSeconds / 60)} min{host.python?.cadence ? ` (python: ${Math.round(Number(host.python.cadence.ticketIntervalSeconds) / 60)} min)` : ""} · demo mode {cadence.demoMode}{cadence.demoMode === "on" && cadence.until ? ` until ${String(cadence.until).slice(11, 16)}Z` : ""}{cadence.reason && cadence.reason !== "absent" ? <span className="muted"> ({cadence.reason})</span> : null}{cadence.error ? <span className="refusal"> · the switch could not be read: {cadence.error}</span> : null}{cadence.readAt ? <span className="muted"> · read {ago(cadence.readAt)}</span> : null}</> : "not reported yet"}</dd></div>
             <div><dt title={TOOLTIPS.airgap}>imports</dt><dd>{host.imports ? `${host.imports.objects} export${host.imports.objects === 1 ? "" : "s"} in the exchange · ${host.imports.pending} pending · last pass ${ago(host.imports.lastPassAt)}${host.imports.last ? ` · last ${String(host.imports.last.outcome)} (${String(host.imports.last.uploaded ?? 0)} segment${Number(host.imports.last.uploaded ?? 0) === 1 ? "" : "s"})` : ""}` : "the import timer has not run yet"}</dd></div>
-            <div><dt>instance</dt><dd>{host.ec2 ? `${host.ec2.instanceId} · ${host.ec2.availabilityZone}` : "—"} · daemon {host.container.instanceId.slice(0, 12)}</dd></div>
+            <div><dt>instance</dt><dd>{host.ec2 ? `${host.ec2.instanceId} · ${host.ec2.availabilityZone}` : "—"} · daemon {host.container?.instanceId?.slice(0, 12) ?? "—"}</dd></div>
           </>
         ) : (
-          <div><dt>container</dt><dd>{host.container.instanceId.slice(0, 12)} · {host.container.invocations} inv · {host.container.coldStart ? "cold" : "warm"}</dd></div>
+          <div><dt>container</dt><dd>{host.container?.instanceId?.slice(0, 12) ?? "—"} · {host.container?.invocations ?? 0} inv · {host.container?.coldStart ? "cold" : "warm"}</dd></div>
         )}
       </dl>
-      {z.reasons?.length ? <p className={z.status === "ok" ? "muted" : "problem fine"}>{z.reasons.join(", ")}</p> : null}
-      <footer className="muted">written {ago(host.writtenAt)}</footer>
+      {z.reasons?.length && !asleep ? <p className={z.status === "ok" ? "muted" : "problem fine"}>{z.reasons.join(", ")}</p> : null}
+      <footer className="muted">written {ago(host.writtenAt)}{asleep ? " · before the sleep" : ""}</footer>
     </article>
   );
 }

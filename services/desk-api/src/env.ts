@@ -27,6 +27,10 @@ export interface DeskEnv {
   readonly wireFunctionArn: string;
   /** The fleet's nudge queue in ap-southeast-1 (`zudocs-nudge`) the presenter posts to; empty until that stack exists. */
   readonly nudgeQueueUrl: string;
+  /** The eu-west power function (`zudocs-power`, phase 8) the presenter's sleep / wake invoke; empty until that stack exists. */
+  readonly powerFunctionArn: string;
+  /** The eu-west demo-mode parameter NAME (a String, `hostPower.ts`); empty when the deployment names none. */
+  readonly demoModeParameter: string;
   /** The SSM SecureString parameter NAME the Agent key is read from at cold start. */
   readonly agentKeyParameter: string;
   /**
@@ -78,6 +82,8 @@ export function readEnv(env: NodeJS.ProcessEnv = process.env): DeskEnv {
   if (runUrl && !/^https:\/\/[^\s/]+$/.test(runUrl)) throw new Error("env: AIRPROMPTER_HOSTED_RUN_URL is an https origin with no path");
   const hostedTarget = env.AIRPROMPTER_HOSTED_TARGET?.trim() || "staging";
   if (!["dev", "staging", "prod"].includes(hostedTarget)) throw new Error("env: AIRPROMPTER_HOSTED_TARGET must be dev, staging or prod");
+  const demoModeParameter = env.DEMO_MODE_PARAMETER?.trim() || "";
+  if (demoModeParameter && !demoModeParameter.startsWith("/")) throw new Error("env: DEMO_MODE_PARAMETER is an SSM parameter name (it starts with /)");
   const stateEpoch = need(env, "STATE_EPOCH");
   const heartbeat = Number(env.HEARTBEAT_SECONDS ?? "60");
   return Object.freeze({
@@ -94,6 +100,8 @@ export function readEnv(env: NodeJS.ProcessEnv = process.env): DeskEnv {
     kmsKeyId: need(env, "KMS_KEY_ID"),
     wireFunctionArn: env.WIRE_FUNCTION_ARN?.trim() || "",
     nudgeQueueUrl: env.NUDGE_QUEUE_URL?.trim() || "",
+    powerFunctionArn: env.POWER_FUNCTION_ARN?.trim() || "",
+    demoModeParameter: demoModeParameter,
     agentKeyParameter: parameter,
     hosted: Object.freeze({ runKeyParameter, runUrl, target: hostedTarget as "dev" | "staging" | "prod" }),
     euHost: Object.freeze({ region: env.EU_HOST_REGION?.trim() || "eu-west-1", nameTag: env.EU_HOST_NAME_TAG?.trim() || "zudocs-eu-host" }),

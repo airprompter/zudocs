@@ -68,7 +68,7 @@ export interface HostStatus {
   container: { instanceId: string; coldStart: boolean; startedAt: string; invocations: number };
   /** The eu-west host's attached workers: the Node worker that writes the row, the Python worker's own part. */
   worker?: { instanceId: string; sdk: string; startedAt: string; tickets: number; source: string; attached: boolean; healthz: string; reasons: string[] } | null;
-  python?: { instanceId: string; sdk: string; startedAt: string; writtenAt: string; generation: number; stagedGeneration: number | null; applyState: string; source: string; attached: boolean; healthz: string; reasons: string[]; runs: number; lastRunAt: string | null } | null;
+  python?: { instanceId: string; sdk: string; startedAt: string; writtenAt: string; generation: number; stagedGeneration: number | null; applyState: string; source: string; attached: boolean; healthz: string; reasons: string[]; runs: number; lastRunAt: string | null; cadence?: { ticketIntervalSeconds: number; demoMode: "on" | "off" } | null } | null;
   ec2?: { instanceId: string; availabilityZone: string } | null;
   /** The puller mirrors the air-gapped host's document: when it looked, and the host's own part (`services/airgap/src/status.ts`). */
   mirroredAt?: string;
@@ -86,8 +86,13 @@ export interface HostStatus {
   } | null;
   /** The eu-west host's import timer: the air-gapped host's exports carried to AirPrompter. */
   imports?: { lastPassAt: string; objects: number; pending: number; imported: number; last: Record<string, unknown> | null } | null;
+  /** Phase 8: the eu-west host's power as the API folded it from the row's marker (`powerView` in the desk API). */
+  powerView?: { phase: "awake" | "going_to_sleep" | "asleep" | "waking" | "started"; since: string | null; by: string | null; label: string };
+  /** Phase 8: the Node worker's ticket cadence and the demo-mode switch as it last read it (the Python worker's is under `python.cadence`). */
+  cadence?: { demoMode: "on" | "off"; until: string | null; by: string | null; reason: string | null; ticketIntervalSeconds: number; idleIntervalSeconds: number; demoIntervalSeconds: number; nextTicketAt: string; parameter: string; readAt: string | null; error: string | null } | null;
 }
-export interface State { host: { hostId: string; region: string; sdk: string; instanceId: string; startedAt: string; invocations: number; coldStart: boolean; status: Record<string, any>; healthz: Record<string, any>; models: string[]; stateDir: string }; hosts: HostStatus[]; cap: { day: string; used: number; cap: number }; airprompter: { baseUrl: string; environment: string; agentId: string }; features?: { wire: boolean; nudge: boolean; hosted?: boolean; hostCli?: boolean }; hosted?: { target: string; runUrl: string } | null; frozen?: { frozen: boolean; reason: string | null }; hostCliCommands?: string[] }
+export interface DemoModeState { mode: "on" | "off"; until: string | null; by: string | null; reason: string | null; parameter: string }
+export interface State { host: { hostId: string; region: string; sdk: string; instanceId: string; startedAt: string; invocations: number; coldStart: boolean; status: Record<string, any>; healthz: Record<string, any>; models: string[]; stateDir: string }; hosts: HostStatus[]; cap: { day: string; used: number; cap: number }; airprompter: { baseUrl: string; environment: string; agentId: string }; features?: { wire: boolean; nudge: boolean; hosted?: boolean; hostCli?: boolean; power?: boolean; demoMode?: boolean }; hosted?: { target: string; runUrl: string } | null; frozen?: { frozen: boolean; reason: string | null }; hostCliCommands?: string[]; demoMode?: DemoModeState | null }
 export interface TimelineEvent { at: string; kind: string; host: string; id?: string; [key: string]: unknown }
 export type ApprovalDecision = "pending" | "approved" | "activated" | "superseded" | "failed";
 export interface Approval { approvalId: string; hostId: string; generation: number; releaseDigest: string | null; stagedAt: string; unlockRequest: { requestedBy: string; requestedAt: string; expiresAt: string; note?: string } | null; decision: ApprovalDecision; decidedBy: string | null; decidedAt: string | null; activatedAt: string | null; outcome: string | null; updatedAt: string; ramps?: Ramp[] }

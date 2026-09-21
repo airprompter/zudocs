@@ -20,7 +20,10 @@
  *   fleet's queue in ap-southeast-1 by its fixed name.
  * - Phase 6: the staging run key's parameter NAME and the hosted run URL (when `airprompter.config.json` names one)
  *   for "Run on staging", and Run Command on the eu-west instance by its Name tag for the presenter's one-click CLI
- *   (`zudocs-cli policy show`, `rollback`, `unlock`, `doctor`, `status`) — the function never learns an instance id.
+ *   (`zudocs-cli policy show`, `rollback`, `unlock`, `doctor`, `status`) — the function never learns an instance id,
+ *   and may send exactly one document: the eu-west stack's `zudocs-desk-host-cli`, whose parameter's allowed values
+ *   are the allowlist and whose shell line is fixed (never `AWS-RunShellScript`, which would be arbitrary root on
+ *   the host that holds the Agent key).
  *
  * Two things a synth cannot catch: the SSM parameter must exist before the first request (the function fails its
  * cold start with the parameter's name otherwise), and Bedrock model access in a fresh account is a per-model
@@ -37,6 +40,7 @@ import type { Construct } from "constructs";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HOST_CLI_DOCUMENT_NAME } from "../../services/desk-api/src/hostCliDocument.js";
 import { CATALOGUE } from "../../services/desk-api/src/modelCatalogue.js";
 import { ROUTES } from "../../services/desk-api/src/router.js";
 import type { ZudocsConfig } from "./config.js";
@@ -219,8 +223,10 @@ export class DeskStack extends cdk.Stack {
     // The Agent key and the staging run key: two parameters by name, decrypted by SSM on this function's behalf with this key.
     this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:GetParameter"], resources: [parameterArn, runKeyParameterArn] }));
     this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["kms:Decrypt"], resources: [this.key.keyArn], conditions: { StringEquals: { "kms:ViaService": `ssm.${this.region}.amazonaws.com`, "kms:EncryptionContext:PARAMETER_ARN": [parameterArn, runKeyParameterArn] } } }));
-    // The presenter's one-click CLI on the eu-west host (phase 6): Run Command's shell document on the one instance that carries the host's Name tag, and the invocation reads.
-    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:SendCommand"], resources: [`arn:${this.partition}:ssm:${config.regions.sharedHost}::document/AWS-RunShellScript`] }));
+    // The presenter's one-click CLI on the eu-west host (phase 6): the desk's own Command document (created by the eu-west
+    // stack, in the host's region, by its fixed name — allowed values are the allowlist, the shell line is fixed) on the one
+    // instance that carries the host's Name tag, and the invocation reads. Never AWS-RunShellScript.
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:SendCommand"], resources: [`arn:${this.partition}:ssm:${config.regions.sharedHost}:${this.account}:document/${HOST_CLI_DOCUMENT_NAME}`] }));
     this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:SendCommand"], resources: [`arn:${this.partition}:ec2:${config.regions.sharedHost}:${this.account}:instance/*`], conditions: { StringEquals: { "ssm:resourceTag/Name": EU_HOST_NAME_TAG } } }));
     this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:ListCommandInvocations", "ssm:GetCommandInvocation"], resources: ["*"] }));
     // Bedrock: exactly the catalogue's models — the foundation models in any region a cross-region profile fans out to, and our profiles here.

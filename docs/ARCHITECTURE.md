@@ -41,8 +41,8 @@ one pull request at a time.
 ## Phase 6: the story
 
 The desk gained the presenter's drills (a hosted staging run through AirPrompter's execution with a run key read
-from SSM by name; an allowlisted `zudocs-cli` command on the eu-west host through Run Command targeted by the
-instance's Name tag; this host's own apply policy through the SDK; the golden set on demand; the reset's clearing
+from SSM by name; an allowlisted `zudocs-cli` command on the eu-west host through the desk's own Run Command document
+targeted by the instance's Name tag; this host's own apply policy through the SDK; the golden set on demand; the reset's clearing
 step), the per-arm fold of its own records (`GET /arms`) with the stickiness table, the ramp plan on an approval
 row (read by us-east from the same signed manifest), and the freeze as the SDK reports it (a `disable` directive:
 every run refuses with HTTP 423 before a cap slot is taken). The us-east host runs golden sets before activating a
@@ -71,4 +71,7 @@ that start the real SDK against the `/testing` kit). DEMO.md and RUNBOOK.md are 
   is promoted, a tightened policy is loosened only on the host. `npm run demo:reset` is that rule as a script.
 - The one bundle in git is the `zudocs-ci` Agent's placeholder (`vendored/`, `scripts/check-vendored.mjs`); the
   strips under `docs/strips/` are scanned for anything key-shaped before they are written.
-- Nothing typed on the desk reaches a shell: the host CLI is an allowlist of exact command lines.
+- Nothing typed on the desk reaches a shell: the host CLI is an allowlist of exact command lines, sent as the one
+  parameter of the desk's own Run Command document (allowed values = the allowlist, a fixed shell line); the desk's
+  role may send no other document — never `AWS-RunShellScript`. The CLI's output is scanned for anything key-shaped
+  before it is stored.

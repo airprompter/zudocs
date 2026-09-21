@@ -6,11 +6,17 @@
  * a fold over what the SDK rendered (`arm`, `versionId`) and what the desk observed, so a prospect can compare arms
  * on the desk and then see AirPrompter's own rollout page compute the same split from the windows the hosts uploaded.
  *
+ * Stickiness is compared on the weights in force: one row per (customer, slot, generation). A dial is a new
+ * generation with new weights, and a customer whose bucket moved with them landed on the control before and the
+ * candidate after — by design, not a disagreement. Two hosts disagree only when they served the same customer
+ * different arms under the same release; a host that lags a generation (eu-west, until its approval) is simply not
+ * yet comparable, and the panel says so.
+ *
  * @example
  * ```ts
  * const { arms, stickiness } = foldArms(runs, feedback);
  * arms.find((a) => a.tag === "support.reply" && a.arm === "candidate")?.judgeMean;   // 0.83
- * stickiness.every((s) => s.consistent);                                             // the same customer, the same arm, every host
+ * stickiness.every((s) => s.consistent);                                             // the same customer, the same arm, every host, under the same release
  * ```
  */
 
@@ -35,7 +41,9 @@ export interface ArmSummary {
 export interface Stickiness {
   customerId: string;
   tag: string;
-  /** host → the one arm seen there; a host that served two arms for one customer reads "control+candidate". */
+  /** The release the runs were served under — the weights in force; null when a run recorded none. */
+  generation: number | null;
+  /** host → the one arm seen there under this generation; a host that served two arms for one customer reads "control+candidate". */
   arms: Record<string, string>;
   consistent: boolean;
 }
@@ -43,7 +51,7 @@ export interface Stickiness {
 type RunRow = Record<string, unknown> & { runId: string; ticketId: string };
 type FeedbackRow = { runId: string; signals: Record<string, unknown>; filed: boolean };
 
-interface StepLike { step: string; tag: string; versionId: string | null; arm: string | null; model: string | null; observation?: { latencyMs?: number } | null; checks?: Array<{ verdict: string }>; costUsd?: number | null; judge?: { score: number | null } | null; error?: unknown | null }
+interface StepLike { step: string; tag: string; versionId: string | null; arm: string | null; model: string | null; generation?: number | null; observation?: { latencyMs?: number } | null; checks?: Array<{ verdict: string }>; costUsd?: number | null; judge?: { score: number | null } | null; error?: unknown | null }
 
 const key = (s: { tag: string; arm: string; versionId: string; model: string }) => `${s.tag}|${s.arm}|${s.versionId}|${s.model}`;
 
@@ -56,7 +64,7 @@ export function foldArms(runs: RunRow[], feedback: FeedbackRow[]): { arms: ArmSu
     byRun.set(f.runId, list);
   }
   const arms = new Map<string, ArmSummary & { judgeSum: number; costSum: number; latencySum: number; latencyN: number }>();
-  const seen = new Map<string, Map<string, Set<string>>>();
+  const seen = new Map<string, { customerId: string; tag: string; generation: number | null; perHost: Map<string, Set<string>> }>();
   for (const run of runs) {
     if (run.kind === "hosted") continue;
     const steps = Array.isArray(run.steps) ? (run.steps as StepLike[]) : [];
@@ -85,11 +93,13 @@ export function foldArms(runs: RunRow[], feedback: FeedbackRow[]): { arms: ArmSu
       }
       arms.set(k, entry);
       if (customerId && step.arm !== "none") {
-        const perTag = seen.get(`${customerId}|${step.tag}`) ?? new Map<string, Set<string>>();
-        const set = perTag.get(host) ?? new Set<string>();
+        const generation = typeof step.generation === "number" ? step.generation : null;
+        const k = `${customerId}|${step.tag}|${generation ?? "?"}`;
+        const entry = seen.get(k) ?? { customerId, tag: step.tag, generation, perHost: new Map<string, Set<string>>() };
+        const set = entry.perHost.get(host) ?? new Set<string>();
         set.add(step.arm);
-        perTag.set(host, set);
-        seen.set(`${customerId}|${step.tag}`, perTag);
+        entry.perHost.set(host, set);
+        seen.set(k, entry);
       }
     }
   }
@@ -99,11 +109,10 @@ export function foldArms(runs: RunRow[], feedback: FeedbackRow[]): { arms: ArmSu
     costMeanUsd: rest.costed ? costSum / rest.costed : null,
     latencyMeanMs: latencyN ? Math.round(latencySum / latencyN) : null,
   })).sort((a, b) => a.tag.localeCompare(b.tag) || a.arm.localeCompare(b.arm) || a.versionId.localeCompare(b.versionId));
-  const stickiness: Stickiness[] = [...seen.entries()].map(([k, perHost]) => {
-    const [customerId, tag] = k.split("|") as [string, string];
+  const stickiness: Stickiness[] = [...seen.values()].map(({ customerId, tag, generation, perHost }) => {
     const armsByHost = Object.fromEntries([...perHost.entries()].map(([host, set]) => [host, [...set].sort().join("+")]));
     const distinct = new Set(Object.values(armsByHost));
-    return { customerId, tag, arms: armsByHost, consistent: distinct.size === 1 && ![...distinct][0]!.includes("+") };
-  }).sort((a, b) => a.tag.localeCompare(b.tag) || a.customerId.localeCompare(b.customerId));
+    return { customerId, tag, generation, arms: armsByHost, consistent: distinct.size === 1 && ![...distinct][0]!.includes("+") };
+  }).sort((a, b) => a.tag.localeCompare(b.tag) || a.customerId.localeCompare(b.customerId) || (a.generation ?? -1) - (b.generation ?? -1));
   return { arms: summaries, stickiness };
 }

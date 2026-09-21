@@ -29,7 +29,8 @@ import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyResultV2, Context } from "aws-lambda";
 import { normalizeFeedback } from "@airprompter/agent-sdk";
 import { foldArms } from "./arms.js";
-import { HOST_CLI_COMMANDS, isHostCliCommand, type HostCliCommand } from "./hostCli.js";
+import { HOST_CLI_COMMANDS, documentOf, isHostCliCommand, type HostCliCommand } from "./hostCli.js";
+import { redactKeyShaped } from "./redact.js";
 import { hostedConfigured, hostedRun } from "./hosted.js";
 import { MODELS } from "./modelCatalogue.js";
 import { match } from "./router.js";
@@ -442,7 +443,11 @@ async function presenter(host: Host, action: string, body: Record<string, unknow
   }
 }
 
-/** The host-CLI job: run the command through Run Command, put the CLI's document on the timeline (never a key — the CLI prints none). */
+/**
+ * The host-CLI job: run the command through Run Command, put the CLI's document on the timeline — after the strips'
+ * key-shaped scan (`redact.ts`) over stdout and stderr: the CLI prints no key, so a hit is a bug on the host, and the
+ * row then carries `[redacted]` and says how many spans were replaced instead of carrying the thing itself.
+ */
 async function hostCliJob(host: Host, job: HostCliJob): Promise<void> {
   const { store, env } = host;
   const { command, by, requestedAt } = job.hostCli;
@@ -450,11 +455,18 @@ async function hostCliJob(host: Host, job: HostCliJob): Promise<void> {
   try {
     result = await host.hostCli(command, command === "doctor" ? 120 : 90);
   } catch (error) {
-    await store.appendEvent({ at: new Date().toISOString(), kind: "host_cli", host: env.hostId, forHost: `${env.euHost.region}/ec2`, command, line: HOST_CLI_COMMANDS[command], status: "Failed", instanceId: null, summary: `Run Command could not be sent: ${(error as Error).message.slice(0, 200)}`, document: null, stdout: "", requestedAt, by });
+    const message = redactKeyShaped((error as Error).message ?? String(error)).text.slice(0, 200);
+    await store.appendEvent({ at: new Date().toISOString(), kind: "host_cli", host: env.hostId, forHost: `${env.euHost.region}/ec2`, command, line: HOST_CLI_COMMANDS[command], status: "Failed", instanceId: null, summary: `Run Command could not be sent: ${message}`, document: null, stdout: "", requestedAt, by });
     return;
   }
-  const summary = summariseCli(command, result.document ?? {});
-  await store.appendEvent({ at: new Date().toISOString(), kind: "host_cli", host: env.hostId, forHost: `${env.euHost.region}/ec2`, command, line: result.line, status: result.status, instanceId: result.instanceId, summary, document: result.document, stdout: result.stdout.slice(0, 4000), stderr: result.stderr.slice(0, 1000), durationMs: result.durationMs, requestedAt, by });
+  const stdout = redactKeyShaped(result.stdout);
+  const stderr = redactKeyShaped(result.stderr);
+  const redacted = stdout.hits + stderr.hits;
+  // The document is re-read from the redacted text when anything was hit: what the row carries is what the row shows.
+  const document = redacted ? documentOf(stdout.text) : result.document;
+  const summary = redacted ? `${summariseCli(command, document ?? {})} — ${redacted} key-shaped span(s) in the host's output were redacted before this row was written (the CLI prints none: a bug on the host)` : summariseCli(command, document ?? {});
+  if (redacted) console.log(JSON.stringify({ source: "desk", event: "host_cli_redacted", command, hits: redacted }));
+  await store.appendEvent({ at: new Date().toISOString(), kind: "host_cli", host: env.hostId, forHost: `${env.euHost.region}/ec2`, command, line: result.line, status: result.status, instanceId: result.instanceId, summary, document, stdout: stdout.text.slice(0, 4000), stderr: stderr.text.slice(0, 1000), redacted, durationMs: result.durationMs, requestedAt, by });
 }
 
 /** One line from the CLI's document, per command — what the notice and the timeline row say. */

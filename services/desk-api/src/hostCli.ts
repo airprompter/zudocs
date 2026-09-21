@@ -1,10 +1,12 @@
 /**
  * The operator's CLI on the eu-west host, one click from the desk: a fixed list of `zudocs-cli` commands (the host's
  * wrapper around the released `airprompter` binary, scoped to the daemon's agent and environment) run through
- * Session Manager's Run Command, targeted by the instance's Name tag — the desk never learns an instance id and
- * never opens a shell. The command's own JSON document comes back as the CLI printed it; the CLI prints no key at
- * any verbosity (its own rule), and the allowlist takes no arguments from the request beyond the command's name,
- * so nothing typed on the desk reaches a shell.
+ * Run Command with the desk's own Command document (`hostCliDocument.ts`: one parameter whose allowed values are
+ * exactly the allowlist, one fixed shell line — SSM refuses anything else before it reaches the host, and the
+ * function's role may send no other document), targeted by the instance's Name tag — the desk never learns an
+ * instance id and never opens a shell. The command's own JSON document comes back as the CLI printed it; the CLI
+ * prints no key at any verbosity (its own rule), and the allowlist takes no arguments from the request beyond the
+ * command's name, so nothing typed on the desk reaches a shell.
  *
  * What the drills use: `policy show` ("the console says auto, this host says unlock_required — local"), `rollback` (a
  * forced downgrade the fleet page reports), `unlock` (the operator's activation), `status` and `doctor` (what the host
@@ -12,7 +14,8 @@
  * unlock_required`, a local policy no `policy set` loosens (the operator's loosening is the us-east host's own
  * `setApplyPolicy`, a presenter action of its own); and `apply --force`, which needs a bundle file on the host and is a
  * laptop drill in `docs/strips/` instead. The command runs as a job the function hands itself; the answer lands on
- * the timeline (the HTTP API caps an integration at 30 s and `doctor` can take a minute).
+ * the timeline (the HTTP API caps an integration at 30 s and `doctor` can take a minute) after `redact.ts` has
+ * scanned it for anything key-shaped.
  *
  * @example
  * ```ts
@@ -21,19 +24,9 @@
  * ```
  */
 import { GetCommandInvocationCommand, ListCommandInvocationsCommand, SSMClient, SendCommandCommand } from "@aws-sdk/client-ssm";
+import { HOST_CLI_COMMANDS, HOST_CLI_DOCUMENT_NAME, type HostCliCommand } from "./hostCliDocument.js";
 
-/** The commands the desk may run, by the name the button carries, to the exact line the host executes. */
-export const HOST_CLI_COMMANDS: Readonly<Record<HostCliCommand, string>> = Object.freeze({
-  "status": "zudocs-cli status --json",
-  "doctor": "zudocs-cli doctor --json",
-  "policy show": "zudocs-cli policy show --json",
-  "unlock": "zudocs-cli unlock --json",
-  "rollback": "zudocs-cli rollback --json",
-});
-
-export type HostCliCommand = "status" | "doctor" | "policy show" | "unlock" | "rollback";
-
-export const isHostCliCommand = (value: unknown): value is HostCliCommand => typeof value === "string" && Object.prototype.hasOwnProperty.call(HOST_CLI_COMMANDS, value);
+export { HOST_CLI_COMMANDS, HOST_CLI_DOCUMENT_NAME, isHostCliCommand, type HostCliCommand } from "./hostCliDocument.js";
 
 export interface HostCliResult {
   command: HostCliCommand;
@@ -50,7 +43,8 @@ export interface HostCliResult {
 export interface HostCliPorts {
   region: string;
   nameTag: string;
-  send?: (input: { command: string; timeoutSeconds: number }) => Promise<{ commandId: string }>;
+  /** Sends the desk's document with the command's NAME as its one parameter (never the line: the document owns that). */
+  send?: (input: { command: HostCliCommand; timeoutSeconds: number }) => Promise<{ commandId: string }>;
   poll?: (commandId: string) => Promise<{ status: string; instanceId: string; stdout: string; stderr: string } | null>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -73,7 +67,7 @@ function ssmPorts(region: string, nameTag: string): Required<Pick<HostCliPorts, 
   const ssm = new SSMClient({ region });
   return {
     async send({ command, timeoutSeconds }) {
-      const out = await ssm.send(new SendCommandCommand({ Targets: [{ Key: "tag:Name", Values: [nameTag] }], DocumentName: "AWS-RunShellScript", Parameters: { commands: [command], executionTimeout: [String(timeoutSeconds)] }, Comment: "zudocs desk: presenter host-cli", TimeoutSeconds: 60 }));
+      const out = await ssm.send(new SendCommandCommand({ Targets: [{ Key: "tag:Name", Values: [nameTag] }], DocumentName: HOST_CLI_DOCUMENT_NAME, Parameters: { command: [command], executionTimeout: [String(timeoutSeconds)] }, Comment: "zudocs desk: presenter host-cli", TimeoutSeconds: 60 }));
       const commandId = out.Command?.CommandId;
       if (!commandId) throw new Error("Run Command returned no command id");
       return { commandId };
@@ -98,7 +92,7 @@ export async function runHostCli(ports: HostCliPorts, command: HostCliCommand, t
   const sleep = ports.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const now = ports.now ?? Date.now;
   const started = now();
-  const { commandId } = await io.send({ command: line, timeoutSeconds });
+  const { commandId } = await io.send({ command, timeoutSeconds });
   let last: { status: string; instanceId: string; stdout: string; stderr: string } | null = null;
   const deadline = started + (timeoutSeconds + 30) * 1000;
   while (now() < deadline) {

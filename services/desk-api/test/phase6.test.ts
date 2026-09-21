@@ -21,8 +21,10 @@ import { test } from "node:test";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer } from "aws-lambda";
 import { foldArms } from "../src/arms.js";
 import { FROZEN_REASON, approvalStaleness, createHandler, frozenOf, summariseCli } from "../src/handler.js";
-import { HOST_CLI_COMMANDS, documentOf, isHostCliCommand, runHostCli } from "../src/hostCli.js";
-import { COMPAT_IGNORED, compatChatUrl, createHostedClient, hostedConfigured, hostedRun, type HostedPorts } from "../src/hosted.js";
+import { HOST_CLI_COMMANDS, HOST_CLI_DOCUMENT_NAME, documentOf, isHostCliCommand, runHostCli } from "../src/hostCli.js";
+import { hostCliDocumentContent } from "../src/hostCliDocument.js";
+import { redactKeyShaped } from "../src/redact.js";
+import { COMPAT_IGNORED_BY_CONTRACT, compatChatUrl, createHostedClient, hostedConfigured, hostedRun, type HostedPorts } from "../src/hosted.js";
 import { isFreshStoreRootRace, startWithRetry, type Host } from "../src/runtime.js";
 import type { Customer, Store, Ticket, TimelineEvent } from "../src/store.js";
 
@@ -102,7 +104,8 @@ test("hosted: the stream's deltas keep their offsets, the feedback lands, and th
   assert.equal(record.catalogue.slot?.inference?.temperatureMilli, 300, "the catalogue's sealed settings are what the run used");
   assert.deepEqual(record.catalogue.experiments, [{ experimentId: "exp_1", tag: "support.reply", arms: ["control", "candidate"] }]);
   assert.equal(record.compat?.request.temperature, 1.9);
-  assert.deepEqual(record.compat?.ignored, [...COMPAT_IGNORED]);
+  assert.deepEqual(record.compat?.ignoredByContract, [...COMPAT_IGNORED_BY_CONTRACT], "the contract's word, carried on the record as such");
+  assert.equal((record.compat as unknown as Record<string, unknown>).ignored, undefined, "no field pretends the response reported the ignoring");
   assert.equal("max_tokens" in compatCalls[0]!.body, false, "no cap on the request: the version's sealed cap is the one that applies");
   assert.equal(record.stream.firstByteMs !== null && record.stream.firstByteMs >= 0 && record.stream.firstByteMs < 200, true, "the first byte's offset counts from the POST, not from the client's start");
   assert.equal(record.compat?.response.runRef, "ref_2");
@@ -167,7 +170,7 @@ test("host CLI: the allowlist is closed, the JSON line is the last stdout line, 
   let n = 0;
   const result = await runHostCli({
     region: "eu-west-1", nameTag: "zudocs-eu-host",
-    send: async ({ command }) => { assert.equal(command, "zudocs-cli policy show --json"); return { commandId: "cmd-1" }; },
+    send: async ({ command }) => { assert.equal(command, "policy show", "the document's parameter is the command's NAME; the line is the document's"); return { commandId: "cmd-1" }; },
     poll: async (id) => { polls.push(id); n += 1; return n < 3 ? { status: "InProgress", instanceId: "i-1", stdout: "", stderr: "" } : { status: "Success", instanceId: "i-1", stdout: 'in force: unlock_required (local)\n{"via":"daemon","applyPolicy":{"effective":"unlock_required","source":"local","manifestSaid":"auto"}}', stderr: "" }; },
     sleep: async () => undefined,
     now: (() => { let t = 0; return () => (t += 1000); })(),
@@ -183,12 +186,35 @@ test("host CLI: the allowlist is closed, the JSON line is the last stdout line, 
   assert.equal(summariseCli("rollback", { via: "daemon", generation: 3, forced: true }), "generation 3 live — a forced downgrade, stamped on evidence", "the daemon's answer carries no previous generation");
   assert.equal(summariseCli("unlock", { ok: false, error: "not_staged" }), "refused: not_staged");
   assert.equal(summariseCli("unlock", { via: "daemon", generation: null }), "nothing was staged; nothing activated");
+  assert.equal(HOST_CLI_DOCUMENT_NAME, "zudocs-desk-host-cli");
+  const content = hostCliDocumentContent();
+  assert.deepEqual(content.parameters.command.allowedValues, Object.keys(HOST_CLI_COMMANDS), "the document's allowed values are the allowlist");
+  assert.deepEqual(content.mainSteps[0].inputs.runCommand, ["zudocs-cli {{ command }} --json"]);
+});
+
+test("redaction: the strips' key-shaped patterns replace what they match and count the hits; ordinary CLI output is untouched", () => {
+  assert.deepEqual(redactKeyShaped("in force: unlock_required (local)\n{\"via\":\"daemon\",\"generation\":4}"), { text: "in force: unlock_required (local)\n{\"via\":\"daemon\",\"generation\":4}", hits: 0 });
+  const hit = redactKeyShaped('{"ok":true,"token":"apa_abcdef123456","session":"apr_zyxwvu987654"}');
+  assert.equal(hit.hits, 2);
+  assert.equal(hit.text, '{"ok":true,"token":"[redacted]","session":"[redacted]"}');
+  assert.deepEqual(documentOf(hit.text), { ok: true, token: "[redacted]", session: "[redacted]" }, "a redacted document still parses");
+  const jwt = redactKeyShaped("Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc-def_ghi");
+  assert.equal(jwt.hits, 1, "a bearer JWT is one span");
+  assert.ok(!jwt.text.includes("eyJ") && jwt.text.startsWith("Authorization: Bearer [redacted]"), jwt.text);
+  const env = redactKeyShaped("AIRPROMPTER_AGENT_KEY=apa_secret_value_123 AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI AWS_SESSION_TOKEN=FwoGZXIvYXdzE");
+  assert.equal(env.hits, 3, "an environment dump: every key variable, once each");
+  assert.ok(!/apa_|wJalr|FwoGZ/.test(env.text), env.text);
+  const pem = redactKeyShaped("-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIB\n-----END EC PRIVATE KEY-----\nafter");
+  assert.equal(pem.text, "[redacted]\nafter");
+  const jwk = redactKeyShaped('{"kty":"EC","d":"private-scalar","x":"pub"}');
+  assert.equal(jwk.text, '{"kty":"EC","d":"[redacted]","x":"pub"}', "a JWK private member keeps its name, loses its value");
+  assert.deepEqual(documentOf(jwk.text), { kty: "EC", d: "[redacted]", x: "pub" });
 });
 
 // --- arms ---------------------------------------------------------------------------------------------------------------
 
-test("arms: the fold groups by slot, version and arm, counts feedback on the reply's arm, and finds the customer every host disagreed on", () => {
-  const step = (tag: string, arm: string, versionId: string, judge: number | null, cost: number, pass = true) => ({ step: tag === "support.triage" ? "triage" : "reply", tag, versionId, arm, model: tag === "support.triage" ? "amazon.nova-micro" : "amazon.nova-2-lite", observation: { latencyMs: 100 }, checks: [{ verdict: pass ? "pass" : "fail" }], costUsd: cost, judge: judge === null ? null : { score: judge }, error: null });
+test("arms: the fold groups by slot, version and arm, counts feedback on the reply's arm, and finds the customer every host disagreed on under the same release", () => {
+  const step = (tag: string, arm: string, versionId: string, judge: number | null, cost: number, pass = true, generation = 5) => ({ step: tag === "support.triage" ? "triage" : "reply", tag, versionId, arm, model: tag === "support.triage" ? "amazon.nova-micro" : "amazon.nova-2-lite", generation, observation: { latencyMs: 100 }, checks: [{ verdict: pass ? "pass" : "fail" }], costUsd: cost, judge: judge === null ? null : { score: judge }, error: null });
   const runs = [
     { runId: "r1", ticketId: "T-1", customerId: "cust-1", host: "us-east-1/lambda", steps: [step("support.triage", "control", "rev-2", null, 0.00001), step("support.reply", "candidate", "rev-6", 0.8, 0.001)] },
     { runId: "r2", ticketId: "T-1", customerId: "cust-1", host: "eu-west-1/ec2", steps: [step("support.triage", "control", "rev-2", null, 0.00001), step("support.reply", "candidate", "rev-6", 1, 0.002)] },
@@ -210,10 +236,31 @@ test("arms: the fold groups by slot, version and arm, counts feedback on the rep
   assert.equal(control.checksFailed, 1);
   assert.equal(arms.find((a) => a.tag === "support.triage")?.runs, 2);
   assert.deepEqual(stickiness, [
-    { customerId: "cust-1", tag: "support.reply", arms: { "us-east-1/lambda": "candidate", "eu-west-1/ec2": "candidate" }, consistent: true },
-    { customerId: "cust-2", tag: "support.reply", arms: { "us-east-1/lambda": "control", "eu-west-1/ec2": "candidate" }, consistent: false },
-    { customerId: "cust-1", tag: "support.triage", arms: { "us-east-1/lambda": "control", "eu-west-1/ec2": "control" }, consistent: true },
-  ], "one row per customer and experiment (an arm of none is no experiment); a hosted run is not part of the fold");
+    { customerId: "cust-1", tag: "support.reply", generation: 5, arms: { "us-east-1/lambda": "candidate", "eu-west-1/ec2": "candidate" }, consistent: true },
+    { customerId: "cust-2", tag: "support.reply", generation: 5, arms: { "us-east-1/lambda": "control", "eu-west-1/ec2": "candidate" }, consistent: false },
+    { customerId: "cust-1", tag: "support.triage", generation: 5, arms: { "us-east-1/lambda": "control", "eu-west-1/ec2": "control" }, consistent: true },
+  ], "one row per customer, experiment and release (an arm of none is no experiment); a hosted run is not part of the fold");
+
+  // A dial: generation 6 carries new weights, and cust-3's bucket moved from the control to the candidate. Before the
+  // dial both hosts served the control; after it both serve the candidate — two rows, both consistent, never "control+candidate".
+  const dialled = [
+    { runId: "d1", ticketId: "T-3", customerId: "cust-3", host: "us-east-1/lambda", steps: [step("support.reply", "control", "rev-3", 0.7, 0.001)] },
+    { runId: "d2", ticketId: "T-3", customerId: "cust-3", host: "eu-west-1/ec2", steps: [step("support.reply", "control", "rev-3", 0.7, 0.001)] },
+    { runId: "d3", ticketId: "T-3", customerId: "cust-3", host: "us-east-1/lambda", steps: [step("support.reply", "candidate", "rev-6", 0.9, 0.001, true, 6)] },
+    { runId: "d4", ticketId: "T-3", customerId: "cust-3", host: "eu-west-1/ec2", steps: [step("support.reply", "candidate", "rev-6", 0.9, 0.001, true, 6)] },
+    // eu-west still on 6 when us-east has moved to 7: not comparable yet, and not a disagreement.
+    { runId: "d5", ticketId: "T-3", customerId: "cust-3", host: "us-east-1/lambda", steps: [step("support.reply", "control", "rev-3", 0.7, 0.001, true, 7)] },
+    // A run that recorded no generation folds under null, never with a numbered one.
+    { runId: "d6", ticketId: "T-3", customerId: "cust-3", host: "us-east-1/lambda", steps: [step("support.reply", "candidate", "rev-6", 0.9, 0.001, true, null as unknown as number)] },
+  ];
+  const after = foldArms(dialled as any, []).stickiness;
+  assert.deepEqual(after, [
+    { customerId: "cust-3", tag: "support.reply", generation: null, arms: { "us-east-1/lambda": "candidate" }, consistent: true },
+    { customerId: "cust-3", tag: "support.reply", generation: 5, arms: { "us-east-1/lambda": "control", "eu-west-1/ec2": "control" }, consistent: true },
+    { customerId: "cust-3", tag: "support.reply", generation: 6, arms: { "us-east-1/lambda": "candidate", "eu-west-1/ec2": "candidate" }, consistent: true },
+    { customerId: "cust-3", tag: "support.reply", generation: 7, arms: { "us-east-1/lambda": "control" }, consistent: true },
+  ], "a customer whose bucket moved with a dial is consistent on every release; the old fold would have read control+candidate");
+  assert.ok(after.every((s) => s.consistent), "after a dial every row is consistent");
 });
 
 // --- handler --------------------------------------------------------------------------------------------------------------
@@ -240,7 +287,7 @@ function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[];
   return self;
 }
 
-function fakeHost(options: { frozen?: boolean; freezeOnInvoke?: boolean; ramps?: unknown[]; hostCliThrows?: string } = {}) {
+function fakeHost(options: { frozen?: boolean; freezeOnInvoke?: boolean; ramps?: unknown[]; hostCliThrows?: string; hostCliStdout?: string; hostCliStderr?: string } = {}) {
   const store = fakeStore();
   const calls: string[] = [];
   const state = { frozen: options.frozen ?? false, policy: "auto", source: "local", generation: 7 };
@@ -258,7 +305,7 @@ function fakeHost(options: { frozen?: boolean; freezeOnInvoke?: boolean; ramps?:
   const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "arn:aws:lambda:eu-west-1:1:function:zudocs-wire", nudgeQueueUrl: "", hosted: { runKeyParameter: "", runUrl: "", target: "staging" }, euHost: { region: "eu-west-1", nameTag: "zudocs-eu-host" }, airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
   const host: Host & { store: ReturnType<typeof fakeStore>; calls: string[] } = {
     env, ap, store, calls, callers: { judgeModel: "amazon.nova-micro", complete: async () => ({ text: "", response: {} }), judge: async () => "", golden: async () => ({ text: "", outputTokens: null }) }, hosted: null,
-    hostCli: async (command) => { calls.push(`host_cli:${command}`); if (options.hostCliThrows) throw new Error(options.hostCliThrows); return { command, line: `zudocs-cli ${command} --json`, status: "Success", instanceId: "i-eu", document: command === "policy show" ? { via: "daemon", applyPolicy: { effective: "unlock_required", source: "local", manifestSaid: "auto" } } : { ok: true }, stdout: "{}", stderr: "", durationMs: 1200 }; },
+    hostCli: async (command) => { calls.push(`host_cli:${command}`); if (options.hostCliThrows) throw new Error(options.hostCliThrows); const stdout = options.hostCliStdout ?? "{}"; return { command, line: `zudocs-cli ${command} --json`, status: "Success", instanceId: "i-eu", document: options.hostCliStdout ? documentOf(stdout) : command === "policy show" ? { via: "daemon", applyPolicy: { effective: "unlock_required", source: "local", manifestSaid: "auto" } } : { ok: true }, stdout, stderr: options.hostCliStderr ?? "", durationMs: 1200 }; },
     startedAt: "2026-09-18T10:00:00Z", sdk: "agent-sdk-ts/test", invocations: 0, coldStart: true,
     observed: async (fn) => ({ result: await fn(), error: undefined, observations: [] }),
     writeStatus: async () => undefined,
@@ -370,6 +417,32 @@ test("handler: a host-CLI job whose Run Command cannot be sent lands on the time
   assert.equal(row.document, null);
   assert.match(String(row.summary), /Run Command could not be sent: no instance with tag/);
   assert.equal(row.by, "seth@zudocs.com");
+});
+
+test("handler: a host-CLI job's stdout and stderr go through the key-shaped scan before the row is written; a hit is redacted, counted and said, and the document is re-read from the redacted text", async () => {
+  const clean = fakeHost({ hostCliStdout: 'in force: unlock_required (local)\n{"via":"daemon","generation":4,"signingKeyId":"key_01HZ"}' });
+  await createHandler(async () => clean)({ hostCli: { command: "status", by: "seth@zudocs.com", requestedAt: "2026-09-19T00:00:00Z" } });
+  const untouched = clean.store.events.at(-1)!;
+  assert.equal(untouched.redacted, 0, "ordinary output: nothing redacted");
+  assert.deepEqual(untouched.document, { via: "daemon", generation: 4, signingKeyId: "key_01HZ" });
+  assert.equal(untouched.stdout, 'in force: unlock_required (local)\n{"via":"daemon","generation":4,"signingKeyId":"key_01HZ"}');
+
+  const leaky = fakeHost({ hostCliStdout: '{"ok":true,"generation":4,"env":{"AIRPROMPTER_AGENT_KEY":"apa_leaked_key_000001"}}', hostCliStderr: "warn: Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig" });
+  await createHandler(async () => leaky)({ hostCli: { command: "doctor", by: "seth@zudocs.com", requestedAt: "2026-09-19T00:00:00Z" } });
+  const row = leaky.store.events.at(-1)!;
+  assert.equal(row.kind, "host_cli");
+  assert.equal(row.status, "Success");
+  assert.equal(row.redacted, 2, "one span in stdout, one in stderr");
+  const stored = JSON.stringify(row);
+  assert.ok(!stored.includes("apa_leaked") && !stored.includes("eyJ"), `nothing key-shaped on the row: ${stored}`);
+  assert.equal(row.stdout, '{"ok":true,"generation":4,"env":{"AIRPROMPTER_AGENT_KEY":"[redacted]"}}');
+  assert.equal(row.stderr, "warn: Authorization: Bearer [redacted]");
+  assert.deepEqual(row.document, { ok: true, generation: 4, env: { AIRPROMPTER_AGENT_KEY: "[redacted]" } }, "the document is the redacted text's, not the raw one's");
+  assert.match(String(row.summary), /2 key-shaped span\(s\) in the host's output were redacted/);
+
+  const throwing = fakeHost({ hostCliThrows: "SendCommand refused for Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.x.y" });
+  await createHandler(async () => throwing)({ hostCli: { command: "status", by: "seth@zudocs.com", requestedAt: "2026-09-19T00:00:00Z" } });
+  assert.ok(!JSON.stringify(throwing.store.events.at(-1)).includes("eyJ"), "the throw path's message is scanned too");
 });
 
 test("approvalStaleness: a newer row on the same host and store, or the host's later status row naming another staged generation, makes a row stale; an older status row or another store does not", () => {

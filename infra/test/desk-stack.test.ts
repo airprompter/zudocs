@@ -19,6 +19,7 @@ import { CATALOGUE } from "../../services/desk-api/src/modelCatalogue.js";
 import { ROUTES } from "../../services/desk-api/src/router.js";
 import { buildStacks, STACK_IDS } from "../lib/app.js";
 import { readConfig } from "../lib/config.js";
+import { HOST_CLI_DOCUMENT_NAME } from "../../services/desk-api/src/hostCliDocument.js";
 import { DAILY_RUN_CAP, dailyRunCapOf, readAirPrompterIds } from "../lib/desk-stack.js";
 import { CONTEXT, FLAGS, IDS, PINS, actionsOf, fixtures, statementsOf, synthAll, type Resources } from "./fixtures.js";
 
@@ -129,10 +130,12 @@ test("phase 6: the staging run key is a second parameter by ARN under the same k
   const context = JSON.stringify((viaSsm.Condition as any).StringEquals["kms:EncryptionContext:PARAMETER_ARN"]);
   assert.ok(context.includes("parameter/zudocs/staging/run-key"), "SSM may decrypt the run key parameter for this function too");
   const sendCommand = statements.filter((st) => actionsOf(st).includes("ssm:SendCommand"));
-  assert.equal(sendCommand.length, 2, "the shell document, and instances by tag");
-  const document = sendCommand.find((st) => JSON.stringify(st.Resource).includes("document/AWS-RunShellScript"))!;
-  assert.ok(JSON.stringify(document.Resource).includes(":ssm:eu-west-1::document/AWS-RunShellScript"), "the one document, in the host's region");
+  assert.equal(sendCommand.length, 2, "the desk's own document, and instances by tag");
+  const document = sendCommand.find((st) => JSON.stringify(st.Resource).includes(`document/${HOST_CLI_DOCUMENT_NAME}`))!;
+  assert.ok(document, "SendCommand is granted on the desk's own Command document");
+  assert.ok(JSON.stringify(document.Resource).includes(`:ssm:eu-west-1:111122223333:document/${HOST_CLI_DOCUMENT_NAME}`), "the one document, the account's own, in the host's region");
   assert.equal(document.Condition, undefined);
+  assert.ok(!JSON.stringify(document.Resource).includes("document/*"), "no wildcard document");
   const instances = sendCommand.find((st) => JSON.stringify(st.Resource).includes(":instance/"))!;
   assert.ok(JSON.stringify(instances.Resource).includes(":ec2:eu-west-1:111122223333:instance/*"));
   assert.deepEqual(instances.Condition, { StringEquals: { "ssm:resourceTag/Name": "zudocs-eu-host" } }, "only the instance that carries the host's Name tag — the desk never learns an id");
@@ -234,4 +237,15 @@ test("the entry point reads the identifiers and the pinned public root from the 
   assert.ok(!("d" in JSON.parse(ids.rootJwk)));
   assert.match(ids.edgePointerUrl ?? "", /\/g\/[A-Za-z0-9_-]+\/generation\.json$/, "the environment's pointer, an identifier the daemon idles on");
   assert.throws(() => readAirPrompterIds("/nonexistent"), /ENOENT|missing/);
+});
+
+test("phase 6 addendum: no synthesized template anywhere grants or names AWS-RunShellScript — the desk's Run Command goes through its own document only", () => {
+  const { dns, site, ci, desk, sharedHost, fleet, airgap } = synth();
+  for (const [name, template] of Object.entries({ dns, site, ci, desk, sharedHost, fleet, airgap })) {
+    assert.ok(!JSON.stringify(template.toJSON()).includes("AWS-RunShellScript"), `${name}: AWS-RunShellScript would be arbitrary root on a host that holds the Agent key`);
+  }
+  const statements = statementsOf(desk);
+  const sendCommand = statements.filter((st) => actionsOf(st).includes("ssm:SendCommand"));
+  const documents = sendCommand.flatMap((st) => (JSON.stringify(st.Resource).match(/document\/[A-Za-z0-9_.-]+/g) ?? []));
+  assert.deepEqual(documents, [`document/${HOST_CLI_DOCUMENT_NAME}`], "exactly one document ARN, the desk's own");
 });

@@ -2,9 +2,11 @@
  * The experiments panel (beat 4): the ramp plans this host walks (each experiment's slot, the weights in force, the
  * step, the plan's next instant), then the per-arm results the API folded from the desk's own records — runs by
  * host, the judge's mean, the mean cost at list price, checks, feedback — and the stickiness table: for every
- * customer that saw an experiment, the arm each host landed them on, and whether every host agreed (they must: the
- * arm is a hash of the manifest's salt and the customer id, computed on each host with no coordination). Nothing
- * here is computed by the app; it renders the API's fold, and says when there is nothing to fold yet.
+ * customer that saw an experiment, the arm each host landed them on under the same release (the weights in force —
+ * a dial is a new generation, and a customer whose bucket moved with it is not a disagreement), and whether every
+ * host agreed (they must: the arm is a hash of the manifest's salt and the customer id, computed on each host with
+ * no coordination). Nothing here is computed by the app; it renders the API's fold, and says when there is nothing
+ * to fold yet.
  *
  * @example
  * ```tsx
@@ -22,8 +24,12 @@ export function Experiments({ arms }: { arms: Arms | null }) {
   if (!arms) return null;
   const live = arms.arms.filter((a) => a.arm !== "none");
   if (arms.ramps.length === 0 && live.length === 0) return null;
+  // The API folds one row per customer, slot and release; a comparison is only ever between hosts under the same release.
   const multiHost = arms.stickiness.filter((s) => Object.keys(s.arms).length > 1);
   const inconsistent = multiHost.filter((s) => !s.consistent);
+  const generations = [...new Set(arms.stickiness.map((s) => s.generation).filter((g): g is number => g !== null))].sort((a, b) => a - b);
+  const latest = generations.at(-1) ?? null;
+  const earlier = latest === null ? 0 : arms.stickiness.filter((s) => s.generation !== latest).length;
   return (
     <section className="experiments" title={TOOLTIPS.arm}>
       <div className="pane-title"><h2>Experiments</h2><span className="muted">{arms.ramps.length ? `${arms.ramps.length} live on this host` : "no experiment on the release; results below are history"} · read {ago(arms.readAt)}</span></div>
@@ -59,8 +65,9 @@ export function Experiments({ arms }: { arms: Arms | null }) {
       ) : <p className="muted fine">No run on an arm yet — Replay 30, or run a ticket on eu-west.</p>}
       {arms.stickiness.length ? (
         <p className="fine">
-          <strong>Sticky by customer:</strong> {arms.stickiness.length} customer·experiment pairs across {new Set(arms.stickiness.flatMap((s) => Object.keys(s.arms))).size} host(s); {multiHost.length} seen on more than one host — {multiHost.length === 0 ? "nothing to compare yet" : inconsistent.length === 0 ? "every host agrees" : `${inconsistent.length} DISAGREE`}.
-          <span className="muted"> {arms.stickiness.filter((s) => Object.keys(s.arms).length > 1).slice(0, 12).map((s) => `${s.customerId} ${slotShort(s.tag)}: ${Object.entries(s.arms).map(([h, a]) => `${h.split("/")[0]} ${a}`).join(" = ")}`).join(" · ")}</span>
+          <strong>Sticky by customer, on the weights in force:</strong> {arms.stickiness.length} customer·experiment·release rows across {new Set(arms.stickiness.flatMap((s) => Object.keys(s.arms))).size} host(s); {multiHost.length} seen on more than one host under the same release — {multiHost.length === 0 ? "nothing to compare yet" : inconsistent.length === 0 ? "every host agrees" : `${inconsistent.length} DISAGREE`}.
+          {earlier > 0 ? <span className="muted"> {earlier} row(s) from before release #{latest} are compared on their own weights — a dial moves buckets by design.</span> : null}
+          <span className="muted"> {multiHost.slice(0, 12).map((s) => `${s.customerId} ${slotShort(s.tag)}${s.generation !== null ? ` #${s.generation}` : ""}: ${Object.entries(s.arms).map(([h, a]) => `${h.split("/")[0]} ${a}`).join(" = ")}`).join(" · ")}</span>
         </p>
       ) : null}
     </section>

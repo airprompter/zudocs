@@ -50,7 +50,8 @@ export interface HostedCompatRecord {
   request: { url: string; model: string; temperature: number; top_p: number; variables: string[] };
   response: { status: number; runRef: string | null; runId: string | null; model: string | null; finishReason: string | null; usage: Record<string, unknown> | null; text: string | null; error: Record<string, unknown> | null };
   /** The response carries no inference block; the slot's sealed settings (the catalogue) are what the run used. */
-  ignored: string[];
+  /** The caller's parameters the hosted route ignores BY CONTRACT (the release owns them); the response carries no settings, so this is the contract's word, never an observation. */
+  ignoredByContract: string[];
 }
 
 export interface HostedRunRecord {
@@ -153,8 +154,8 @@ export function newHostedRunId(now = Date.now()): string {
 /** The OpenAI-compatible route for this agent: the target is the key's own, so the path names none. */
 export const compatChatUrl = (runUrl: string, agentId: string): string => `${runUrl.replace(/\/$/, "")}/v1/agents/${encodeURIComponent(agentId)}/openai/chat/completions`;
 
-/** The caller's parameters the hosted route accepts and ignores (the release owns them); named here so the record can say which. */
-export const COMPAT_IGNORED = Object.freeze(["temperature", "top_p"]);
+/** The caller's parameters the hosted route accepts and ignores by contract (the release owns them); named here so the record can say which — a constant, not something the response reports. */
+export const COMPAT_IGNORED_BY_CONTRACT = Object.freeze(["temperature", "top_p"]);
 
 export async function hostedRun(input: { ports: HostedPorts; client: HostedClient; ticket: Ticket; customer: Customer | null; by: string }): Promise<HostedRunRecord> {
   const { ports, client, ticket, customer, by } = input;
@@ -247,12 +248,12 @@ export async function hostedRun(input: { ports: HostedPorts; client: HostedClien
         text: typeof content === "string" ? content : Array.isArray(content) ? content.map((p: { text?: string }) => p?.text ?? "").join("") : null,
         error: response.ok ? null : compatErrorOf(parsed, response.status),
       },
-      ignored: [...COMPAT_IGNORED],
+      ignoredByContract: [...COMPAT_IGNORED_BY_CONTRACT],
     };
     if (!response.ok) gaps.push(`the compatible endpoint answered ${response.status}: ${JSON.stringify(record.compat.response.error).slice(0, 200)}`);
   } catch (error) {
     const refusal = refusalOf(error);
-    record.compat = { request, response: { status: refusal.status, runRef: null, runId: null, model: null, finishReason: null, usage: null, text: null, error: { code: refusal.code, message: refusal.message } }, ignored: [...COMPAT_IGNORED] };
+    record.compat = { request, response: { status: refusal.status, runRef: null, runId: null, model: null, finishReason: null, usage: null, text: null, error: { code: refusal.code, message: refusal.message } }, ignoredByContract: [...COMPAT_IGNORED_BY_CONTRACT] };
     gaps.push(`the compatible endpoint could not be called: ${refusal.message}`);
   }
 

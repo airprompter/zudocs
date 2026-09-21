@@ -2,8 +2,9 @@
  * The demo's pure parts: the beat transforms append one line and are idempotent, the ramp is what the platform
  * accepts (every step below 100 % holds, the last is 100 %), the canonical pins come from the config with one slot
  * replaced, the fleet-agreement check ignores a stale optional host and names the disagreeing ones, the console
- * client acknowledges only the benign seal warnings and returns a blocked document instead of throwing, and the
- * vendored-bundle check refuses the support agent's bundle and any foreign slot.
+ * client acknowledges only the benign seal warnings and returns a blocked document instead of throwing, the
+ * live-reporter wait warms the desk only when the catalogue is empty and refuses to answer with a catalogue that
+ * would accept, and the vendored-bundle check refuses the support agent's bundle and any foreign slot.
  *
  * @example
  * ```sh
@@ -14,7 +15,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { vendoredBreaches } from "../check-vendored.mjs";
 import { ACKNOWLEDGEABLE, ConsoleRefusal, createConsole, withPin } from "../lib/console.mjs";
-import { BEATS, RAMP, appendLine, armsByCustomer, canonicalPins, fleetAgreement, releaseLine } from "../lib/demo.mjs";
+import { BEATS, RAMP, appendLine, armsByCustomer, canonicalPins, ensureLiveReporter, fleetAgreement, liveReporters, releaseLine } from "../lib/demo.mjs";
 
 test("beat transforms append one line once and never touch the rest", () => {
   const text = "You are the reply step.\n\n## Success criteria\n- Signs off as the team\n";
@@ -60,6 +61,34 @@ test("fleet agreement: every fresh row at the generation; a stale optional host 
   const dialled = [{ customerId: "c1", tag: "support.reply", generation: 6, arms: { a: "candidate" }, consistent: true }, { customerId: "c1", tag: "support.reply", generation: 5, arms: { a: "control" }, consistent: true }];
   assert.deepEqual(armsByCustomer(dialled, "support.reply"), { c1: { arms: { a: "candidate" }, consistent: true, generation: 6 } }, "the newest release's row wins after a dial");
   assert.deepEqual(armsByCustomer(dialled, "support.reply", 5), { c1: { arms: { a: "control" }, consistent: true, generation: 5 } }, "a generation asked for is the one answered");
+});
+
+test("a live reporter: only a model a live instance reported counts; the wait reads first, warms once when nothing reports, polls until one does, and throws rather than answer with a catalogue that would accept", async () => {
+  const model = (name, instances) => ({ model: name, instances, of: 2, lastReportedAt: null, pinnedBy: [] });
+  const empty = { source: "instances", live: 1, models: [] };
+  const reporting = { source: "instances", live: 2, models: [model("amazon.nova-2-lite", 1), model("amazon.nova-micro", 1)] };
+  assert.deepEqual(liveReporters(reporting), [{ model: "amazon.nova-2-lite", instances: 1, of: 2 }, { model: "amazon.nova-micro", instances: 1, of: 2 }]);
+  assert.deepEqual(liveReporters({ source: "instances", live: 1, models: [model("x", 0)] }), [], "a model listed on zero live instances is no reporter");
+  assert.deepEqual(liveReporters({ source: "hosted", live: 0, models: [model("x", 0)] }), [], "a hosted catalogue is not the fleet's word");
+  assert.deepEqual(liveReporters(null), []);
+  // Already reporting: no warm-up.
+  let warms = 0;
+  const warm = async () => { warms += 1; return { ok: true, why: "heartbeat" }; };
+  const sleep = async () => {};
+  const a = await ensureLiveReporter({ read: async () => reporting, warm, sleep });
+  assert.equal(a.warmed, false);
+  assert.equal(warms, 0);
+  // Empty, then reporting after the heartbeat: warmed once, polled until it shows.
+  const reads = [empty, empty, reporting];
+  const b = await ensureLiveReporter({ read: async () => reads.shift() ?? reporting, warm, sleep });
+  assert.equal(b.warmed, true);
+  assert.equal(warms, 1);
+  assert.equal(b.reporters.length, 2);
+  // The warm-up cannot be done (no desk sign-in): named, and no catalogue answered.
+  await assert.rejects(() => ensureLiveReporter({ read: async () => empty, warm: async () => ({ ok: false, why: "ZUDOCS_PROOF_PASSWORD is not set" }), sleep }), /could not be warmed: ZUDOCS_PROOF_PASSWORD is not set/);
+  // Warmed but nothing reports within the window: refused, never a catalogue that would accept.
+  let t = 0;
+  await assert.rejects(() => ensureLiveReporter({ read: async () => empty, warm, sleep, timeoutMs: 10, now: () => (t += 6) }), /still has no live reporter/);
 });
 
 test("the console client: benign warnings are acknowledged once, a real blocker comes back as a document, a refusal names the code", async () => {

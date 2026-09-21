@@ -2,7 +2,8 @@
  * The approvals watcher against a fake store and a scripted daemon: a staged generation opens one row, a decision
  * unlocks through the daemon and settles the row, a restart resumes the same row, a replaced store (a new instance
  * staging the same generation) gets a fresh row and the old one is settled, an unlock on the host's shell is seen
- * and settled as superseded, a newer generation staged in place of a pending one settles it superseded, a lost socket during an unlock is transient (the decision stands), a refused unlock is
+ * and settled as superseded, a newer generation staged in place of a pending one settles it superseded, a row the
+ * desk's reset cleared under the watcher is opened again for the generation still staged, a lost socket during an unlock is transient (the decision stands), a refused unlock is
  * `failed` once and not retried in a loop, two ticks at once share one pass, and a failure inside a pass never
  * throws out of `tick()`.
  *
@@ -262,6 +263,36 @@ test("staged replaced by newer staged: the next promotion landing while a row is
   assert.equal(await r.watcher.tick(), "opened");
   assert.equal(r.rows.get(ID)!.decision, "failed", "a failed row keeps its verdict");
   assert.deepEqual(r.events.map((e) => e.kind), ["release_staged", "approval_failed", "release_staged"]);
+});
+
+test("the desk's reset clears the pending row under a live watcher: the next tick opens it again (same id, pending, a fresh release_staged) instead of waiting forever on a record nobody can click; the owner's approval on the new row activates", async () => {
+  const h = harness();
+  h.daemon.staged = 2;
+  assert.equal(await h.watcher.tick(), "opened");
+  assert.equal(await h.watcher.tick(), "waiting");
+  // `/presenter/reset` deletes every approval row; the daemon still holds 2 staged and the watcher still minds the row.
+  h.rows.clear();
+  assert.equal(await h.watcher.tick(), "opened", "the row is opened again, not waited on");
+  const again = h.rows.get(ID)!;
+  assert.equal(again.decision, "pending");
+  assert.equal(again.generation, 2);
+  assert.deepEqual(h.watcher.current, { approvalId: ID, generation: 2, storeId: "i-store1" });
+  assert.deepEqual(h.events.map((e) => e.kind), ["release_staged", "release_staged"], "the desk's timeline (also cleared) gets the staged event again");
+  assert.ok(h.logs.some((l) => l.event === "approval_row_gone" && l.generation === 2), "the log says the row was gone");
+  assert.equal(await h.watcher.tick(), "waiting", "no loop: with the row back the tick waits on it");
+  assert.equal(h.events.length, 2);
+  Object.assign(h.rows.get(ID)!, { decision: "approved", decidedBy: "seth@zudocs.com" });
+  assert.equal(await h.watcher.tick(), "activated");
+  assert.deepEqual(h.unlocks, [2]);
+  // A row settled `failed` is still there: it is not "gone" and is not opened again while the generation stays staged.
+  const r = harness({ unlock: async () => { throw new Refusal("no"); } });
+  r.daemon.staged = 2;
+  await r.watcher.tick();
+  Object.assign(r.rows.get(ID)!, { decision: "approved", decidedBy: "seth@zudocs.com" });
+  assert.equal(await r.watcher.tick(), "failed");
+  assert.equal(await r.watcher.tick(), "waiting");
+  assert.equal(r.rows.get(ID)!.decision, "failed");
+  assert.equal(r.events.filter((e) => e.kind === "release_staged").length, 1);
 });
 
 test("a lost socket during the unlock is transient: the row stays approved, the next tick unlocks; a daemon refusal settles the row failed once and is not retried in a loop", async () => {

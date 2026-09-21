@@ -4,7 +4,10 @@
  * each, with the session token `airprompter login` prints in the environment (`AIRPROMPTER_SESSION_TOKEN`). Every
  * act is a real change on dev — a new prompt version, a sealed release, a promotion, an experiment, a freeze — and
  * prints ids, generations, codes and warnings, never prompt text or a token. The drills that end in a refusal print
- * the refusal in the route's own words; that is the beat.
+ * the refusal in the route's own words; that is the beat. The model drill first makes sure the environment's
+ * catalogue has a live reporter — it warms the desk's Lambda through the presenter's heartbeat, which needs the
+ * proof sign-in (`ZUDOCS_PROOF_PASSWORD`, the owner's AWS profile) — because the seal only refuses
+ * `model_not_in_catalog` while some instance is live and reporting; on an idle desk it would accept with a warning.
  *
  * @example
  * ```sh
@@ -19,7 +22,8 @@
  * npm run demo:console -- experiment read             # the rollout page's document (per-arm results)
  * npm run demo:console -- freeze | unfreeze           # beat 3
  * npm run demo:console -- drill seal-placeholder      # beat 5: the seal refuses {{region_note}}
- * npm run demo:console -- drill model-required        # beat 5: a required model no host reports — sealed, promoted, refused by every host
+ * npm run demo:console -- drill model-required        # beat 5: a required model no host reports — the seal refuses it (model_not_in_catalog); needs a live reporter, so the desk's Lambda is warmed first
+ * npm run demo:console -- drill model-required --UNSAFE-promote-hosts-must-refuse   # the other platform's path: promote it anyway and let the hosts refuse (never in a session)
  * npm run demo:console -- drill golden-fail           # beat 5: a triage version the golden set refuses — staged on us-east, not activated
  * npm run demo:console -- advance                     # a fresh generation from the current pins (the summary's cap +1); past a drill
  * npm run demo:console -- staging promote             # hosted staging: the dev pins sealed for staging and promoted
@@ -27,7 +31,7 @@
  */
 import { readConfig, secretFromEnv } from "./lib/config.mjs";
 import { createConsole, withPin } from "./lib/console.mjs";
-import { BEATS, RAMP, releaseLine } from "./lib/demo.mjs";
+import { BEATS, RAMP, ensureLiveReporter, releaseLine } from "./lib/demo.mjs";
 
 const args = process.argv.slice(2);
 const command = args[0] ?? "board";
@@ -67,6 +71,23 @@ async function promoteChange(beat, extra = {}) {
   const pointer = await con.promote({ environment: ENV, releaseDigest: release.releaseDigest, notes: beat.notes });
   say(`  promoted: ${ENV} is at generation ${pointer.generation} (${pointer.applyPolicy}, ${pointer.frozen ? "FROZEN" : "not frozen"}) at ${new Date().toISOString()}`);
   return { version: v, release, pointer };
+}
+
+/**
+ * Wake the us-east Lambda so it reports its models: the desk's presenter heartbeat, behind the proof sign-in (the
+ * dry run's `ZUDOCS_PROOF_PASSWORD` and the owner's AWS profile). Answers `{ ok, why }`; never throws on a missing
+ * sign-in — the caller says what to do.
+ */
+async function warmDesk() {
+  if (!process.env.ZUDOCS_PROOF_PASSWORD) return { ok: false, why: "ZUDOCS_PROOF_PASSWORD is not set (the desk's presenter heartbeat needs the proof sign-in and the owner's AWS profile — the dry run's environment)" };
+  try {
+    const { connectDesk } = await import("./lib/desk.mjs");
+    const desk = await connectDesk({ log: (line) => say(`  · ${line}`) });
+    const r = await desk.api("POST", "/presenter/heartbeat");
+    return r.status === 200 ? { ok: true, why: `presenter heartbeat at ${r.json.heartbeat?.lastAt ?? "now"}` } : { ok: false, why: `the presenter heartbeat answered HTTP ${r.status} ${JSON.stringify(r.json).slice(0, 160)}` };
+  } catch (error) {
+    return { ok: false, why: error.message.slice(0, 300) };
+  }
 }
 
 const liveExperiments = async () => (await con.experiments.list({ environment: ENV })).filter((e) => ["running", "held", "complete"].includes(e.status ?? "running"));
@@ -148,11 +169,37 @@ switch (command) {
       process.exit(refused ? 0 : 1);
     } else if (sub === "model-required") {
       const beat = BEATS.unreportedModel;
+      const unsafe = args.includes("--UNSAFE-promote-hosts-must-refuse");
+      const before = await con.pointer(ENV);
+      // The catalogue is the fleet's word, and the fleet's word is only spoken while an instance is live and
+      // reporting: on an idle desk (no invoke for three minutes) the seal would ACCEPT this pin with a warning. The
+      // presenter's heartbeat wakes the us-east Lambda; the sign-in it needs is the dry run's.
+      let reporters;
+      try {
+        ({ reporters } = await ensureLiveReporter({ read: () => con.models(ENV), warm: warmDesk, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)), log: (line) => say(`  · ${line}`) }));
+      } catch (error) {
+        say(`  ✗ ${error.message}`);
+        process.exit(2);
+      }
+      say(`  catalogue (instances): ${reporters.map((m) => `${m.model} on ${m.instances}/${m.of}`).join(", ")}`);
       const pins = withPin(await con.pins(ENV), beat.tag, { model: beat.model });
       const sealed = await con.seal({ environment: ENV, pins, notes: beat.notes, modelRequired: [beat.tag] });
       const release = describeSeal(sealed);
-      if (!release) { say("  → refused at the seal: the environment's catalogue is what the fleet reports, so a required model nobody reports never becomes a release (nothing to advance past)"); process.exit(0); }
-      say("  → the seal accepted it with a warning; promoting so the hosts can refuse it (us-east stays on the previous generation; eu-west's daemon declares no models, so it stages it — do not approve; `advance` supersedes the row):");
+      const refused = sealed.blocked?.blockers.some((b) => b.code === "model_not_in_catalog") ?? false;
+      const after = await con.pointer(ENV);
+      if (refused) {
+        say(`  → refused at the seal (model_not_in_catalog): the environment's catalogue is what the fleet reports, so a required model nobody reports never becomes a release; ${ENV} stays at generation ${after.generation} (nothing to advance past)`);
+        process.exit(after.generation === before.generation ? 0 : 1);
+      }
+      if (!release) {
+        say(`  ✗ DRILL FAILED: the seal refused, but not with model_not_in_catalog (${sealed.blocked.blockers.map((b) => b.code).join(", ") || "no blocker"}); nothing promoted, ${ENV} stays at generation ${after.generation}`);
+        process.exit(1);
+      }
+      if (!unsafe) {
+        say(`  ✗ DRILL FAILED: the seal ACCEPTED a required model no host reports (warnings ${sealed.warnings.map((w) => w.code).join(",") || "none"}) with a live reporter in the catalogue — file this against the platform. NOT promoting: ${ENV} stays at generation ${after.generation}; the release ${release.releaseDigest.slice(0, 24)}… is sealed and unused`);
+        process.exit(1);
+      }
+      say("  → --UNSAFE-promote-hosts-must-refuse: promoting so the hosts refuse it (us-east stays on the previous generation with model_unavailable; eu-west's daemon declares no models, so it STAGES it — do not approve; `advance` supersedes the row):");
       const pointer = await con.promote({ environment: ENV, releaseDigest: release.releaseDigest, notes: beat.notes });
       say(`  promoted generation ${pointer.generation}; run \`npm run demo:console -- advance\` to move past it once the refusal has been seen`);
     } else if (sub === "golden-fail") {

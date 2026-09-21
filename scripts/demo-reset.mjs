@@ -7,8 +7,10 @@
  * `auto` (an operator's act through the SDK; the eu-west daemon's policy is its unit's flag, which no drill changes),
  * waits for a replay in flight, purges the nudge queue (then waits the minute SQS asks for before the next message),
  * restores the wire, promotes TWO fresh canonical generations (the
- * escalation summary's output cap +1 and +2: real changes, so each seals to a new digest) and approves each on
- * eu-west so every store holds two releases (a rollback needs a previous one), nudges the fleet after each, clears
+ * escalation summary's output cap +1 and +2 over the pinned base: real changes, so each seals to a new digest) and
+ * approves each on eu-west so every store holds two releases (a rollback needs a previous one) — an approval that
+ * does not land in time is recorded and the reset goes on; the fleet check at the end reports it; when eu-west's
+ * status row is stale (the host down or replacing itself) it is optional there too — nudges the fleet after each, clears
  * the desk's records and re-seeds the inbox, resets the day counter, bumps the desk Lambda's `STATE_EPOCH` (new
  * containers start from an empty store), and ends by checking that every status row agrees on the generation.
  * Idempotent: every step reads before it writes and says what it did or found done. Needs the session token
@@ -131,12 +133,17 @@ say("4. the nudge queue and the wire");
 // --- 5. two fresh canonical generations, each approved on eu-west ------------------------------------------------------
 say("5. two fresh canonical generations");
 const promoted = [];
+/** How eu-west did in step 5, for step 8: `stale` (its row too old to wait on — optional there), `late` (a wait ran out — step 8 reports it), or ok. */
+const euWest = { stale: false, late: [] };
 const approveOnEuWest = async (generation) => {
   const euRow = await desk.hostRow(EU);
-  if (!euRow) { found("eu-west has no status row; nothing to approve"); return null; }
-  if (Date.now() - Date.parse(euRow.writtenAt) > 15 * 60_000) { found(`eu-west's row is ${Math.round((Date.now() - Date.parse(euRow.writtenAt)) / 60_000)} min old (the host is down or replacing itself); not waiting for its approval`); return null; }
+  if (!euRow) { found("eu-west has no status row; nothing to approve"); euWest.stale = true; return null; }
+  if (Date.now() - Date.parse(euRow.writtenAt) > 15 * 60_000) { found(`eu-west's row is ${Math.round((Date.now() - Date.parse(euRow.writtenAt)) / 60_000)} min old (the host is down or replacing itself); not waiting for its approval — the fleet check treats it as optional`); euWest.stale = true; return null; }
   // Either the pending row appears, or the host is already at the generation (an operator's unlock, a window, or a
   // row settled by the worker): both are "done".
+  // A wait that runs out is not the end of the reset: the later steps (the records, the epoch, the fleet check) are
+  // still due, and the fleet check is where a host that did not land is reported.
+  const late = (what) => { found(`eu-west did not ${what} #${generation} in time; going on — the fleet check reports it`); euWest.late.push(generation); return null; };
   const found_ = await desk.waitFor(`eu-west to stage #${generation}`, async () => {
     const row = (await desk.approvals()).find((a) => a.hostId === EU && a.generation === generation);
     if (row?.decision === "pending") return { pending: row };
@@ -144,25 +151,30 @@ const approveOnEuWest = async (generation) => {
     const host = await desk.hostRow(EU);
     if (Number(host?.status?.generation) >= generation) return { live: host };
     return null;
-  }, { timeoutMs: 180_000 });
+  }, { timeoutMs: 180_000 }).catch(() => null);
+  if (!found_) return late("stage");
   if (found_.live) { found(`eu-west already serves #${found_.live.status.generation}`); return null; }
   if (found_.settled) { found(`eu-west's row for #${generation} is already ${found_.settled.decision}`); return found_.settled; }
   const pending = found_.pending;
   const decided = await desk.api("POST", `/approvals/${encodeURIComponent(pending.approvalId)}/approve`, {});
-  if (decided.status !== 200) { say(`  ✗ approve #${generation} on eu-west refused: HTTP ${decided.status} ${decided.json.error ?? ""} ${decided.json.message ?? ""}`); return null; }
+  if (decided.status !== 200) { say(`  ✗ approve #${generation} on eu-west refused: HTTP ${decided.status} ${decided.json.error ?? ""} ${decided.json.message ?? ""}`); euWest.late.push(generation); return null; }
   did(`approved #${generation} on eu-west (${decided.json.already ? "already decided" : "decided now"})`);
-  const activated = await desk.waitFor(`eu-west to activate #${generation}`, async () => (await desk.approvals()).find((a) => a.approvalId === pending.approvalId && ["activated", "superseded"].includes(a.decision)) ?? null, { timeoutMs: 120_000 });
+  const activated = await desk.waitFor(`eu-west to activate #${generation}`, async () => (await desk.approvals()).find((a) => a.approvalId === pending.approvalId && ["activated", "superseded"].includes(a.decision)) ?? null, { timeoutMs: 120_000 }).catch(() => null);
+  if (!activated) return late("activate");
   did(`eu-west ${activated.decision} #${generation} at ${activated.activatedAt ?? activated.updatedAt}`);
   return activated;
 };
+// The base is the pinned summary's cap, read once: the two generations are +1 and +2 over it (each version's
+// transform reads the restored draft, so "+1" twice would seal two versions of one cap).
+let base = null;
 for (const step of [1, 2]) {
   if (dryRun) { found(`would promote canonical generation ${step} of 2 (summary cap +${step})`); continue; }
-  const v = await con.newVersion({ tag: "support.escalate.summary", inference: (current) => ({ ...current, maxOutputTokens: Number(current.maxOutputTokens ?? 400) + 1 }), message: `Reset means advance: the summary's cap +1 (${step}/2)` });
+  const v = await con.newVersion({ tag: "support.escalate.summary", inference: (current) => { base ??= Number(current.maxOutputTokens ?? 400); return { ...current, maxOutputTokens: base + step }; }, message: `Reset means advance: the summary's cap +${step} (${step}/2)` });
   const pins = canonicalPins(config, { "support.escalate.summary": { versionId: v.versionId } });
-  const sealed = await con.seal({ environment: ENV, pins, notes: `Zudocs reset ${step}/2: a fresh canonical generation (summary cap ${v.inference?.maxOutputTokens})` });
+  const sealed = await con.seal({ environment: ENV, pins, notes: `Zudocs reset ${step}/2: a fresh canonical generation (summary cap ${base} +${step} = ${v.inference?.maxOutputTokens})` });
   if (sealed.blocked) { say(`  ✗ the seal refused the canonical pins: ${JSON.stringify(sealed.blocked).slice(0, 400)}`); process.exit(1); }
   const pointer = await con.promote({ environment: ENV, releaseDigest: sealed.release.releaseDigest, notes: `Zudocs reset ${step}/2` });
-  did(`promoted ${releaseLine(pointer.generation, pointer.releaseDigest)} (summary ${v.versionId}, cap ${v.inference?.maxOutputTokens})`);
+  did(`promoted ${releaseLine(pointer.generation, pointer.releaseDigest)} (summary ${v.versionId}, cap ${base} +${step} = ${v.inference?.maxOutputTokens})`);
   promoted.push(pointer.generation);
   const nudged = await desk.api("POST", "/presenter/nudge");
   found(nudged.status === 202 ? `nudged the fleet (${nudged.json.messageId})` : `nudge: ${nudged.json.message ?? nudged.status}`);
@@ -181,6 +193,8 @@ else {
 
 // --- 7. STATE_EPOCH: new containers, empty stores ----------------------------------------------------------------------
 say("7. the desk Lambda's STATE_EPOCH");
+// The container answering now, before the bump: step 8's "was" — read after the bump it would name a new container too.
+const beforeEpoch = dryRun ? null : await desk.state().catch(() => null);
 {
   const lambda = new LambdaClient({ region: desk.region });
   const name = "zudocs-desk-api";
@@ -207,18 +221,24 @@ if (!dryRun) {
   // The epoch bump replaced every container: the first request to a cold one runs the boot sync and the golden set
   // and can pass the API's 30-second cap (a 503 once, DEMO.md › Honest notes) — wait for a container that answers.
   const answering = () => desk.waitFor("the desk to answer after the epoch bump", async () => { const s = await desk.state(); return s?.host?.instanceId ? s : null; }, { timeoutMs: 180_000, everyMs: 5_000 });
-  const before = await answering();
+  await answering();
   const sync = await desk.api("POST", "/presenter/sync");
   const after = await answering();
-  found(`us-east: container ${after.host.instanceId.slice(0, 12)} (was ${before.host.instanceId.slice(0, 12)}) · sync ${sync.json.outcome ?? sync.status} · generation ${sync.json.generation ?? "?"}`);
+  const was = beforeEpoch?.host?.instanceId ? beforeEpoch.host.instanceId.slice(0, 12) : "unknown";
+  found(`us-east: container ${after.host.instanceId.slice(0, 12)} (was ${was} before the epoch bump${after.host.instanceId === beforeEpoch?.host?.instanceId ? " — the SAME container answered: the bump did not replace it yet" : ""}) · sync ${sync.json.outcome ?? sync.status} · generation ${sync.json.generation ?? "?"}`);
+  // The air-gapped host is optional (it may be down); eu-west joins it only when step 5 found its row stale — a
+  // host that merely did not approve in time is still required, so its lag is reported here, not hidden.
+  const optional = euWest.stale ? ["ap-southeast-1/airgap", EU] : ["ap-southeast-1/airgap"];
+  if (euWest.stale) found("eu-west's row was stale in step 5: optional here, and said so");
+  if (euWest.late.length) found(`eu-west did not approve ${euWest.late.map((g) => `#${g}`).join(", ")} in time in step 5: required here, so a lag shows below`);
   const agreement = await desk.waitFor(`the fleet to agree on #${target}`, async () => {
-    const a = fleetAgreement((await desk.state()).hosts, target);
+    const a = fleetAgreement((await desk.state()).hosts, target, { optional });
     return a.agree ? a : null;
   }, { timeoutMs: 420_000, everyMs: 10_000 }).catch((error) => ({ agree: false, error: error.message, rows: fleetAgreement([], target).rows }));
-  const rows = fleetAgreement((await desk.state()).hosts, target);
-  for (const r of rows.rows) say(`    ${r.hostId.padEnd(22)} #${r.generation} ${r.applyState ?? ""}${r.staged ? ` staged #${r.staged}` : ""}${r.stale ? " (stale row)" : ""}`);
-  if (agreement.agree) did(`every reporting host is at #${target}`);
-  else say(`  ✗ ${agreement.error ?? "the fleet does not agree"}: ${rows.disagree.map((r) => `${r.hostId} #${r.generation}`).join(", ")}`);
+  const rows = fleetAgreement((await desk.state()).hosts, target, { optional });
+  for (const r of rows.rows) say(`    ${r.hostId.padEnd(22)} #${r.generation} ${r.applyState ?? ""}${r.staged ? ` staged #${r.staged}` : ""}${r.stale ? " (stale row)" : ""}${optional.includes(r.hostId) && r.stale ? " (optional)" : ""}`);
+  if (agreement.agree) did(`every reporting host is at #${target}${euWest.stale ? " (eu-west optional: its row was stale)" : ""}`);
+  else say(`  ✗ ${agreement.error ?? "the fleet does not agree"}: ${rows.disagree.map((r) => `${r.hostId} #${r.generation}`).join(", ")}${euWest.late.length ? ` — eu-west's approval of ${euWest.late.map((g) => `#${g}`).join(", ")} ran out of time in step 5` : ""}`);
   say(`reset ${agreement.agree ? "complete" : "INCOMPLETE"} in ${Math.round((Date.now() - startedAt) / 1000)} s: generations ${promoted.join(" → ")}`);
   process.exit(agreement.agree ? 0 : 1);
 } else say("dry run: nothing touched");

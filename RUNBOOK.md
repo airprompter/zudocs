@@ -88,6 +88,8 @@ demo:dryrun -- --hosted` after the fix lands; the assertion becomes the full run
   rollback drill (SDK #45/#46) go with the old store.
 - **the air-gapped host**: `npm run airgap:down` then `npm run airgap:up` (~6 minutes); a new host is a new
   distribution key and the puller re-seals the held generation to it — no promotion needed. Never deployed by CI.
+  While it is down no distribution key is published, and the puller writes plaintext bundles to the (private)
+  exchange bucket — allowed on dev only; the SDK refuses plaintext on any other target.
 - **the puller**: a Lambda; redeploys with `ZudocsFleet`. Its state row (`puller#…`) in the releases table carries
   the backoff and the pointer etag; deleting it is a fresh start.
 

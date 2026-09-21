@@ -3,7 +3,8 @@
 # laptop, every command run for real and its output captured to docs/strips/*.txt, then scanned for anything
 # key-shaped before it can be committed. The Agent key comes from AIRPROMPTER_AGENT_KEY in the environment (the
 # owner's 0600 file), never argv; the strip shows the commands and what they printed, never a key — the CLI prints
-# none at any verbosity, and the scan refuses `apa_`, `apr_`, `eyJ` and an env dump all the same.
+# none at any verbosity, and the scan refuses `apa_`, `apr_`, `eyJ`, a `Bearer ` header, a session token and an env
+# dump all the same. Paths are shortened and the daemon socket's per-user temp path is masked (`<tmp>/…sock`).
 #
 # What it records:
 #   docs/strips/cli.txt          keygen · pull (plaintext, dev) · verify · pull --check --max-behind · diff --against
@@ -29,7 +30,7 @@ mkdir -p "$STRIPS"
 
 scan() {
   # Anything key-shaped or an environment dump fails the strip; the CLI never prints these, so a hit is a bug here.
-  if grep -nE 'apa_[A-Za-z0-9_]{6,}|apr_[A-Za-z0-9_]{6,}|eyJ[A-Za-z0-9_-]{20,}|AIRPROMPTER_AGENT_KEY=|AIRPROMPTER_SESSION_TOKEN=|AWS_SECRET_ACCESS_KEY|BEGIN (RSA|EC|OPENSSH) PRIVATE|"d":"' "$STRIPS"/*.txt; then
+  if grep -nE 'apa_[A-Za-z0-9_]{6,}|apr_[A-Za-z0-9_]{6,}|eyJ[A-Za-z0-9_-]{20,}|Bearer |AIRPROMPTER_AGENT_KEY=|AIRPROMPTER_SESSION_TOKEN=|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN=|BEGIN (RSA|EC|OPENSSH) PRIVATE|"d":"' "$STRIPS"/*.txt; then
     echo "scan: a strip carries something key-shaped (above); not committing it" >&2
     return 1
   fi
@@ -60,7 +61,7 @@ run() {
   # Print the command as typed (the key is in the environment, not on the line), then its output, then the exit code.
   say ""
   say "\$ airprompter $(printf "%s " "$@" | sed -e "s#$WORK#<work>#g" -e "s#$ROOT#.#g")"
-  "$CLI" "$@" 2>&1 | sed -e "s#$WORK#<work>#g" -e "s#$CACHE#<cache>#g" -e "s#$ROOT#.#g" -e "s#${TMP%/}#<tmp>#g" -e 's#"grant":"[^"]*"#"grant":"<grant id>"#g' | tee -a "$OUT"
+  "$CLI" "$@" 2>&1 | sed -e "s#$WORK#<work>#g" -e "s#$CACHE#<cache>#g" -e "s#$ROOT#.#g" -e "s#${TMP%/}#<tmp>#g" -e 's#/var/folders/[A-Za-z0-9_/.-]*/T#<tmp>#g' -e 's#/tmp/airprompter-[0-9a-f]*\.sock#<tmp>/airprompter-<id>.sock#g' -e 's#<tmp>/airprompter-[0-9a-f]*\.sock#<tmp>/airprompter-<id>.sock#g' -e 's#"grant":"[^"]*"#"grant":"<grant id>"#g' | tee -a "$OUT"
   local rc=${PIPESTATUS[0]}
   say "(exit $rc)"
   return 0

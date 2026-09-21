@@ -241,7 +241,7 @@ warn key_protection: file_key: the store key is a file next to the store (0600)
        → use an OS keystore, KMS or Vault key provider where the host allows it (docs/key-handling.md)
 ok   policy_pin: auto (set by an operator on this host)
 ok   spool: 0 unsent segments (0 B, 0 % of the 104857600-byte budget), 0 open
-skip daemon: none on this host (/var/folders/l0/55wwqwln0ws5f96gkg5kwq600000gn/T/airprompter-06254bbf72ee7884.sock): SDKs sync in-process
+skip daemon: none on this host (<tmp>/airprompter-<id>.sock): SDKs sync in-process
 doctor: serving, 1 warning
 (exit 0)
 

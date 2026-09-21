@@ -2,7 +2,8 @@
  * What the demo changes and why, in one place: the text transforms behind each beat (appended instruction lines,
  * so a version is always "the canonical text plus one line" and never depends on the prompt's wording), the ramp
  * the experiments start with, the canonical pins the reset advances from, and the small pure helpers the drivers
- * share (which arm a customer is on, per the desk's records; a fleet-agreement check over status rows). No prompt
+ * share (which arm a customer is on, per the desk's records; a fleet-agreement check over status rows; whether the
+ * environment's catalogue has a live reporter, and the wait that makes it so before a model drill). No prompt
  * text lives here; the transforms take the draft's text at run time and return it changed.
  *
  * @example
@@ -10,6 +11,8 @@
  * BEATS.changeWords.transform("…text…");            // the text with one guidance line appended
  * RAMP;                                             // [{ weightBps: 1000, holdMinutes: 60 }, { weightBps: 5000, holdMinutes: 60 }, { weightBps: 10000 }]
  * fleetAgreement(hosts, 12);                        // { agree: true, rows: [{ hostId, generation }] }
+ * liveReporters(await con.models("dev"));           // [{ model, instances, of }] — the models a LIVE instance reports
+ * await ensureLiveReporter({ read: () => con.models("dev"), warm: () => desk.api("POST", "/presenter/heartbeat"), sleep });
  * ```
  */
 
@@ -87,6 +90,42 @@ export function fleetAgreement(hosts, generation, { optional = ["ap-southeast-1/
   const considered = rows.filter((r) => !(optional.includes(r.hostId) && r.stale));
   const disagree = considered.filter((r) => r.generation !== generation);
   return { agree: disagree.length === 0 && considered.length > 0, generation, rows, disagree };
+}
+
+/**
+ * The models at least one LIVE instance reports, from the models route's document (`source: instances`); empty on a
+ * hosted catalogue or when nothing live has reported. Pure.
+ */
+export function liveReporters(catalogue) {
+  if (!catalogue || catalogue.source !== "instances") return [];
+  return (catalogue.models ?? []).filter((m) => Number(m.instances) > 0).map(({ model, instances, of }) => ({ model, instances: Number(instances), of: Number(of ?? 0) }));
+}
+
+/**
+ * The seal's catalogue is the fleet's word — and `null` (a `model_not_reported` WARNING, the seal accepts) when no
+ * LIVE instance has reported models. Only the us-east Lambda reports; its record expires three minutes after its
+ * last heartbeat and the status tick invokes it every five, so an idle desk has no reporter for about two of every
+ * five minutes, and a required model nobody reports sealed in that window becomes a release. Before a model drill:
+ * read the catalogue; when nothing live reports, `warm` the reporter (the desk's presenter heartbeat) and poll until
+ * the catalogue carries one. Answers `{ catalogue, reporters, warmed }`; throws when it cannot get there, naming
+ * why — the drill must not run on a catalogue that would accept.
+ */
+export async function ensureLiveReporter({ read, warm, sleep, timeoutMs = 90_000, everyMs = 5_000, now = Date.now, log = () => {} }) {
+  const first = await read();
+  const already = liveReporters(first);
+  if (already.length > 0) return { catalogue: first, reporters: already, warmed: false };
+  log(`the catalogue has no live reporter (${first?.live ?? 0} live, ${(first?.models ?? []).length} models listed); warming the desk's Lambda`);
+  const warmed = await warm();
+  if (!warmed?.ok) throw new Error(`no live instance reports models and the reporter could not be warmed: ${warmed?.why ?? "the warm-up answered nothing"} — open the desk (or click Sync now) and run the drill again`);
+  log(`warmed: ${warmed.why ?? "heartbeat sent"}`);
+  const started = now();
+  for (;;) {
+    const catalogue = await read();
+    const reporters = liveReporters(catalogue);
+    if (reporters.length > 0) return { catalogue, reporters, warmed: true };
+    if (now() - started > timeoutMs) throw new Error(`the catalogue still has no live reporter ${Math.round(timeoutMs / 1000)} s after the heartbeat (${catalogue?.live ?? 0} live instances); the drill would seal on a catalogue that accepts — not run`);
+    await sleep(everyMs);
+  }
 }
 
 /** The customers on each arm per the desk's stickiness table, for one experiment's slot; pure. */

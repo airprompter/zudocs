@@ -2,7 +2,7 @@
 /**
  * The nine beats of DEMO.md, performed against the live deployment in order, with every presenter click and console
  * act made for real and what the prospect would see asserted: the badge flips, the eu-west approval lands and
- * activates, the fleet agrees, the freeze greys every Run, the arms split and stick per customer on two hosts, the
+ * activates, the fleet agrees, the freeze refuses every Run (the button stays clickable; the refusal is the beat), the arms split and stick per customer on two hosts, the
  * ramp plan shows on the approval, the safety nets refuse in the platform's own words, the variables come from the
  * desk's table, the wire cut degrades and the restore recovers, the windows leave the host. Prints a transcript with
  * timings (ids, generations, codes, counts — never prompt text, never a key) and exits 1 when a claim fails. This is
@@ -11,7 +11,9 @@
  * Needs the session token (`AIRPROMPTER_SESSION_TOKEN`), the proof password (`ZUDOCS_PROOF_PASSWORD`) and the owner's
  * AWS profile (CloudWatch, the stack outputs). ~25 minutes; the wire beat is the slow one (`--skip-wire` for a
  * rehearsal), `--hosted` runs beat 1's hosted-staging step, `--airgap` expects the air-gapped host to be up
- * (`npm run airgap:up` first), `--strips` records the CLI strips at the end.
+ * (`npm run airgap:up` first), `--strips` records the CLI strips at the end, `--UNSAFE-promote-hosts-must-refuse`
+ * takes beat 5's model drill down the other platform's path (promote the unreported model and let the hosts refuse
+ * it) instead of requiring the seal's refusal — never in a session.
  *
  * @example
  * ```sh
@@ -25,7 +27,7 @@ import { spawnSync } from "node:child_process";
 import { CloudWatchClient, ListMetricsCommand } from "@aws-sdk/client-cloudwatch";
 import { readConfig, secretFromEnv } from "./lib/config.mjs";
 import { createConsole, withPin } from "./lib/console.mjs";
-import { BEATS, RAMP, armsByCustomer, canonicalPins, fleetAgreement, releaseLine } from "./lib/demo.mjs";
+import { BEATS, RAMP, armsByCustomer, canonicalPins, ensureLiveReporter, fleetAgreement, releaseLine } from "./lib/demo.mjs";
 import { connectDesk, repoRootOf, sleep } from "./lib/desk.mjs";
 
 const args = process.argv.slice(2);
@@ -171,7 +173,13 @@ check(rows2[EU]?.status?.storageProtection === "file_key" && rows2[EU]?.status?.
 check(rows2[PULLER]?.kind === "puller", `ap-southeast: puller holds #${rows2[PULLER]?.status?.generation} in the exchange`);
 if (flag("--airgap")) check(rows2[AIRGAP]?.kind === "airgapped" && rows2[AIRGAP]?.airgap?.keyPublished, `air-gapped host: no route out, key ${rows2[AIRGAP]?.airgap?.keyId?.slice(0, 8)}… born on the host, ${rows2[AIRGAP]?.airgap?.renders?.count} render probes filed as refused`);
 else say(`    (air-gapped host ${rows2[AIRGAP] ? `row written ${rows2[AIRGAP].writtenAt} — ${Date.now() - Date.parse(rows2[AIRGAP].writtenAt) > 15 * 60_000 ? "down" : "up"}` : "never seen"}; --airgap to require it)`);
-check(state2.host.models.length === 4, `models this host reports: ${state2.host.models.join(", ")}`);
+{
+  // What the host reports is what the application declares it can call (airprompter.config.json › models): the
+  // same set, not a count.
+  const reported = [...(state2.host.models ?? [])].sort();
+  const declared = [...config.models].sort();
+  check(reported.length > 0 && JSON.stringify(reported) === JSON.stringify(declared), `models this host reports: ${reported.join(", ")}${JSON.stringify(reported) === JSON.stringify(declared) ? " (the config's set)" : ` — the config declares ${declared.join(", ")}`}`);
+}
 
 // --- Beat 3: you activate, not us; then freeze --------------------------------------------------------------------------------
 beat(3, "you activate, not us — and the freeze");
@@ -312,15 +320,30 @@ beat(5, "safety nets");
   check(!!blocker, `the seal refused ${vP.versionId}: ${blocker ? `${blocker.code} — ${blocker.detail}` : `NOT refused (${JSON.stringify(sealedP.blocked ?? sealedP.release?.releaseDigest).slice(0, 200)})`}`);
 }
 {
+  // The seal refuses `model_not_in_catalog` only while a live instance reports models (the catalogue is the fleet's
+  // word, and null — a warning — when nothing live has reported): the reporter is warmed and required first, so a
+  // seal that accepts here is the platform's fault, never an idle desk's.
+  const unsafe = flag("--UNSAFE-promote-hosts-must-refuse");
+  const gen5 = (await con.pointer(ENV)).generation;
+  const live = await ensureLiveReporter({ read: () => con.models(ENV), warm: async () => { const r = await desk.api("POST", "/presenter/heartbeat"); return { ok: r.status === 200, why: r.status === 200 ? `presenter heartbeat at ${r.json.heartbeat?.lastAt ?? "now"}` : `HTTP ${r.status}` }; }, sleep, log: (line) => say(`    ${line}`) }).catch((error) => ({ error: error.message }));
+  check(!live.error, live.error ? `no live reporter for the model drill: ${live.error}` : `the catalogue has a live reporter${live.warmed ? " (the desk's Lambda was warmed first)" : ""}: ${live.reporters.map((m) => `${m.model} on ${m.instances}/${m.of}`).join(", ")}`);
   const pins = withPin(await con.pins(ENV), BEATS.unreportedModel.tag, { model: BEATS.unreportedModel.model });
   const sealedM = await con.seal({ environment: ENV, pins, notes: BEATS.unreportedModel.notes, modelRequired: [BEATS.unreportedModel.tag] });
-  if (sealedM.blocked) ok(`the seal refused a required model no host reports (the environment's catalogue is what the fleet reports; nothing to advance past): ${sealedM.blocked.blockers.map((b) => `${b.code}${b.detail ? ` (${b.detail})` : ""}`).join(", ")}`);
-  else {
-    ok(`the seal accepted the unreported model with a warning (${sealedM.warnings.map((w) => w.code).join(", ")}); promoting to let the hosts refuse it`);
+  const notInCatalog = sealedM.blocked?.blockers.find((b) => b.code === "model_not_in_catalog") ?? null;
+  const genAfterSeal = (await con.pointer(ENV)).generation;
+  if (!unsafe) {
+    check(!!notInCatalog && genAfterSeal === gen5, notInCatalog
+      ? `the seal refused a required model no host reports (the environment's catalogue is what the fleet reports; nothing to advance past): ${notInCatalog.code}${notInCatalog.detail ? ` (${notInCatalog.detail})` : ""}; ${ENV} stays at #${genAfterSeal}`
+      : sealedM.blocked ? `the seal refused, but not with model_not_in_catalog: ${sealedM.blocked.blockers.map((b) => b.code).join(", ") || "no blocker"}` : `the seal ACCEPTED the unreported model with a live reporter in the catalogue (warnings ${sealedM.warnings.map((w) => w.code).join(", ") || "none"}); nothing promoted, ${ENV} stays at #${genAfterSeal}`);
+  } else if (sealedM.blocked) {
+    check(false, `--UNSAFE-promote-hosts-must-refuse: the seal refused (${sealedM.blocked.blockers.map((b) => b.code).join(", ")}), so there is nothing for the hosts to refuse on this platform`);
+  } else {
+    ok(`the seal accepted the unreported model with a warning (${sealedM.warnings.map((w) => w.code).join(", ")}); promoting to let the hosts refuse it (--UNSAFE-promote-hosts-must-refuse)`);
     const pM = await con.promote({ environment: ENV, releaseDigest: sealedM.release.releaseDigest, notes: BEATS.unreportedModel.notes });
     const syncM = await syncEast();
-    const eastRefused = /model_unavailable|model/.test(String(syncM.outcome ?? "")) || syncM.applyState === "refused" || (await desk.state()).host.status.lastRefusal;
-    check(!!eastRefused, `us-east refused #${pM.generation}: sync ${syncM.outcome}, applyState ${syncM.applyState}, lastRefusal ${(await desk.state()).host.status.lastRefusal}`);
+    const stG = (await desk.state()).host.status;
+    const lastRefusal = String(stG.lastRefusal ?? "");
+    check(syncM.applyState === "refused" && Number(stG.generation) < pM.generation && /model_unavailable/.test(lastRefusal), `us-east refused #${pM.generation}: sync ${syncM.outcome}, applyState ${syncM.applyState}, serving #${stG.generation}, lastRefusal ${lastRefusal || "none"}`);
     // The daemon host declares no catalogue (airprompterd has no --models flag; the attached workers' catalogue never
     // reaches the sync), so it cannot refuse: it STAGES the release for approval — a trap the presenter must not spring.
     const euStaged = await desk.waitFor("eu-west to stage the unreported-model release", async () => (await desk.approvals()).find((a) => a.hostId === EU && a.generation === pM.generation && a.decision === "pending") ?? null, { timeoutMs: 120_000 }).catch(() => null);

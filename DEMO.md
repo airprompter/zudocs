@@ -38,7 +38,8 @@ https://api-dev.airprompter.com)"`), plus the AirPrompter console open on the **
 3. **Cut the wire** for beat 7 five minutes before you start if you want the degraded card ready when you get there
    (the rule restores it after 15 minutes regardless; the desk's *Cut the wire* is the click) — or cut it live in
    beat 7 and talk for the ninety seconds it takes.
-4. Open the desk, sign in, check the release bar reads `release #N · active on 3/3` (4/4 with the air-gapped host),
+4. Open the desk, sign in, check the release bar reads `release #N · active on 2/2` (3/3 with the air-gapped host; the
+   puller mirrors and is not counted),
    no *staged*, no *FROZEN*, the inbox holds twelve tickets, the Approvals section says *nothing waiting*. If the
    eu-west card still reads *forced downgrade* (health *degraded: forced_downgrade*) from the last session's rollback
    drill, that is the SDK never clearing the flag once the host moved past the rollback (SDK #45): the reset cannot
@@ -111,7 +112,7 @@ unlock` on the host; the console can only *request* an unlock (its note shows on
 Now the freeze. Terminal: `npm run demo:console -- freeze`. Desk, on the next poll (ten seconds; every poll syncs
 first, so every warm container tells the same story): the release bar turns red — **FROZEN — every Run refuses** —
 and the ticket card carries the band. Click **Run** on any ticket: the refusal comes back as itself, `HTTP 423
-frozen`, with the reason — no model was called, no cap slot taken (the check runs inside the invoke, after its sync,
+frozen`, with the reason — no model was called for the ticket, no cap slot taken (the check runs inside the invoke, after its sync,
 so the very first click after the freeze refuses too). Say: *a signed `disable` directive is honoured by the process that syncs the moment the manifest
 verifies — the Lambda stopped before anyone approved anything.* On eu-west the freeze is a generation like any
 other: the daemon verified it and staged it, but the workers attached to the daemon render from the active release
@@ -160,7 +161,13 @@ Each is one command; each prints the refusal as the platform gave it.
 - `npm run demo:console -- drill model-required` — the reply pinned, as *required*, to a model no host reports.
   **The seal refuses it**: `model_not_in_catalog (anthropic.claude-sonnet-4-5)` — the environment's catalogue is
   what the fleet's instances report on their heartbeats, so a required model nobody reports never becomes a
-  release, and nothing needs advancing past. Say: *the catalogue is the fleet's word, not a list we typed.* (The
+  release, and nothing needs advancing past. Say: *the catalogue is the fleet's word, not a list we typed.* The
+  fleet's word is only spoken while an instance is **live and reporting**: only the us-east Lambda reports models,
+  its record expires three minutes after its last heartbeat, and the status tick invokes it every five — on an idle
+  desk the catalogue is empty for about two minutes in every five and the seal would *accept* the pin with a
+  `model_not_reported` warning. That is why the checklist keeps the desk warm, and why the command warms the Lambda
+  itself (the presenter's heartbeat; it needs the dry run's `ZUDOCS_PROOF_PASSWORD` and AWS profile in the
+  environment) and then *requires* the refusal: a seal that accepts fails the drill loudly and promotes nothing. (The
   daemon host reports no models at all — `airprompterd` has no `--models`, airprompter-agent-sdk#51 — which is why
   the seal also warns `variable_uncovered`; the console's benign warnings are acknowledged by the command.)
 - `npm run demo:console -- drill golden-fail` — a triage version that answers `other`/`low` whatever the ticket

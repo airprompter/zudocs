@@ -75,7 +75,10 @@ public half (the private half died with the host); the next host is a new key an
 What the SDK supports today, and what the exchange therefore carries: `pullBundle` seals to an X25519 public key
 (HPKE) or writes plaintext for the dev target only; `openBundle` (in `start`'s vendored bundle and in
 `applyBundle()`) opens either. The exchange carries **one** bundle per generation: sealed when a host key exists,
-plaintext (dev) when none does. The console's *Download update file* path seals to the key registered on the
+plaintext (dev) when none does — so while no distribution key is published (the air-gapped host down, or not yet
+up: the usual state of this dev fleet between sessions) the puller writes **plaintext bundles** to the exchange
+bucket; the bucket is private and this is dev, and on any other target the SDK refuses to write plaintext at all.
+The console's *Download update file* path seals to the key registered on the
 environment; registering this host's public half there is a console act the owner can do from the object in the
 bucket, and is not needed for the puller.
 

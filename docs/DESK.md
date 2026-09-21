@@ -35,7 +35,9 @@ Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack
 - **arm badge** — `Rendered.arm` (`none` shows as "no experiment").
 - **Why this text** — `Rendered.text`, with each declared variable (`handle.variables()`) labelled by the SDK's
   precedence: passed at the call site, filled by the desk's registered source, or the version's default; the
-  fence around end-user text; the version's `inference` block.
+  fence around end-user text; the version's `inference` block. The labels are the desk's own reconstruction of
+  that precedence (`variableOrigins` in `run.ts`, over the declarations, the values passed and the sources
+  registered) — the SDK's `Rendered` carries the text, not per-variable provenance.
 - **checks strip** — `ap.checks(rendered, output, { record: false })`: the per-check verdicts of the checks the
   wrapper already counted on the window.
 - **latency · tokens · usage · status** — the `Observation` the SDK filed for the call (tapped from the spool

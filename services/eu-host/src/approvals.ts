@@ -13,7 +13,10 @@
  * - a staged generation that vanished without the watcher's unlock (an operator's `airprompter unlock` on the shell,
  *   an update window, a rollback) settles the row `superseded` and says which generation is live;
  * - a staged generation replaced by a newer one (the next promotion landed while the row was open) settles the old
- *   row `superseded` — it is no longer what the host would activate — and opens the newer generation's row.
+ *   row `superseded` — it is no longer what the host would activate — and opens the newer generation's row;
+ * - a row that is gone from the desk's tables while the watcher still minds it (the presenter's reset clears the
+ *   approvals) is opened again for the generation the daemon still holds staged: what needs a decision is what the
+ *   daemon says, not what the watcher remembers, so the row is never left "waiting" on a record nobody can click.
  *
  * The row's id is the host, the generation *and the store* the daemon serves from (`hello.storeId`): a replaced
  * instance stages the same generation again on a fresh store and gets a fresh row, while a restarted watcher on the
@@ -104,6 +107,23 @@ export class ApprovalWatcher {
     return this.ticking;
   }
 
+  /** Open (or resume) the row for the generation staged on this store; `this.open` minds it from here. */
+  private async openRow(approvalId: string, staged: number, storeId: string, s: NonNullable<ReturnType<WatcherPorts["status"]>>): Promise<"opened" | "resumed"> {
+    const { hostId, store, now, log } = this.ports;
+    const at = now();
+    const request = s.unlockRequests.find((r) => r !== null) ?? null;
+    const row: ApprovalRow = { approvalId, hostId, storeId, generation: staged, releaseDigest: null, stagedAt: at, unlockRequest: request, decision: "pending", decidedBy: null, decidedAt: null, activatedAt: null, outcome: null, updatedAt: at };
+    const { created } = await store.openApproval(row);
+    this.open = { approvalId, generation: staged, storeId };
+    if (created) {
+      await store.appendEvent({ at, kind: "release_staged", host: hostId, generation: staged, approvalId, policy: "unlock_required", note: request?.note ?? null });
+      log({ event: "approval_opened", approvalId, generation: staged });
+      return "opened";
+    }
+    log({ event: "approval_resumed", approvalId, generation: staged });
+    return "resumed";
+  }
+
   private async pass(): Promise<WatcherAction> {
     const { hostId, store, status, unlock, now, log } = this.ports;
     const s = status();
@@ -142,21 +162,20 @@ export class ApprovalWatcher {
       log({ event: "approval_superseded", approvalId: this.open.approvalId, generation: s.generation, replacedBy: staged });
       this.open = null;
     }
-    if (this.open?.approvalId !== approvalId) {
-      const at = now();
-      const request = s.unlockRequests.find((r) => r !== null) ?? null;
-      const row: ApprovalRow = { approvalId, hostId, storeId, generation: staged, releaseDigest: null, stagedAt: at, unlockRequest: request, decision: "pending", decidedBy: null, decidedAt: null, activatedAt: null, outcome: null, updatedAt: at };
-      const { created } = await store.openApproval(row);
-      this.open = { approvalId, generation: staged, storeId };
-      if (created) {
-        await store.appendEvent({ at, kind: "release_staged", host: hostId, generation: staged, approvalId, policy: "unlock_required", note: request?.note ?? null });
-        log({ event: "approval_opened", approvalId, generation: staged });
-        return "opened";
-      }
-      log({ event: "approval_resumed", approvalId, generation: staged });
+    if (this.open?.approvalId !== approvalId && (await this.openRow(approvalId, staged, storeId, s)) === "opened") return "opened";
+    let row = await store.getApproval(approvalId);
+    if (!row) {
+      // The desk's records were cleared under this row (the presenter's reset) while the daemon still holds the
+      // generation staged: the watcher forgets the row it minded and opens it again — the same id, pending, with a
+      // fresh `release_staged` — so the desk shows the release that still needs the owner's decision.
+      log({ event: "approval_row_gone", approvalId, generation: staged });
+      this.open = null;
+      const reopened = await this.openRow(approvalId, staged, storeId, s);
+      if (reopened === "opened") return "opened";
+      row = await store.getApproval(approvalId);
+      if (!row) return "waiting";
     }
-    const row = await store.getApproval(approvalId);
-    if (!row || row.decision !== "approved") return "waiting";
+    if (row.decision !== "approved") return "waiting";
     let result: { generation: number } | null;
     try {
       result = await unlock();

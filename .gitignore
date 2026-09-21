@@ -42,3 +42,5 @@ __pycache__/
 
 # The strip once wrote its config values here (it writes under its work directory now); never commit it
 .strip.env
+# The vendoring script's config values (ids and URLs), written and removed by scripts/vendor.sh; never commit it
+.vendor.env

@@ -36,10 +36,15 @@ export interface Step {
   observation: Observation | null;
   checks: Array<{ name: string; kind: string; verdict: "pass" | "fail"; reason?: string }>;
   costUsd: number | null;
+  /** The provider switch (phase 9): the direct API this step went to, the model the call named, the release's settings it took and the ones it does not take. */
+  provider?: { name: DirectProvider; model: string; applied: Record<string, number>; ignored: string[] } | null;
   judge: { score: number | null; taskPass: number; taskFail: number; taskUnclear: number; flagged: boolean; model: string } | null;
   error: { name: string; message: string } | null;
 }
-export interface Run { runId: string; ticketId: string; customerId: string; at: string; by: string; host: string; kind: "run" | "escalate"; generation: number; applyState: string; steps: Step[]; triage: { category: string | null; priority: string | null; summary: string | null } | null; reply: string | null; handoff: string | null; durationMs: number; capUsed: number; ok: boolean; feedback?: Array<{ at: string; signals: Record<string, unknown>; by: string; filed: boolean }> }
+export type DirectProvider = "openai" | "anthropic";
+/** Where a reply may go: the release's model on this host, a direct API with the customer's own key, or AirPrompter's hosted route. */
+export type Route = "bedrock" | DirectProvider | "airprompter";
+export interface Run { runId: string; ticketId: string; customerId: string; at: string; by: string; host: string; kind: "run" | "escalate"; route?: Route; generation: number; applyState: string; steps: Step[]; triage: { category: string | null; priority: string | null; summary: string | null } | null; reply: string | null; handoff: string | null; durationMs: number; capUsed: number; ok: boolean; feedback?: Array<{ at: string; signals: Record<string, unknown>; by: string; filed: boolean }> }
 /** A hosted staging run (phase 6): the stream as it arrived, the feedback, the compat call beside the catalogue's sealed settings; refusals in the route's words. */
 export interface HostedRefusal { code: string; status: number; message: string; detail?: string }
 export interface HostedRun {
@@ -92,7 +97,7 @@ export interface HostStatus {
   cadence?: { demoMode: "on" | "off"; until: string | null; by: string | null; reason: string | null; ticketIntervalSeconds: number; idleIntervalSeconds: number; demoIntervalSeconds: number; nextTicketAt: string; parameter: string; readAt: string | null; error: string | null } | null;
 }
 export interface DemoModeState { mode: "on" | "off"; until: string | null; by: string | null; reason: string | null; parameter: string }
-export interface State { host: { hostId: string; region: string; sdk: string; instanceId: string; startedAt: string; invocations: number; coldStart: boolean; status: Record<string, any>; healthz: Record<string, any>; models: string[]; stateDir: string }; hosts: HostStatus[]; cap: { day: string; used: number; cap: number }; airprompter: { baseUrl: string; environment: string; agentId: string }; features?: { wire: boolean; nudge: boolean; hosted?: boolean; hostCli?: boolean; power?: boolean; demoMode?: boolean }; hosted?: { target: string; runUrl: string } | null; frozen?: { frozen: boolean; reason: string | null }; hostCliCommands?: string[]; demoMode?: DemoModeState | null }
+export interface State { host: { hostId: string; region: string; sdk: string; instanceId: string; startedAt: string; invocations: number; coldStart: boolean; status: Record<string, any>; healthz: Record<string, any>; models: string[]; stateDir: string }; hosts: HostStatus[]; cap: { day: string; used: number; cap: number }; airprompter: { baseUrl: string; environment: string; agentId: string }; features?: { wire: boolean; nudge: boolean; hosted?: boolean; openai?: boolean; anthropic?: boolean; hostCli?: boolean; power?: boolean; demoMode?: boolean }; hosted?: { target: string; runUrl: string } | null; providers?: Record<DirectProvider, { configured: boolean; model: string; label: string }>; frozen?: { frozen: boolean; reason: string | null }; hostCliCommands?: string[]; demoMode?: DemoModeState | null }
 export interface TimelineEvent { at: string; kind: string; host: string; id?: string; [key: string]: unknown }
 export type ApprovalDecision = "pending" | "approved" | "activated" | "superseded" | "failed";
 export interface Approval { approvalId: string; hostId: string; generation: number; releaseDigest: string | null; stagedAt: string; unlockRequest: { requestedBy: string; requestedAt: string; expiresAt: string; note?: string } | null; decision: ApprovalDecision; decidedBy: string | null; decidedAt: string | null; activatedAt: string | null; outcome: string | null; updatedAt: string; ramps?: Ramp[] }
@@ -100,7 +105,8 @@ export interface Approval { approvalId: string; hostId: string; generation: numb
 export interface Api {
   tickets(): Promise<{ tickets: Ticket[] }>;
   ticket(ticketId: string): Promise<{ ticket: Ticket; runs: AnyRun[] }>;
-  runTicket(ticketId: string): Promise<{ run: Run; cap: State["cap"] }>;
+  /** A run; with a provider, the reply goes to that API with the customer's own key (501 `provider_not_configured` when the deployment names no key for it). */
+  runTicket(ticketId: string, provider?: DirectProvider): Promise<{ run: Run; cap: State["cap"] }>;
   escalateTicket(ticketId: string): Promise<{ run: Run; cap: State["cap"] }>;
   /** Hosted staging: the record comes back with the route's refusals inside it (a 502 still carries the record). */
   hostedRun(ticketId: string): Promise<{ run: HostedRun }>;
@@ -129,9 +135,9 @@ export function createApi(baseUrl: string, tokenOf: () => Promise<string | null>
     return parsed as T;
   };
   // A run whose model refused answers 502 WITH the record (ok: false): the record is what the desk shows.
-  const runOrRecord = async <T extends { run: unknown }>(path: string): Promise<T> => {
+  const runOrRecord = async <T extends { run: unknown }>(path: string, body: Record<string, unknown> = {}): Promise<T> => {
     try {
-      return await call<T>("POST", path, {});
+      return await call<T>("POST", path, body);
     } catch (error) {
       if (error instanceof ApiError && error.status === 502 && typeof error.body.run === "object" && error.body.run !== null) return error.body as unknown as T;
       throw error;
@@ -140,7 +146,7 @@ export function createApi(baseUrl: string, tokenOf: () => Promise<string | null>
   return {
     tickets: () => call("GET", "/tickets"),
     ticket: (ticketId) => call("GET", `/tickets/${encodeURIComponent(ticketId)}`),
-    runTicket: (ticketId) => runOrRecord<{ run: Run; cap: State["cap"] }>(`/tickets/${encodeURIComponent(ticketId)}/run`),
+    runTicket: (ticketId, provider) => runOrRecord<{ run: Run; cap: State["cap"] }>(`/tickets/${encodeURIComponent(ticketId)}/run`, provider ? { provider } : {}),
     escalateTicket: (ticketId) => runOrRecord<{ run: Run; cap: State["cap"] }>(`/tickets/${encodeURIComponent(ticketId)}/escalate`),
     hostedRun: (ticketId) => runOrRecord<{ run: HostedRun }>(`/tickets/${encodeURIComponent(ticketId)}/hosted-run`),
     arms: () => call("GET", "/arms"),

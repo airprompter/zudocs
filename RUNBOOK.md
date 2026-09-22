@@ -3,7 +3,7 @@
 The operator's side of the demo company: where every key lives and how to rotate it, the drills the CLI runs,
 how to replace a host, the reset, the vendoring pull request, the weekly workflow — and, since phase 8, the steady
 state: the eu-west host asleep at night and woken for a session, the demo-mode cadence switch, the cost report, the
-monthly cost check and the teardown. DEMO.md is what the presenter does; this is what keeps it true. Every command here takes secrets from the environment or from SSM by
+monthly cost check and the teardown. Every command here takes secrets from the environment or from SSM by
 name — never argv, never git, never a log, never a GitHub secret.
 
 ## Keys, exactly
@@ -12,6 +12,7 @@ name — never argv, never git, never a log, never a GitHub secret.
 |---|---|---|---|---|
 | Agent key, dev (`zudocs-support`) | SSM SecureString `/zudocs/dev/agent-key` in us-east-1 (`alias/zudocs-desk`), eu-west-1 and ap-southeast-1 (`alias/aws/ssm`); the owner's `~/.config/zudocs/dev.env` (0600) | `scripts/ssm-put-agent-key.sh` from the env file, per region | us-east: the desk Lambda at cold start; eu-west: `zudocs-agent-key` into `/etc/airprompter/airprompterd.env` at every daemon start; ap-southeast: the puller at cold start | mint a second key in the console (two live per target), put it in all three regions, restart the daemon (`sudo systemctl restart airprompterd` through Run Command) and bump the desk Lambda's `STATE_EPOCH` (a new container reads the new value), revoke the old one |
 | Staging run key (`agent_run`, staging) | SSM SecureString `/zudocs/staging/run-key` in us-east-1 (`alias/zudocs-desk`) only | the owner: mint in the console (Settings › Keys › run key, target staging), write the put-parameter document to a 0600 temp file outside any repository, `aws ssm put-parameter --cli-input-json file://…`, delete the file | the desk Lambda on the first *Run on staging* | mint, put, bump `STATE_EPOCH`, revoke |
+| Provider keys (phase 9: the desk's provider switch) | SSM SecureStrings `/zudocs/dev/openai-key` and `/zudocs/dev/anthropic-key` in us-east-1 (`alias/zudocs-desk`) only; the owner's `~/.config/zudocs/providers.env` (0600) | `ZUDOCS_SECRET=openai bash scripts/ssm-put-agent-key.sh` (reads `OPENAI_API_KEY`), `ZUDOCS_SECRET=anthropic …` (reads `ANTHROPIC_API_KEY`) — the same 0600-file path as the Agent key, never argv | the desk Lambda, by name, on the first run that names that provider; a provider absent from `airprompter.config.json › providers` is not in the function's environment or its policy, and the desk says *not configured* (501) | mint at the provider, put, bump `STATE_EPOCH` (a warm container holds the old one), revoke |
 | CI vendoring agent's key (`zudocs-ci`, dev) | the owner's `~/.config/zudocs/ci.env` (0600) only — never SSM, never CI | the console | `scripts/vendor.sh` on the owner's laptop | mint, replace the file, revoke |
 | Session token (`airprompter login`) | the environment for the length of a terminal | `airprompter login` (password from `AIRPROMPTER_PASSWORD`) | `demo:console`, `demo:dryrun`, `demo:reset`, `prompts:seed` | expires in about an hour; log in again |
 | Proof user's password (`proof@zudocs.com`) | the owner's password store; `ZUDOCS_PROOF_PASSWORD` in the environment | `scripts/cognito-users.sh proof` | the proofs, the dry run, the reset (they sign in through the `proof` client) | `cognito-users.sh proof` again with a new password |
@@ -26,7 +27,8 @@ hosted run URL, the edge pointer); the desk's `config.json` carries the pool and
 
 All against dev; the CLI is `.bin/airprompter` (`docs/PROMPTS.md` says how to install and verify it). `set -a;
 . ~/.config/zudocs/dev.env; set +a` puts the Agent key in the environment first; the strip (`npm run demo:strip`)
-runs every one of these for real and records the output to `docs/strips/`.
+runs every one of these for real and records the output outside the repository (`ZUDOCS_STRIPS_DIR`, default
+`~/.config/zudocs/strips`).
 
 ```sh
 # a laptop store in a scratch directory (the strip does this; the commands take --state-dir)
@@ -75,7 +77,7 @@ The staging environment runs in AirPrompter's hosted mode (`executionMode: manag
 environment's settings). `npm run demo:console -- staging promote` seals the current dev pins for staging and
 promotes them (a release is content-addressed, so the digest matches dev's). The desk's *Run on staging* does the
 stream, the feedback and one OpenAI-compatible call and records what the route answered. **On dev today every
-hosted run answers `internal (500)`** (lexerio-seth/prompt-haven#906); the catalogue read works. Re-run `npm run
+hosted run answers `internal (500)`** (a platform-side defect, tracked by AirPrompter); the catalogue read works. Re-run `npm run
 demo:dryrun -- --hosted` after the fix lands; the assertion becomes the full run.
 
 ## Replacing a host
@@ -135,7 +137,7 @@ so it is the owner's: `npm run vendor -- --check` (exit 3 when the committed bun
 
 ## Sleep and wake (the eu-west host)
 
-The eu-west host is put to sleep every night and woken for a session — the plan's "compute → near zero" (docs/COST.md).
+The eu-west host is put to sleep every night and woken for a session.
 
 - **The schedule**: EventBridge Scheduler `zudocs-eu-host-sleep`, `cron(0,20,40 10 * * ? *)` UTC (three idempotent
   attempts twenty minutes apart at ten in the morning UTC — night on both US coasts; the owner's sessions cluster
@@ -168,8 +170,8 @@ The eu-west host is put to sleep every night and woken for a session — the pla
 
 ## Demo mode (the eu-west workers' cadence)
 
-Idle, the eu-west workers run one inbox ticket an hour (Node) and every two hours (Python) — cents a day (docs/COST.md).
-**Demo mode** drops that to every two and five minutes so the eu-west card moves while a prospect watches: the
+Idle, the eu-west workers run one inbox ticket an hour (Node) and every two hours (Python).
+**Demo mode** drops that to every two and five minutes so the eu-west card moves during a session: the
 presenter panel's *demo mode on* (or `npm run demo:mode -- on`) writes the SSM String `/zudocs/dev/demo-mode` in
 eu-west-1 — `{"mode":"on","until":<now + 4 h>,"by":…}` — which both workers read every minute; *off* (or
 `demo:mode -- off`) writes off. The rules are fail-closed (`services/desk-api/src/demoMode.ts`): on only while the
@@ -185,7 +187,7 @@ is separate and stays a deploy flag (below).
 
 ```sh
 AWS_PROFILE=zudocs npm run cost:report                # last 7 / 30 days by service and by day, the budget, fixed vs variable, the expected month
-AWS_PROFILE=zudocs npm run cost:report -- --write     # and docs/COST.md's numbers section (between its markers; the explanations are hand-written)
+AWS_PROFILE=zudocs npm run cost:report -- --write     # and the owner's cost document (ZUDOCS_COST_DOC, default ~/.config/zudocs/COST.md — outside the tree)
 ```
 
 One Cost Explorer query a run ($0.01 a page; the seven-day fold comes from the thirty-day answer). The **monthly
@@ -229,8 +231,8 @@ account, and the laptop's `~/.config/zudocs/*.env`.
 The puller pulls every five minutes (one CDN read when idle); `--context demo=true` on a `ZudocsFleet` deploy makes
 it one minute. The presenter's *Nudge the fleet* makes any wait seconds, so the deployed cadence stays at five.
 The air-gapped host costs while it is up (`airgap:up` before a session, `airgap:down` after); everything else is
-on-demand tables, one `t4g.micro` (asleep at night), a handful of Lambdas and the desk's CloudFront — docs/COST.md
-has the lines and `npm run cost:report` the numbers.
+on-demand tables, one `t4g.micro` (asleep at night), a handful of Lambdas and the desk's CloudFront —
+`npm run cost:report` has the numbers.
 
 ## When something is wrong
 

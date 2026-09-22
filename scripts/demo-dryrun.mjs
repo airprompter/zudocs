@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * The nine beats of DEMO.md, performed against the live deployment in order, with every presenter click and console
- * act made for real and what the prospect would see asserted: the badge flips, the eu-west approval lands and
+ * Every panel of the desk and every console act, performed against the live deployment in order, with every presenter click and console
+ * act made for real and what the desk shows asserted: the badge flips, the eu-west approval lands and
  * activates, the fleet agrees, the freeze refuses every Run (the button stays clickable; the refusal is the beat), the arms split and stick per customer on two hosts, the
  * ramp plan shows on the approval, the safety nets refuse in the platform's own words, the variables come from the
  * desk's table, the wire cut degrades and the restore recovers, the windows leave the host. Prints a transcript with
@@ -125,7 +125,7 @@ async function landEverywhere(generation, { approve = true } = {}) {
 // --- Beat 0: the cold open ------------------------------------------------------------------------------------------
 beat(0, "cold open: one ticket, Run, a badge");
 // After a reset every container is cold; the first request runs the boot sync and the golden set and can pass the
-// API's 30-second cap once (DEMO.md › Honest notes says to click Sync now first) — the rehearsal does the same.
+// API's 30-second cap once (click Sync now first) — the rehearsal does the same.
 const state0 = await desk.waitFor("the desk to answer (a cold container syncs and runs the golden set first)", async () => { const s = await desk.state(); return s?.host?.status ? s : null; }, { timeoutMs: 180_000, everyMs: 5_000 });
 const gen0 = state0.host.status.generation;
 say(`    fleet: ${state0.hosts.map((h) => `${h.hostId} #${h.status?.generation ?? "?"}`).join(" · ")} · us-east container ${state0.host.instanceId.slice(0, 12)} · frozen ${state0.frozen?.frozen}`);
@@ -398,7 +398,7 @@ beat(5, "safety nets");
   await landEverywhere(pA3.generation);
   ok(`the next promotion (#${pA3.generation}) carried eu-west forward — held back until something newer was promoted`);
 }
-say("    apply --force and apply.window are laptop drills: docs/strips/cli.txt (rollback, the older bundle refused, apply --force staged and stamped; the second-run form needs an earlier generation in ~/.cache/zudocs/strips) and docs/strips/apply-window.txt (--strips records both now)");
+say("    apply --force and apply.window are laptop drills, recorded by scripts/strip.sh outside the tree: cli.txt (rollback, the older bundle refused, apply --force staged and stamped; the second-run form needs an earlier generation in ~/.cache/zudocs/strips) and docs/strips/apply-window.txt (--strips records both now)");
 
 // --- Beat 6: your data, your variables ----------------------------------------------------------------------------------------------
 beat(6, "your data, your variables");
@@ -456,7 +456,7 @@ beat(9, "the recorded strips");
 if (flag("--strips")) {
   const strip = spawnSync("bash", ["scripts/strip.sh"], { cwd: repoRootOf(), encoding: "utf8", env: process.env });
   check(strip.status === 0, `scripts/strip.sh exit ${strip.status}: ${strip.stdout.trim().split("\n").slice(-3).join(" | ")}${strip.stderr ? ` [stderr ${strip.stderr.trim().slice(0, 200)}]` : ""}`);
-} else say("    (--strips records docs/strips/*.txt from the CLI beats on this laptop)");
+} else say("    (--strips records the CLI strips on this laptop, outside the tree)");
 
 // --- Summary --------------------------------------------------------------------------------------------------------------------------
 const final = await desk.state();

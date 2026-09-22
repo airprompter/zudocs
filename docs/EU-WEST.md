@@ -136,7 +136,7 @@ The workers' ticket cadence is idle by default — the Node worker one inbox tic
 two hours — and both read the demo-mode parameter (`/zudocs/dev/demo-mode`, a String in this region the host's role
 may read beside the Agent key's name) every minute: on (two and five minutes) only while the document says so and its
 `until` is ahead (four hours at most), off with a reason otherwise; the status row's `cadence` block says which and
-when it was last read. The desk's presenter panel writes it; `docs/COST.md` says what each cadence costs.
+when it was last read. The desk's presenter panel writes it.
 
 ## Proof
 

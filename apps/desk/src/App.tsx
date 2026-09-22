@@ -10,8 +10,8 @@
  * <App api={createApi(config.apiUrl, tokenOf)} config={config} who="seth@zudocs.com" onSignOut={signOut} />
  * ```
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, type AnyRun, type Api, type Approval, type Arms, type State, type Ticket, type TimelineEvent } from "./api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ApiError, type AnyRun, type Api, type Approval, type Arms, type DirectProvider, type Route, type State, type Ticket, type TimelineEvent } from "./api";
 import type { DeskConfig } from "./config";
 import { Approvals } from "./components/Approvals";
 import { Experiments } from "./components/Experiments";
@@ -19,9 +19,9 @@ import { HostCards } from "./components/HostCards";
 import { Inbox } from "./components/Inbox";
 import { Presenter, type CliOutput } from "./components/Presenter";
 import { ReleaseBar } from "./components/ReleaseBar";
-import { TicketView } from "./components/TicketView";
+import { TicketView, type RouteAvailability } from "./components/TicketView";
 import { Timeline } from "./components/Timeline";
-import { mergeEvents } from "./format";
+import { ROUTES, mergeEvents } from "./format";
 
 export interface Notice { tone: "info" | "warn" | "error"; text: string }
 
@@ -120,7 +120,33 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
     try { await fn(); } catch (error) { failed(error); } finally { setBusy(null); }
   }, [failed]);
 
-  const run = (ticketId: string, kind: "run" | "escalate" | "hosted") => act(kind, async () => {
+  /** The four doors and whether each is open on this deployment: the release's model always; a direct API when the stack names its key; hosted when it names the run key. */
+  const routes = useMemo((): Record<Route, RouteAvailability> => ({
+    bedrock: { configured: true, model: null },
+    openai: { configured: state?.providers?.openai.configured ?? false, model: state?.providers?.openai.model ?? null },
+    anthropic: { configured: state?.providers?.anthropic.configured ?? false, model: state?.providers?.anthropic.model ?? null },
+    airprompter: { configured: (state?.features?.hosted ?? false) && !!state?.hosted, model: null },
+  }), [state]);
+
+  /** Compare all: every open door in turn — one ticket, one prompt, three or four answers side by side. Sequential on purpose: the cap is per run, and a refusal stops the rest. */
+  const compareAll = (ticketId: string) => act("compare", async () => {
+    let answered = 0;
+    for (const route of ROUTES) {
+      if (!routes[route].configured) continue;
+      if (route === "airprompter") {
+        const { run } = await api.hostedRun(ticketId);
+        setRuns((current) => [run, ...current]);
+      } else {
+        const { run } = await api.runTicket(ticketId, route === "bedrock" ? undefined : route);
+        setRuns((current) => [run, ...current]);
+      }
+      answered += 1;
+    }
+    say("info", `${answered} routes answered — the compare table is above the runs`);
+    await Promise.all([loadTickets(), loadState(), loadEvents(), loadArms()]);
+  });
+
+  const run = (ticketId: string, kind: "run" | "escalate" | "hosted", provider?: DirectProvider) => act(kind, async () => {
     if (kind === "hosted") {
       const { run } = await api.hostedRun(ticketId);
       setRuns((current) => [run, ...current]);
@@ -128,7 +154,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
       await loadEvents();
       return;
     }
-    const { run } = kind === "run" ? await api.runTicket(ticketId) : await api.escalateTicket(ticketId);
+    const { run } = kind === "run" ? await api.runTicket(ticketId, provider) : await api.escalateTicket(ticketId);
     setRuns((current) => [run, ...current]);
     if (!run.ok) say("warn", "the model did not answer every step — the record shows what the host observed");
     await Promise.all([loadTickets(), loadState(), loadEvents(), loadArms()]);
@@ -170,7 +196,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
       <div className="columns">
         <Inbox tickets={tickets} selectedId={selectedId} onSelect={setSelectedId} />
         <main className="centre">
-          {selected ? <TicketView ticket={selected} runs={runs} busy={busy} frozen={state?.frozen ?? null} hosted={state?.features?.hosted ? state.hosted ?? null : null} onRun={() => run(selected.ticketId, "run")} onEscalate={() => run(selected.ticketId, "escalate")} onHosted={() => run(selected.ticketId, "hosted")} onFeedback={feedback} /> : <div className="empty">No tickets yet — re-seed the inbox from the presenter panel.</div>}
+          {selected ? <TicketView ticket={selected} runs={runs} busy={busy} frozen={state?.frozen ?? null} hosted={state?.features?.hosted ? state.hosted ?? null : null} routes={routes} onRun={(provider) => run(selected.ticketId, "run", provider)} onEscalate={() => run(selected.ticketId, "escalate")} onHosted={() => run(selected.ticketId, "hosted")} onCompareAll={() => compareAll(selected.ticketId)} onFeedback={feedback} /> : <div className="empty">No tickets yet — re-seed the inbox from the presenter panel.</div>}
           <Experiments arms={arms} />
         </main>
         <aside className="side">

@@ -37,6 +37,7 @@ import { HOST_CLI_COMMANDS, documentOf, isHostCliCommand, type HostCliCommand } 
 import { needsReconcile, powerView, type PowerMarker } from "./hostPower.js";
 import { redactKeyShaped } from "./redact.js";
 import { hostedConfigured, hostedRun } from "./hosted.js";
+import { DIRECT_PROVIDERS, PROVIDER_LABEL, providerConfigured, type DirectProvider } from "./providers.js";
 import { MODELS } from "./modelCatalogue.js";
 import { match } from "./router.js";
 import { runTicket, type StepRecord } from "./run.js";
@@ -180,6 +181,16 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
     case "escalate_ticket": {
       const ticket = await store.getTicket(params.ticketId!);
       if (!ticket) return { statusCode: 404, body: { error: "no_such_ticket" } };
+      // The provider switch (phase 9): `{ provider: "openai" | "anthropic" }` sends the reply to that API with the customer's
+      // own key; absent (or "bedrock"), the release's model on this host. AirPrompter's hosted route is its own route.
+      const asked = readBody(event).provider;
+      const provider: DirectProvider | null = asked === undefined || asked === "bedrock" ? null : (DIRECT_PROVIDERS as readonly unknown[]).includes(asked) ? (asked as DirectProvider) : undefined as never;
+      if (provider === undefined) return { statusCode: 400, body: { error: "unknown_provider", message: `provider must be one of bedrock, ${DIRECT_PROVIDERS.join(", ")} (AirPrompter's hosted route is POST /tickets/{id}/hosted-run)` } };
+      if (provider && (name !== "run_ticket" || !providerConfigured(env.providers, provider) || !host.direct?.[provider])) {
+        return name !== "run_ticket"
+          ? { statusCode: 400, body: { error: "provider_on_escalate", message: "the provider switch applies to a run, not an escalation" } }
+          : { statusCode: 501, body: { error: "provider_not_configured", provider, message: `the ${PROVIDER_LABEL[provider]} is not configured on this deployment: the stack names no key parameter for it (RUNBOOK.md › Keys)` } };
+      }
       const day = dayOf(new Date().toISOString());
       // Inside the invoke, after its sync pass: the freeze this container just verified refuses before a cap slot is
       // taken; then the slot, atomically; then the run. A refusal answers as itself, not as a run.
@@ -187,7 +198,7 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
         if (frozenOf(host).frozen) throw new FrozenError();
         const slot = await store.takeRunSlot(day, env.dailyRunCap);
         if (!slot.ok) return { kind: "cap", used: slot.used };
-        return { kind: "run", record: await runTicket(host, ticket, { by, kind: name === "run_ticket" ? "run" : "escalate", capUsed: slot.used }), used: slot.used };
+        return { kind: "run", record: await runTicket(host, ticket, { by, kind: name === "run_ticket" ? "run" : "escalate", capUsed: slot.used, ...(provider ? { provider } : {}) }), used: slot.used };
       }).catch(async (error: unknown) => {
         if (!(error instanceof FrozenError)) throw error;
         await store.appendEvent({ at: new Date().toISOString(), kind: "run_refused", host: env.hostId, ticketId: ticket.ticketId, reason: FROZEN_REASON, by });
@@ -260,9 +271,11 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
           cap: { day, used, cap: env.dailyRunCap },
           airprompter: { baseUrl: env.airprompter.baseUrl, environment: env.airprompter.environment, agentId: env.airprompter.agentId },
           // What the presenter panel may offer: the wire buttons exist only when the eu-west stack is deployed.
-          features: { wire: env.wireFunctionArn !== "", nudge: env.nudgeQueueUrl !== "", hosted: hostedConfigured(env), hostCli: env.wireFunctionArn !== "", power: env.powerFunctionArn !== "", demoMode: host.demoMode !== null },
+          features: { wire: env.wireFunctionArn !== "", nudge: env.nudgeQueueUrl !== "", hosted: hostedConfigured(env), openai: providerConfigured(env.providers, "openai"), anthropic: providerConfigured(env.providers, "anthropic"), hostCli: env.wireFunctionArn !== "", power: env.powerFunctionArn !== "", demoMode: host.demoMode !== null },
           demoMode,
           hosted: hostedConfigured(env) ? { target: env.hosted.target, runUrl: env.hosted.runUrl } : null,
+          // The provider switch: which direct APIs this deployment can send a reply to, and the model each names (never a key).
+          providers: Object.fromEntries(DIRECT_PROVIDERS.map((p) => [p, { configured: providerConfigured(env.providers, p), model: env.providers[p].model, label: PROVIDER_LABEL[p] }])),
           frozen: frozenOf(host),
           hostCliCommands: Object.keys(HOST_CLI_COMMANDS),
         },

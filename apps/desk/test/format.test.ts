@@ -124,3 +124,21 @@ test("config: every field required, trailing slashes trimmed", () => {
   assert.equal(parseConfig(raw).apiUrl, "https://api");
   assert.throws(() => parseConfig({ ...raw, clientId: "" }), /clientId is missing/);
 });
+
+test("phase 9: the compare table takes the latest run per route, in door order, every cell the record's own; a hosted run is the airprompter row; an escalation is not a row", async () => {
+  const { compareRows } = await import("../src/components/TicketView.js");
+  const step = (over: Record<string, unknown>) => ({ step: "reply", tag: "support.reply", versionId: "rev-3", arm: "none", model: "amazon.nova-2-lite", generation: 2, runRef: "r", rendered: null, output: "x", observation: { status: "ok", latencyMs: 900, tokens: { input: 200, output: 40 }, usageSource: "reported" }, checks: [{ name: "signed", kind: "must_match", verdict: "pass" }, { name: "short", kind: "length", verdict: "fail" }], costUsd: 0.0001, judge: { score: 0.75, taskPass: 3, taskFail: 1, taskUnclear: 0, flagged: false, model: "amazon.nova-micro" }, error: null, ...over });
+  const run = (over: Record<string, unknown>, stepOver: Record<string, unknown> = {}) => ({ runId: "a", ticketId: "T", customerId: "c", at: "2026-09-21T10:00:00Z", by: "me", host: "h", kind: "run", generation: 2, applyState: "active", steps: [step(stepOver)], triage: null, reply: "x", handoff: null, durationMs: 1, capUsed: 1, ok: true, ...over });
+  const hosted = { runId: "h", ticketId: "T", customerId: "c", at: "2026-09-21T10:03:00Z", by: "me", host: "h", kind: "hosted", target: "staging", runUrl: "https://r", subjectHash: null, catalogue: { generation: 2, releaseDigest: "d", slot: null, experiments: [] }, stream: { deltas: [], firstByteMs: 10, result: { runId: "x", runRef: "r", output: "o", model: "amazon.nova-2-lite", versionId: "rev-3", arm: "control", generation: 2, usage: { inputTokens: 210, cachedInputTokens: 0, outputTokens: 38 }, latencyMs: 1500, priceMicros: 120, priceBookRevision: "pb-1", stopReason: "end", source: "hosted" }, refusal: null }, feedback: { accepted: true, attributedTo: null, refusal: null }, compat: null, durationMs: 1, ok: true, gaps: [] };
+  const rows = compareRows([
+    run({ runId: "old", at: "2026-09-21T09:00:00Z", route: "anthropic" }, { model: "claude-opus-5", observation: { status: "ok", latencyMs: 5000 } }),
+    run({ runId: "new", at: "2026-09-21T10:02:00Z", route: "anthropic", feedback: [{ at: "", signals: { thumbs: "up" }, by: "me", filed: true }, { at: "", signals: { accepted: true }, by: "me", filed: false }] }, { model: "claude-opus-5", observation: { status: "ok", latencyMs: 2100, tokens: { input: 210, output: 38 }, usageSource: "reported" }, costUsd: 0.002, provider: { name: "anthropic", model: "claude-opus-5", applied: { max_tokens: 600 }, ignored: ["temperature"] } }),
+    run({ runId: "esc", kind: "escalate", route: "bedrock" }),
+    run({ runId: "home" }),
+    hosted,
+  ] as never);
+  assert.deepEqual(rows.map((r) => [r.route, r.model, r.latencyMs, r.costUsd, r.feedback]), [["bedrock", "amazon.nova-2-lite", 900, 0.0001, []], ["anthropic", "claude-opus-5", 2100, 0.002, ["thumbs up"]], ["airprompter", "amazon.nova-2-lite", 1500, 0.00012, ["thumbs up"]]]);
+  assert.deepEqual(rows[0]!.checks, { passed: 1, failed: 1 });
+  assert.equal(rows[2]!.checks, null, "the hosted record carries no per-check verdicts");
+  assert.deepEqual(rows[2]!.tokens, { input: 210, output: 38 });
+});

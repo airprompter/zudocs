@@ -8,7 +8,7 @@ changes one is a pull request everyone sees).
   document at `https://dwp5emkmjpv8.cloudfront.net/roots/dev/root.json` (`rootUrl` in `airprompter.config.json`),
   which is what the SDK verifies against this pin before trusting any manifest. Pinned by `scripts/dev-proof.mjs`
   and, from phase 3, by every host.
-- `prod.root.jwk.json` — the production root, from the prod cutover phase on
+- `prod.root.jwk.json` — the production root; not present yet (it lands with phase 7, the prod cutover, which is deferred)
 
 `npm run check-keys` refuses any file here with a private member.
 

@@ -107,7 +107,7 @@ button:disabled { cursor: default; opacity: 0.55; }
 .ticket-subject { font-weight: 600; }
 
 /* Ticket and runs */
-.ticket-card, .run { background: var(--card); border: 1px solid var(--rule); border-radius: 10px; padding: 18px 20px; }
+.ticket-card, .run, .compare { background: var(--card); border: 1px solid var(--rule); border-radius: 10px; padding: 18px 20px; }
 .ticket-head { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; }
 .ticket-head h1 { margin-bottom: 4px; }
 .actions { display: flex; gap: 8px; flex-shrink: 0; }
@@ -121,6 +121,17 @@ button:disabled { cursor: default; opacity: 0.55; }
 .badge { display: inline-block; padding: 2px 9px; border-radius: 6px; font-size: 12px; font-family: var(--mono); background: var(--rule-soft); color: var(--ink); }
 .badge.version { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .badge.model { background: var(--blue-soft); color: var(--blue); }
+/* Phase 9: the route a reply went through; the home route (this host's own cloud) is muted, a door out is blue. */
+.badge.route { background: var(--blue-soft); color: var(--blue); }
+.badge.route.route-home { background: var(--paper); color: var(--muted); }
+.routes { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0 4px; font-size: 12px; }
+.chip-button.route[aria-checked="true"] { border-color: var(--blue); color: var(--blue); }
+.compare { margin-bottom: 12px; }
+.compare .table-wrap { overflow-x: auto; }
+.compare-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 6px 0; }
+.compare-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--rule-soft); }
+.compare-table td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+.compare-table tr.row-failed td { color: var(--muted); }
 .badge.arm { color: var(--muted); }
 .badge.arm-live { background: var(--amber-soft); color: var(--amber); font-weight: 600; }
 .output { background: var(--paper); border-radius: 6px; padding: 12px 14px; font-size: 14px; line-height: 1.55; }

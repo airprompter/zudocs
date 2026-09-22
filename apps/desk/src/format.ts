@@ -34,6 +34,8 @@ export const TOOLTIPS = {
   nudge: "The change-notification placeholder: one message on a queue the company owns. The puller reads the origin now instead of waiting for its schedule. A nudge can only say \"look\" — pull-and-verify stays the only source of truth.",
   airgap: "A host with no route out: no internet gateway, no NAT. It reads the exchange bucket and the releases table through gateway endpoints, applies each bundle the puller sealed to its key, and cannot call a model — every render it files is a refusal, never an invented answer. Its telemetry leaves by export and arrives by import on eu-west.",
   distributionKey: "The X25519 keypair airprompter keygen generated on the host at first boot. Only the public half left it (to the exchange); the puller seals every bundle to it; the private half opens them and never leaves.",
+  routes: "The same prompt, four doors: the release's model in your own AWS account (Bedrock), the OpenAI API or the Claude API with a key of your own, or AirPrompter's hosted route where AirPrompter fronts the model. The prompt text, the variables, the checks and the judge are the same every way; what changes is where the model call goes — and what it costs, how long it takes, and how it rates.",
+  provider: "A direct API with your own key: an ordinary OpenAI or Anthropic client under the SDK's wrap(); the call names the provider's model, so the observation is filed under that model and the release's settings are applied here in the provider's names — a reasoning model takes no temperature, and the chip says so.",
   hosted: "Hosted staging: the same prompts run on AirPrompter's own execution with a run key bound to one environment — no store, no model key of ours. The stream is replayed as it arrived; the compatible endpoint shows the caller's temperature marked ignored by contract beside the version's sealed settings (the response carries no settings; the mark is the contract's word).",
   hostCli: "The operator's CLI on the eu-west host, through Session Manager's Run Command, targeted by the instance's Name tag: a fixed list of zudocs-cli commands; the CLI's own document lands on the timeline. Nothing typed here reaches a shell.",
   frozen: "A signed disable directive on the manifest: a host that syncs stops rendering the moment the manifest verifies. On the daemon host the workers render from the active release, so the frozen generation takes effect there when it is approved (SDK #51). Only the console lifts it.",
@@ -62,7 +64,26 @@ export const MODEL_LABELS: Record<string, string> = {
   "amazon.nova-2-lite": "Nova 2 Lite",
   "amazon.nova-micro": "Nova Micro",
   "anthropic.claude-haiku-4-5": "Haiku 4.5",
+  // The direct APIs' own ids (phase 9): what the call named, what the observation is filed under.
+  "gpt-5.6-luna": "GPT-5.6 Luna",
+  "gpt-5.6-terra": "GPT-5.6 Terra",
+  "gpt-5.6-sol": "GPT-5.6 Sol",
+  "claude-opus-5": "Claude Opus 5",
+  "claude-sonnet-5": "Claude Sonnet 5",
+  "claude-haiku-4-5": "Claude Haiku 4.5",
 };
+
+/** The four doors a reply can go through, in the order the desk shows them. */
+export const ROUTES = ["bedrock", "openai", "anthropic", "airprompter"] as const;
+export const ROUTE_LABELS: Record<(typeof ROUTES)[number], string> = {
+  bedrock: "Your cloud (Bedrock)",
+  openai: "OpenAI API",
+  anthropic: "Claude API",
+  airprompter: "AirPrompter API",
+};
+export function routeLabel(route: string | null | undefined): string {
+  return ROUTE_LABELS[(route ?? "bedrock") as (typeof ROUTES)[number]] ?? String(route);
+}
 
 export function modelLabel(model: string | null): string {
   if (!model) return "—";

@@ -13,7 +13,7 @@
  * says about itself, `file_key` and all). Not on the list: `policy set` — the daemon runs with `--apply-policy
  * unlock_required`, a local policy no `policy set` loosens (the operator's loosening is the us-east host's own
  * `setApplyPolicy`, a presenter action of its own); and `apply --force`, which needs a bundle file on the host and is a
- * laptop drill in `docs/strips/` instead. The command runs as a job the function hands itself; the answer lands on
+ * laptop drill (`scripts/strip.sh`) instead. The command runs as a job the function hands itself; the answer lands on
  * the timeline (the HTTP API caps an integration at 30 s and `doctor` can take a minute) after `redact.ts` has
  * scanned it for anything key-shaped.
  *

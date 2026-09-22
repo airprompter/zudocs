@@ -106,10 +106,10 @@ test("writeSeed replaces a registry directory but keeps the keep file and the de
   assert.ok(existsSync(join(dir, "golden", "support.triage.json")));
 
   const home = mkdtempSync(join(tmpdir(), "zudocs-home-"));
-  for (const name of ["zudocs", "prompt-haven", "my-app"]) mkdirSync(join(home, name));
+  for (const name of ["zudocs", "other-app", "my-app"]) mkdirSync(join(home, name));
   writeFileSync(join(home, "notes.md"), "mine\n");
   assert.throws(() => writeSeed({ outDir: home, plan }), /carries no registry marker/, "lower-case names alone are not a registry");
-  assert.deepEqual(readdirSync(home).sort(), ["my-app", "notes.md", "prompt-haven", "zudocs"], "nothing was deleted");
+  assert.deepEqual(readdirSync(home).sort(), ["my-app", "notes.md", "other-app", "zudocs"], "nothing was deleted");
   const finder = mkdtempSync(join(tmpdir(), "zudocs-finder-"));
   writeFileSync(join(finder, ".gitkeep"), "");
   writeFileSync(join(finder, ".DS_Store"), "");

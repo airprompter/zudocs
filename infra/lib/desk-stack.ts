@@ -1,5 +1,5 @@
 /**
- * The us-east-1 desk stack: the serverless host and the app a prospect watches.
+ * The us-east-1 desk stack: the serverless host and the desk app.
  *
  * - Eight on-demand DynamoDB tables (tickets, customers, runs, feedback, status, events, counters, approvals) — the
  *   desk's own data plane, which every host writes (the eu-west host by table ARN across regions, `shared-host-stack.ts`);
@@ -69,6 +69,12 @@ export interface AirPrompterIds {
   /** Hosted staging (D7): the hosted run route's origin (the execution stack's AgentRunUrl) and the environment the run key is bound to; null when the file names none. */
   readonly hostedRunUrl: string | null;
   readonly hostedTarget: "dev" | "staging" | "prod";
+  /**
+   * The provider switch (phase 9): the model id the desk names on the OpenAI API and on the Claude API, or null when
+   * the file enables neither. Enabling one names an SSM parameter (`/zudocs/<environment>/<provider>-key`) the
+   * owner writes the customer's own key into; the stack never holds a key.
+   */
+  readonly providers: { readonly openai: string | null; readonly anthropic: string | null };
   readonly organizationId: string;
   readonly agentId: string;
   readonly environment: string;
@@ -94,6 +100,27 @@ export function dailyRunCapOf(context: unknown): number {
   return value;
 }
 
+export const DIRECT_PROVIDERS = ["openai", "anthropic"] as const;
+export type DirectProvider = (typeof DIRECT_PROVIDERS)[number];
+/** The SSM SecureString the desk reads a provider's key from, by name: `/zudocs/<environment>/<provider>-key`. */
+export const providerKeyParameterOf = (environment: string, provider: DirectProvider): string => `/zudocs/${environment}/${provider}-key`;
+
+/** The `providers` block of the config file: a model id per enabled provider, a plain string, never a key. Pure. */
+export function providersOf(block: unknown): AirPrompterIds["providers"] {
+  const out = { openai: null as string | null, anthropic: null as string | null };
+  if (block === undefined || block === null) return out;
+  if (typeof block !== "object") throw new Error("airprompter.config.json: providers is an object of { openai?: { model }, anthropic?: { model } }");
+  for (const [name, entry] of Object.entries(block as Record<string, unknown>)) {
+    if (name === "$comment") continue;
+    if (!(DIRECT_PROVIDERS as readonly string[]).includes(name)) throw new Error(`airprompter.config.json: providers.${name} is not one of ${DIRECT_PROVIDERS.join(", ")}`);
+    const model = (entry as { model?: unknown } | null)?.model;
+    if (typeof model !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(model)) throw new Error(`airprompter.config.json: providers.${name}.model is a model id`);
+    if (/^sk-/.test(model)) throw new Error(`airprompter.config.json: providers.${name}.model looks like a key`);
+    out[name as DirectProvider] = model;
+  }
+  return out;
+}
+
 /** The identifiers and the pinned root from the repository, for the entry point (never a key). */
 export function readAirPrompterIds(root = repoRoot): AirPrompterIds {
   const file = JSON.parse(readFileSync(join(root, "airprompter.config.json"), "utf8")) as Record<string, string>;
@@ -113,7 +140,8 @@ export function readAirPrompterIds(root = repoRoot): AirPrompterIds {
   if (hostedRunUrl && !/^https:\/\/[^\s/]+$/.test(hostedRunUrl)) throw new Error("airprompter.config.json: hostedRunUrl is an https origin with no path (the execution stack's AgentRunUrl)");
   const hostedTarget = typeof file.hostedTarget === "string" && file.hostedTarget.trim() ? file.hostedTarget.trim() : "staging";
   if (!["dev", "staging", "prod"].includes(hostedTarget)) throw new Error("airprompter.config.json: hostedTarget must be dev, staging or prod");
-  return { baseUrl: need("baseUrl"), hostedEnvironment: hosted, rootUrl: need("rootUrl"), edgePointerUrl: pointer, hostedRunUrl, hostedTarget: hostedTarget as "dev" | "staging" | "prod", organizationId: need("organizationId"), agentId: need("agentId"), environment: need("environment"), rootJwk: JSON.stringify(jwk) };
+  const providers = providersOf((file as Record<string, unknown>).providers);
+  return { baseUrl: need("baseUrl"), hostedEnvironment: hosted, rootUrl: need("rootUrl"), edgePointerUrl: pointer, hostedRunUrl, hostedTarget: hostedTarget as "dev" | "staging" | "prod", providers, organizationId: need("organizationId"), agentId: need("agentId"), environment: need("environment"), rootJwk: JSON.stringify(jwk) };
 }
 
 export class DeskStack extends cdk.Stack {
@@ -165,6 +193,9 @@ export class DeskStack extends cdk.Stack {
     // Hosted staging (phase 6): the run key for the hosted environment, another SecureString under the same key, read by NAME on the first "Run on staging".
     const runKeyParameter = `/zudocs/${airprompter.hostedTarget}/run-key`;
     const runKeyParameterArn = this.formatArn({ service: "ssm", resource: "parameter", resourceName: runKeyParameter.slice(1) });
+    // The provider switch (phase 9): one SecureString per enabled provider under the same key, read by NAME on the first run that names it.
+    const providerParameters = DIRECT_PROVIDERS.filter((p) => airprompter.providers[p] !== null).map((p) => ({ provider: p, name: providerKeyParameterOf(airprompter.environment, p), model: airprompter.providers[p]! }));
+    const providerParameterArns = providerParameters.map((p) => this.formatArn({ service: "ssm", resource: "parameter", resourceName: p.name.slice(1) }));
     const wireFunctionArn = `arn:${this.partition}:lambda:${config.regions.sharedHost}:${this.account}:function:${WIRE_FUNCTION_NAME}`;
     const powerFunctionArn = `arn:${this.partition}:lambda:${config.regions.sharedHost}:${this.account}:function:${POWER_FUNCTION_NAME}`;
     // The demo-mode switch (phase 8): the eu-west parameter the presenter writes; the workers read it every minute.
@@ -200,6 +231,7 @@ export class DeskStack extends cdk.Stack {
         KMS_KEY_ID: this.key.keyArn,
         AGENT_KEY_PARAMETER: agentKeyParameter,
         ...(airprompter.hostedRunUrl ? { RUN_KEY_PARAMETER: runKeyParameter, AIRPROMPTER_HOSTED_RUN_URL: airprompter.hostedRunUrl, AIRPROMPTER_HOSTED_TARGET: airprompter.hostedTarget } : {}),
+        ...Object.fromEntries(providerParameters.flatMap((p) => [[`${p.provider.toUpperCase()}_KEY_PARAMETER`, p.name], [`${p.provider.toUpperCase()}_MODEL`, p.model]])),
         EU_HOST_REGION: config.regions.sharedHost,
         EU_HOST_NAME_TAG: EU_HOST_NAME_TAG,
         // The eu-west wire function, by its fixed name (no cross-region reference): the presenter's cut / restore.
@@ -228,9 +260,9 @@ export class DeskStack extends cdk.Stack {
     }
     // The store's data key: wrap and unwrap under this application's own encryption context, nothing else.
     this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["kms:Encrypt", "kms:Decrypt"], resources: [this.key.keyArn], conditions: { StringEquals: { "kms:EncryptionContext:application": "zudocs-desk" } } }));
-    // The Agent key and the staging run key: two parameters by name, decrypted by SSM on this function's behalf with this key.
-    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:GetParameter"], resources: [parameterArn, runKeyParameterArn] }));
-    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["kms:Decrypt"], resources: [this.key.keyArn], conditions: { StringEquals: { "kms:ViaService": `ssm.${this.region}.amazonaws.com`, "kms:EncryptionContext:PARAMETER_ARN": [parameterArn, runKeyParameterArn] } } }));
+    // The Agent key, the staging run key and the enabled providers' keys: parameters by name, decrypted by SSM on this function's behalf with this key.
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:GetParameter"], resources: [parameterArn, runKeyParameterArn, ...providerParameterArns] }));
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["kms:Decrypt"], resources: [this.key.keyArn], conditions: { StringEquals: { "kms:ViaService": `ssm.${this.region}.amazonaws.com`, "kms:EncryptionContext:PARAMETER_ARN": [parameterArn, runKeyParameterArn, ...providerParameterArns] } } }));
     // The presenter's one-click CLI on the eu-west host (phase 6): the desk's own Command document (created by the eu-west
     // stack, in the host's region, by its fixed name — allowed values are the allowlist, the shell line is fixed) on the one
     // instance that carries the host's Name tag, and the invocation reads. Never AWS-RunShellScript.

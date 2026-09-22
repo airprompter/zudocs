@@ -8,6 +8,12 @@
  * usage source), `ap.checks` (per-check verdicts, not recorded twice), `ap.judge`. Nothing is simulated: a model
  * that refuses leaves an error on the step and the record says so.
  *
+ * The provider switch (phase 9): a run may name a direct provider — the OpenAI API or the Claude API with the customer's
+ * own key (`providers.ts`) — and the reply step goes there instead of the release's model on Bedrock, the same render,
+ * the same checks, the same judge; the record names the provider, the model the call named, and which of the release's
+ * settings the provider took. Triage stays on the host's own path either way: the switch is about the reply the
+ * prospect reads, and the desk shows the four routes side by side (AirPrompter's hosted route is `hosted.ts`).
+ *
  * "Why this text": for each declared variable, where its value came from — the call site, the desk's source, the
  * declared default, or nothing — by the SDK's own precedence (call site over source over default), and whether it
  * is fenced. Values are the ones the desk passed or looked up; the render is shown as the SDK produced it.
@@ -22,6 +28,8 @@
 import type { Observation, Rendered, SlotVariable } from "@airprompter/agent-sdk";
 import type { RunHost } from "./runtime.js";
 import { costUsd } from "./modelCatalogue.js";
+import { costUsdDirect, type DirectCompletion, type DirectProvider } from "./providers.js";
+import type { Completion } from "./bedrock.js";
 import type { Customer, Ticket } from "./store.js";
 
 export type StepName = "triage" | "reply" | "summary" | "handoff";
@@ -48,6 +56,8 @@ export interface StepRecord {
   observation: Observation | null;
   checks: Array<{ name: string; kind: string; verdict: "pass" | "fail"; reason?: string }>;
   costUsd: number | null;
+  /** The direct provider this step went to, when one was named; null on the host's own path. */
+  provider: { name: DirectProvider; model: string; applied: Record<string, number>; ignored: string[] } | null;
   judge: { score: number | null; taskPass: number; taskFail: number; taskUnclear: number; flagged: boolean; model: string } | null;
   error: { name: string; message: string } | null;
 }
@@ -60,6 +70,8 @@ export interface RunRecord {
   by: string;
   host: string;
   kind: "run" | "escalate";
+  /** Where the reply went: the host's own path (`bedrock`) or a direct provider. */
+  route: "bedrock" | DirectProvider;
   generation: number;
   applyState: string;
   steps: StepRecord[];
@@ -101,12 +113,21 @@ export function variableOrigins(declared: readonly SlotVariable[], values: Recor
   });
 }
 
-const emptyStep = (step: StepName, tag: string): StepRecord => ({ step, tag, versionId: null, arm: null, model: null, generation: null, runRef: null, rendered: null, output: null, observation: null, checks: [], costUsd: null, judge: null, error: null });
+const emptyStep = (step: StepName, tag: string): StepRecord => ({ step, tag, versionId: null, arm: null, model: null, generation: null, runRef: null, rendered: null, output: null, observation: null, checks: [], costUsd: null, provider: null, judge: null, error: null });
 
 const errorOf = (error: unknown): { name: string; message: string } => ({ name: (error as Error)?.name ?? "Error", message: String((error as Error)?.message ?? error).slice(0, 400) });
 
-export async function runTicket(host: RunHost, ticket: Ticket, options: { by: string; kind: "run" | "escalate"; capUsed: number }): Promise<RunRecord> {
+export class ProviderNotConfiguredError extends Error {
+  constructor(readonly provider: DirectProvider) {
+    super(`the ${provider} provider is not configured on this host: the deployment names no key parameter for it (RUNBOOK.md › Keys)`);
+    this.name = "ProviderNotConfiguredError";
+  }
+}
+
+export async function runTicket(host: RunHost, ticket: Ticket, options: { by: string; kind: "run" | "escalate"; capUsed: number; provider?: DirectProvider }): Promise<RunRecord> {
   const { ap, store, callers, env } = host;
+  const direct = options.provider ? (host.direct?.[options.provider] ?? null) : null;
+  if (options.provider && !direct) throw new ProviderNotConfiguredError(options.provider);
   const started = Date.now();
   const at = new Date(started).toISOString();
   const runId = newRunId(started);
@@ -118,7 +139,7 @@ export async function runTicket(host: RunHost, ticket: Ticket, options: { by: st
   let handoff: string | null = null;
 
   /** Render one slot, call its model, run its checks, capture the SDK's observation. */
-  const runStep = async (step: StepName, tag: string, values: Record<string, string>, judge: boolean): Promise<StepRecord> => {
+  const runStep = async (step: StepName, tag: string, values: Record<string, string>, judge: boolean, viaDirect = false): Promise<StepRecord> => {
     const record = emptyStep(step, tag);
     try {
       const handle = ap.prompt(tag, { subject });
@@ -130,15 +151,20 @@ export async function runTicket(host: RunHost, ticket: Ticket, options: { by: st
       record.generation = rendered.generation;
       record.runRef = rendered.runRef;
       record.rendered = { text: rendered.text, variables: variableOrigins(declared, values, ap.status().variables.sources, { customer_tier: customer?.tier }), inference: rendered.inference ?? null };
-      const outcome = await host.observed(() => callers.complete(rendered));
+      const outcome = await host.observed((): Promise<Completion | DirectCompletion> => (viaDirect && direct ? direct.complete(rendered) : callers.complete(rendered)));
       record.observation = outcome.observations.find((o) => o.tag === tag) ?? outcome.observations[0] ?? null;
       if (outcome.result === undefined) throw outcome.error;
       const result = outcome.result;
       record.output = result.text;
+      if ("provider" in result) {
+        // The observation is filed under the model the call named; the checks are the render's; the price is the provider's list.
+        record.provider = { name: result.provider, model: result.model, applied: result.applied, ignored: result.ignored };
+        record.model = result.model;
+      }
       const outputTokens = record.observation?.tokens?.output ?? null;
       // The wrapper already counted the checks on the window; this is the per-check view, not recorded again.
       record.checks = ap.checks(rendered, result.text, { outputTokens, record: false }).results;
-      record.costUsd = costUsd(rendered.model, record.observation?.tokens, record.observation?.usageSource);
+      record.costUsd = record.provider ? costUsdDirect(record.provider.name, record.provider.model, record.observation?.tokens, record.observation?.usageSource) : costUsd(rendered.model, record.observation?.tokens, record.observation?.usageSource);
       if (judge && result.text) {
         try {
           const verdict = await ap.judge(rendered.runRef, result.text, "prompt", (prompt) => callers.judge(prompt));
@@ -159,7 +185,7 @@ export async function runTicket(host: RunHost, ticket: Ticket, options: { by: st
     const t = await runStep("triage", TAGS.triage, ticketValues, false);
     if (t.output) triage = parseTriage(t.output);
     const replyValues: Record<string, string> = customer?.tier === "enterprise" ? { ...ticketValues, tone: "formal" } : ticketValues;
-    const r = await runStep("reply", TAGS.reply, replyValues, true);
+    const r = await runStep("reply", TAGS.reply, replyValues, true, direct !== null);
     reply = r.output;
   } else {
     const s = await runStep("summary", TAGS.summary, ticketValues, false);
@@ -177,6 +203,7 @@ export async function runTicket(host: RunHost, ticket: Ticket, options: { by: st
     by: options.by,
     host: env.hostId,
     kind: options.kind,
+    route: direct?.provider ?? "bedrock",
     generation: status.generation,
     applyState: status.applyState,
     steps,
@@ -193,7 +220,7 @@ export async function runTicket(host: RunHost, ticket: Ticket, options: { by: st
     await store.updateTicketLastRun(ticket.ticketId, { runId, at, category: triage?.category ?? null, priority: triage?.priority ?? null, ...(replyStep?.versionId ? { versionId: replyStep.versionId } : {}), ...(replyStep?.arm ? { arm: replyStep.arm } : {}) });
   }
   const eventStep = steps.find((s) => s.step === "reply") ?? steps[steps.length - 1];
-  await store.appendEvent({ at: new Date().toISOString(), kind: options.kind === "run" ? "ticket_run" : "ticket_escalated", host: env.hostId, ticketId: ticket.ticketId, runId, generation: status.generation, versionId: eventStep?.versionId ?? null, arm: eventStep?.arm ?? null, model: eventStep?.model ?? null, ok: record.ok, latencyMs: eventStep?.observation?.latencyMs ?? null, by: options.by });
+  await store.appendEvent({ at: new Date().toISOString(), kind: options.kind === "run" ? "ticket_run" : "ticket_escalated", host: env.hostId, ticketId: ticket.ticketId, runId, generation: status.generation, versionId: eventStep?.versionId ?? null, arm: eventStep?.arm ?? null, model: eventStep?.model ?? null, ok: record.ok, latencyMs: eventStep?.observation?.latencyMs ?? null, route: record.route, by: options.by });
   return record;
 }
 

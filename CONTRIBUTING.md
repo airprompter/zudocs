@@ -28,8 +28,8 @@ request that goes through an adversarial review before merge, and `main` deploys
   is the one process in ap-southeast-1 with the Agent key, read from SSM by name at cold start.
 - Nothing on the air-gapped host pretends to call a model: its render probes file `status: "refused"` observations.
 - The one bundle in git is `vendored/zudocs-ci.dev.apbundle`, the `zudocs-ci` Agent's placeholder slot;
-  `npm run check-vendored` refuses any other agent or slot. The recorded strips under `docs/strips/` are written by
-  `scripts/strip.sh`, which refuses to keep anything key-shaped; do not edit them by hand.
+  `npm run check-vendored` refuses any other agent or slot. The recorded CLI strips (`scripts/strip.sh`) are written
+  outside the repository and scanned for anything key-shaped; they are never committed.
 - The desk's host CLI is an allowlist of exact `zudocs-cli` lines (`services/desk-api/src/hostCliDocument.ts`), and
   the Run Command document the eu-west stack creates from it is the only one the desk's role may send (its
   parameter's allowed values are the allowlist; the shell line is fixed); a new drill is a new entry, a redeploy and

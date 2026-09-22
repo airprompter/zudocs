@@ -11,6 +11,8 @@
  * ```
  */
 
+import type { DirectProvidersConfig } from "./providers.js";
+
 export interface DeskEnv {
   readonly tables: {
     readonly tickets: string;
@@ -39,6 +41,11 @@ export interface DeskEnv {
    * the deployment names none: the desk then says hosted staging is not configured instead of pretending.
    */
   readonly hosted: { readonly runKeyParameter: string; readonly runUrl: string; readonly target: "dev" | "staging" | "prod" };
+  /**
+   * The direct providers (phase 9): for each, the SSM SecureString NAME of the customer's own key and the provider's
+   * model id. An empty name means the desk says that provider is not configured instead of pretending.
+   */
+  readonly providers: DirectProvidersConfig;
   /** The eu-west host's region and the Name tag its instance carries: the presenter's one-click CLI runs there through Run Command. */
   readonly euHost: { readonly region: string; readonly nameTag: string };
   readonly airprompter: {
@@ -82,6 +89,12 @@ export function readEnv(env: NodeJS.ProcessEnv = process.env): DeskEnv {
   if (runUrl && !/^https:\/\/[^\s/]+$/.test(runUrl)) throw new Error("env: AIRPROMPTER_HOSTED_RUN_URL is an https origin with no path");
   const hostedTarget = env.AIRPROMPTER_HOSTED_TARGET?.trim() || "staging";
   if (!["dev", "staging", "prod"].includes(hostedTarget)) throw new Error("env: AIRPROMPTER_HOSTED_TARGET must be dev, staging or prod");
+  const providerKey = (name: string): string => {
+    const value = env[name]?.trim() || "";
+    if (/^sk-/.test(value)) throw new Error(`env: ${name} looks like a key, not a parameter name`);
+    if (value && !value.startsWith("/")) throw new Error(`env: ${name} is an SSM parameter name (it starts with /), never a key`);
+    return value;
+  };
   const demoModeParameter = env.DEMO_MODE_PARAMETER?.trim() || "";
   if (demoModeParameter && !demoModeParameter.startsWith("/")) throw new Error("env: DEMO_MODE_PARAMETER is an SSM parameter name (it starts with /)");
   const stateEpoch = need(env, "STATE_EPOCH");
@@ -104,6 +117,10 @@ export function readEnv(env: NodeJS.ProcessEnv = process.env): DeskEnv {
     demoModeParameter: demoModeParameter,
     agentKeyParameter: parameter,
     hosted: Object.freeze({ runKeyParameter, runUrl, target: hostedTarget as "dev" | "staging" | "prod" }),
+    providers: Object.freeze({
+      openai: Object.freeze({ keyParameter: providerKey("OPENAI_KEY_PARAMETER"), model: env.OPENAI_MODEL?.trim() || "gpt-5.6-luna" }),
+      anthropic: Object.freeze({ keyParameter: providerKey("ANTHROPIC_KEY_PARAMETER"), model: env.ANTHROPIC_MODEL?.trim() || "claude-opus-5" }),
+    }),
     euHost: Object.freeze({ region: env.EU_HOST_REGION?.trim() || "eu-west-1", nameTag: env.EU_HOST_NAME_TAG?.trim() || "zudocs-eu-host" }),
     airprompter: Object.freeze({
       baseUrl: need(env, "AIRPROMPTER_BASE_URL"),

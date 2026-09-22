@@ -47,12 +47,12 @@ step), the per-arm fold of its own records (`GET /arms`) with the stickiness tab
 row (read by us-east from the same signed manifest), and the freeze as the SDK reports it (a `disable` directive:
 every run refuses with HTTP 423 before a cap slot is taken). The us-east host runs golden sets before activating a
 staged release (`golden.invoke`, T34) — a failing set leaves the release staged under `auto`. The scripts:
-`demo-console` (the console's acts over the workspace API with a session token), `demo-dryrun` (the nine beats
+`demo-console` (the console's acts over the workspace API with a session token), `demo-dryrun` (every panel and console act
 asserted against the live deployment), `demo-reset` (reset means advance), `strip.sh` (the recorded CLI drills,
 scanned for anything key-shaped), `vendor.sh` (the vendoring pull request from the `zudocs-ci` Agent — a separate
 Agent with one placeholder slot, so the one committed bundle carries no Zudocs prompt), and the weekly *Vendored
 bundle* workflow (credential-less: `verify`, the verify action pinned by commit, `telemetry validate`, the tests
-that start the real SDK against the `/testing` kit). DEMO.md and RUNBOOK.md are the two faces.
+that start the real SDK against the `/testing` kit). RUNBOOK.md is the operator's side.
 
 ## Phase 8: the steady state
 
@@ -69,7 +69,7 @@ on. `npm run cost:report` and the monthly **cost check** (`services/cost-check`,
 share one Cost Explorer query (`scripts/lib/cost.mjs`): by service and by day, the budget, fixed vs variable, the
 expected month; the check files `cost/YYYY-MM.json` in the trail bucket and puts `Zudocs/Cost` metrics.
 `npm run teardown` deletes every stack in the order they can be (`scripts/lib/teardown.mjs`) and lists what
-CloudFormation leaves, with the commands; its dry run is the reviewed form. docs/COST.md has every line.
+CloudFormation leaves, with the commands; its dry run is the reviewed form. `npm run cost:report` has the numbers.
 
 ## Invariants
 
@@ -87,7 +87,7 @@ CloudFormation leaves, with the commands; its dry run is the reviewed form. docs
 - Reset means advance: generations are monotonic, a rollback is a forced downgrade held back until something newer
   is promoted, a tightened policy is loosened only on the host. `npm run demo:reset` is that rule as a script.
 - The one bundle in git is the `zudocs-ci` Agent's placeholder (`vendored/`, `scripts/check-vendored.mjs`); the
-  strips under `docs/strips/` are scanned for anything key-shaped before they are written.
+  recorded CLI strips are written outside the repository and scanned for anything key-shaped.
 - Nothing starts a host but a person: the nightly schedule only stops the eu-west host, and refuses to while demo
   mode is on or the wire is cut; the power function's IAM stops and starts instances carrying the host's Name tag
   and nothing else (no terminate, no launch). A switch that could cost money expires on its own (demo mode: four hours).

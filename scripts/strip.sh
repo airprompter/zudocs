@@ -1,13 +1,13 @@
 #!/bin/bash
-# The recorded terminal strip (beat 9 and the two laptop drills of beat 5): the released CLI against dev on this
-# laptop, every command run for real and its output captured to docs/strips/*.txt, then scanned for anything
-# key-shaped before it can be committed. The Agent key comes from AIRPROMPTER_AGENT_KEY in the environment (the
+# The recorded terminal strips (the CLI drills): the released CLI against dev on this laptop, every command run for
+# real and its output captured to ZUDOCS_STRIPS_DIR (default ~/.config/zudocs/strips — outside the repository; the
+# strips are not committed), then scanned for anything key-shaped. The Agent key comes from AIRPROMPTER_AGENT_KEY in the environment (the
 # owner's 0600 file), never argv; the strip shows the commands and what they printed, never a key — the CLI prints
 # none at any verbosity, and the scan refuses `apa_`, `apr_`, `eyJ`, a `Bearer ` header, a session token and an env
 # dump all the same. Paths are shortened and the daemon socket's per-user temp path is masked (`<tmp>/…sock`).
 #
 # What it records:
-#   docs/strips/cli.txt          keygen · pull (plaintext, dev) · verify · pull --check --max-behind · diff --against
+#   cli.txt                      keygen · pull (plaintext, dev) · verify · pull --check --max-behind · diff --against
 #                                the previous strip's bundle · apply (two generations) · status · rollback (a forced
 #                                downgrade) · unlock (refused: nothing staged) · policy show/set · apply under
 #                                unlock_required → staged · unlock --generation · apply of the older bundle (refused:
@@ -15,17 +15,17 @@
 #                                downgrade) · doctor · export-telemetry · telemetry verify · telemetry validate.
 #                                The second-run commands need an earlier generation in the cache
 #                                (~/.cache/zudocs/strips): the first run on a laptop records the first-run form.
-#   docs/strips/apply-window.txt the SDK's apply.window on a laptop store: staged under unlock_required, activated
+#   apply-window.txt             the SDK's apply.window on a laptop store: staged under unlock_required, activated
 #                                on its own when the window opens (scripts/strips/apply-window.mjs)
 #
 #   $ set -a; . ~/.config/zudocs/dev.env; set +a
-#   $ bash scripts/strip.sh                  # ~3 minutes; writes docs/strips/cli.txt and docs/strips/apply-window.txt
-#   $ bash scripts/strip.sh --scan-only      # only the secret scan over docs/strips/*.txt
+#   $ bash scripts/strip.sh                  # ~3 minutes; writes cli.txt and apply-window.txt under ZUDOCS_STRIPS_DIR
+#   $ bash scripts/strip.sh --scan-only      # only the secret scan over the strips there
 set -u
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 CLI="${AIRPROMPTER_CLI:-$ROOT/.bin/airprompter}"
-STRIPS="$ROOT/docs/strips"
+STRIPS="${ZUDOCS_STRIPS_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/zudocs/strips}"
 mkdir -p "$STRIPS"
 
 scan() {
@@ -34,7 +34,7 @@ scan() {
     echo "scan: a strip carries something key-shaped (above); not committing it" >&2
     return 1
   fi
-  echo "scan: docs/strips/*.txt carry nothing key-shaped"
+  echo "scan: $STRIPS/*.txt carry nothing key-shaped"
 }
 if [ "${1:-}" = "--scan-only" ]; then scan; exit $?; fi
 
@@ -113,8 +113,8 @@ AIRPROMPTER_CLI="$CLI" node "$ROOT/scripts/ci-telemetry-validate.mjs" 2>&1 | sed
 
 # The apply.window strip: the SDK on a laptop store, staged under unlock_required, activated when the window opens.
 say ""
-say "# apply.window: see docs/strips/apply-window.txt"
+say "# apply.window: see apply-window.txt beside this strip"
 node "$ROOT/scripts/strips/apply-window.mjs" --state-dir "$WORK/window" 2>&1 | sed -e 's#"grant":"[^"]*"#"grant":"<grant id>"#g' > "$STRIPS/apply-window.txt"
-echo "apply-window exit ${PIPESTATUS[0]} → docs/strips/apply-window.txt ($(wc -l < "$STRIPS/apply-window.txt" | tr -d ' ') lines)"
+echo "apply-window exit ${PIPESTATUS[0]} → $STRIPS/apply-window.txt ($(wc -l < "$STRIPS/apply-window.txt" | tr -d ' ') lines)"
 rm -rf "$WORK"
 scan

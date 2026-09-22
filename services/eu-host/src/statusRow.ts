@@ -93,7 +93,7 @@ export function statusFields(input: StatusInput): Record<string, unknown> {
       unlockRequests: worker?.unlockRequests ?? [],
       // Phase 6: what the attached SDK reads off the active manifest — the ramp plans it walks (one per experiment),
       // the standing directives (a freeze), the update window in force — and the golden run it last saw (none: the
-      // daemon syncs and stages; the attached SDK has no golden hook, docs/DEMO.md says so).
+      // daemon syncs and stages; the attached SDK has no golden hook).
       ramps: worker?.ramps ?? [],
       disabled: worker?.disabled ?? { agent: false, slots: [], arms: [] },
       window: worker?.window ?? null,

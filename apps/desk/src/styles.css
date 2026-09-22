@@ -126,6 +126,8 @@ button:disabled { cursor: default; opacity: 0.55; }
 .badge.route.route-home { background: var(--paper); color: var(--muted); }
 .routes { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0 4px; font-size: 12px; }
 .chip-button.route[aria-checked="true"] { border-color: var(--blue); color: var(--blue); }
+.chip-button.route.shut { text-decoration: line-through; opacity: 0.55; }
+.door { display: inline-flex; gap: 6px; align-items: center; margin-right: 10px; }
 .compare { margin-bottom: 12px; }
 .compare .table-wrap { overflow-x: auto; }
 .compare-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 6px 0; }

@@ -16,7 +16,7 @@ import { createHandler } from "../src/handler.js";
 import type { Host } from "../src/runtime.js";
 import type { ApprovalRow, Customer, Store, StatusRow, Ticket, TimelineEvent } from "../src/store.js";
 
-function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[]; status: StatusRow[]; feedback: any[]; used: number; queues: Map<string, string[]>; approvals: Map<string, ApprovalRow> } {
+function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[]; status: StatusRow[]; feedback: any[]; used: number; providerSlots: Record<string, number>; queues: Map<string, string[]>; approvals: Map<string, ApprovalRow> } {
   const customers: Customer[] = [{ customerId: "cust-3003", name: "Orbital Bank", tier: "enterprise", seats: 240, since: "2024-11-20" }];
   const tickets: Ticket[] = [{ ticketId: "T-1", customerId: "cust-3003", subject: "s", body: "the ticket text", receivedAt: "2026-09-18T09:05:00Z", channel: "email", lastRun: null }];
   const self = {
@@ -41,6 +41,14 @@ function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[];
     appendEvent: async (event: TimelineEvent) => void self.events.push(event),
     listEvents: async () => self.events,
     takeRunSlot: async (_day: string, cap: number) => (self.used < cap ? { ok: true as const, used: ++self.used } : { ok: false as const, used: self.used }),
+    providerSlots: {} as Record<string, number>,
+    takeProviderSlot: async (_day: string, provider: string, cap: number) => {
+      const n = self.providerSlots[provider] ?? 0;
+      if (n >= cap) return { ok: false as const, used: n };
+      self.providerSlots[provider] = n + 1;
+      return { ok: true as const, used: n + 1 };
+    },
+    readProviderSlots: async () => ({ ...self.providerSlots }),
     readRunSlots: async () => self.used,
     seed: async (c: Customer[], t: Ticket[]) => ({ customers: c.length, tickets: t.length }),
     enqueueTicket: async (hostId: string, ticketId: string) => { const q = self.queues.get(hostId) ?? []; q.push(ticketId); self.queues.set(hostId, q); return q.length; },
@@ -108,6 +116,14 @@ function fakeAp(store: Store, calls: string[]) {
   };
 }
 
+/** The kill switch in memory: both doors open unless a test closes one. */
+function fakeSwitch(doors: Record<string, string> = { openai: "on", anthropic: "on" }) {
+  const parameter = "/zudocs/dev/providers";
+  const state = { ...doors };
+  const view = () => ({ ...Object.fromEntries(Object.entries(state).map(([p, v]) => [p, { open: v === "on", reason: v === "on" ? null : "off" }])), parameter }) as never;
+  return { parameter, read: async () => view(), write: async (provider: string, next: string) => { state[provider] = next; return view(); }, state };
+}
+
 function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string[] } {
   const store = fakeStore();
   const calls: string[] = [];
@@ -128,6 +144,7 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
       golden: async () => ({ text: "{}", outputTokens: 2 }),
     },
     hosted: null,
+    providerSwitch: fakeSwitch() as unknown as Host["providerSwitch"],
     hostCli: async (command) => { calls.push(`host_cli:${command}`); return { command, line: `zudocs-cli ${command} --json`, status: "Success" as const, instanceId: "i-eu", document: command === "policy show" ? { via: "daemon", applyPolicy: { effective: "unlock_required", source: "local", manifestSaid: "auto" } } : command === "rollback" ? { generation: 3, forced: true, outcome: "rolled_back" } : { ok: true }, stdout: "{}", stderr: "", durationMs: 1200 }; },
     startedAt: "2026-09-18T10:00:00Z",
     sdk: "agent-sdk-ts/test",
@@ -395,4 +412,53 @@ test("the provider switch: a run names openai or anthropic and the reply goes th
   // The plain run says bedrock, and an escalation refuses the switch.
   assert.equal(parse(await handler(event("POST", "/tickets/T-1/run"))).run.route, "bedrock");
   assert.equal((await handler(event("POST", "/tickets/T-1/escalate", { provider: "anthropic" })) as { statusCode: number }).statusCode, 400);
+});
+
+test("the guards on a direct provider: a closed door refuses 503 before any call and takes no slot, the provider's own daily cap refuses 429 while Bedrock still runs, and the presenter flips a door", async () => {
+  const host = fakeHost();
+  const handler = createHandler(async () => host);
+  (host as { env: Host["env"] }).env = { ...host.env, providerDailyCap: 1, providers: { ...host.env.providers, anthropic: { keyParameter: "/zudocs/dev/anthropic-key", model: "claude-opus-5" } } };
+  (host as { direct: Host["direct"] }).direct = { openai: null, anthropic: { provider: "anthropic", model: "claude-opus-5", complete: async () => { host.calls.push("direct:anthropic"); return { text: "Hi", response: {}, provider: "anthropic", model: "claude-opus-5", applied: {}, ignored: [] }; } } };
+
+  // Door closed: 503, nothing called, no slot of either kind taken.
+  await handler(event("POST", "/presenter/provider_door", { provider: "anthropic", state: "off" }));
+  const refused = await handler(event("POST", "/tickets/T-1/run", { provider: "anthropic" }));
+  assert.equal((refused as { statusCode: number }).statusCode, 503);
+  assert.deepEqual([parse(refused).error, parse(refused).reason], ["provider_disabled", "off"]);
+  assert.deepEqual(host.calls.filter((c) => c.startsWith("direct:")), [], "a closed door calls nothing");
+  assert.equal(host.store.used, 0, "and takes no run slot");
+  assert.deepEqual(host.store.providerSlots, {}, "and no provider slot");
+  assert.ok(host.store.events.some((e) => e.kind === "provider_refused" && e.reason === "off"));
+
+  // Open it again and the run goes through, taking one slot on that provider's own line.
+  await handler(event("POST", "/presenter/provider_door", { provider: "anthropic", state: "on" }));
+  assert.equal((await handler(event("POST", "/tickets/T-1/run", { provider: "anthropic" })) as { statusCode: number }).statusCode, 200);
+  assert.deepEqual(host.store.providerSlots, { anthropic: 1 });
+
+  // The provider's line is one: the next ask refuses 429 as itself, and the release's own model still answers.
+  const capped = await handler(event("POST", "/tickets/T-1/run", { provider: "anthropic" }));
+  assert.equal((capped as { statusCode: number }).statusCode, 429);
+  assert.deepEqual([parse(capped).error, parse(capped).provider, parse(capped).cap], ["provider_cap", "anthropic", 1]);
+  assert.equal(host.calls.filter((c) => c.startsWith("direct:")).length, 1, "the capped ask called nothing");
+  assert.equal(parse(await handler(event("POST", "/tickets/T-1/run"))).run.route, "bedrock", "the daily cap on a provider never closes the host's own door");
+
+  // /state carries the doors, what each has spent and its line; the presenter refuses an unknown door or state.
+  const state = parse(await handler(event("GET", "/state")));
+  assert.deepEqual(state.providers.anthropic.door, { open: true, reason: null });
+  assert.deepEqual([state.providers.anthropic.used, state.providers.anthropic.cap], [1, 1]);
+  assert.equal(state.providers.openai.configured, false);
+  assert.equal((await handler(event("POST", "/presenter/provider_door", { provider: "mistral", state: "on" })) as { statusCode: number }).statusCode, 400);
+  assert.equal((await handler(event("POST", "/presenter/provider_door", { provider: "anthropic", state: "maybe" })) as { statusCode: number }).statusCode, 400);
+});
+
+test("a deployment that names no switch parameter reads every direct door closed, and says so rather than guessing", async () => {
+  const host = fakeHost();
+  (host as { providerSwitch: Host["providerSwitch"] }).providerSwitch = null;
+  (host as { env: Host["env"] }).env = { ...host.env, providers: { ...host.env.providers, anthropic: { keyParameter: "/p", model: "claude-opus-5" } } };
+  (host as { direct: Host["direct"] }).direct = { openai: null, anthropic: { provider: "anthropic", model: "claude-opus-5", complete: async () => ({ text: "", response: {}, provider: "anthropic", model: "claude-opus-5", applied: {}, ignored: [] }) } };
+  const handler = createHandler(async () => host);
+  const refused = await handler(event("POST", "/tickets/T-1/run", { provider: "anthropic" }));
+  assert.equal((refused as { statusCode: number }).statusCode, 503);
+  assert.equal(parse(refused).reason, "absent");
+  assert.equal((await handler(event("POST", "/presenter/provider_door", { provider: "anthropic", state: "on" })) as { statusCode: number }).statusCode, 501);
 });

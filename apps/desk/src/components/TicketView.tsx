@@ -22,16 +22,32 @@ import { isHostedRun, type AnyRun, type DirectProvider, type HostedRun, type Rou
 import { ROUTES, TOOLTIPS, armLabel, clock, latency, modelLabel, money, routeLabel, score, slug, tokens, versionBadge } from "../format";
 import { WhyThisText } from "./WhyThisText";
 
-export interface RouteAvailability { configured: boolean; model: string | null }
+export interface RouteAvailability {
+  configured: boolean;
+  model: string | null;
+  /** Phase 9: the owner's kill switch for a direct door, and what it has spent of its own daily line. */
+  door?: { open: boolean; reason: string | null };
+  used?: number;
+  cap?: number;
+}
+
+/** Why a route cannot be clicked, in the desk's own words; null when it can. Pure. */
+export function routeRefusal(route: Route, availability: RouteAvailability): string | null {
+  if (!availability.configured) return `${routeLabel(route)}: not configured on this deployment (RUNBOOK.md › Keys)`;
+  if (availability.door && !availability.door.open) return `${routeLabel(route)}: the door is closed (${availability.door.reason}) — the owner opens it on the presenter panel`;
+  if (availability.cap !== undefined && (availability.used ?? 0) >= availability.cap) return `${routeLabel(route)}: ${availability.used} of ${availability.cap} calls used today; it refuses past its own daily line`;
+  return null;
+}
 
 export function TicketView({ ticket, runs, busy, frozen, hosted, routes, onRun, onEscalate, onHosted, onCompareAll, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; hosted: { target: string; runUrl: string } | null; routes: Record<Route, RouteAvailability>; onRun: (provider?: DirectProvider) => void; onEscalate: () => void; onHosted: () => void; onCompareAll: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
   const isFrozen = frozen?.frozen ?? false;
   const disabled = busy !== null;
   const [route, setRoute] = useState<Route>("bedrock");
   const chosen = routes[route];
+  const blocked = (r: Route) => routeRefusal(r, routes[r]);
   const go = () => (route === "airprompter" ? onHosted() : route === "bedrock" ? onRun() : onRun(route));
   const runLabel = busy === "run" || busy === "hosted" ? "Running…" : busy === "compare" ? "Comparing…" : route === "bedrock" ? "Run" : `Run via ${routeLabel(route)}`;
-  const configuredCount = ROUTES.filter((r) => routes[r].configured).length;
+  const openCount = ROUTES.filter((r) => routeRefusal(r, routes[r]) === null).length;
   return (
     <div className="ticket-view">
       <section className="ticket-card">
@@ -42,16 +58,17 @@ export function TicketView({ ticket, runs, busy, frozen, hosted, routes, onRun, 
             <p className="muted">{ticket.customer?.name ?? ticket.customerId} · <span className={`chip tier-${ticket.customer?.tier ?? "unknown"}`}>{ticket.customer?.tier ?? "—"}</span> {ticket.customer ? `· ${ticket.customer.seats} seats · since ${ticket.customer.since}` : ""}</p>
           </div>
           <div className="actions" title={isFrozen ? `frozen: ${frozen?.reason ?? ""}` : undefined}>
-            <button type="button" className="button" disabled={disabled || !chosen.configured} onClick={go}>{runLabel}</button>
+            <button type="button" className="button" disabled={disabled || blocked(route) !== null} onClick={go} title={blocked(route) ?? undefined}>{runLabel}</button>
             <button type="button" className="button secondary" disabled={disabled} onClick={onEscalate}>{busy === "escalate" ? "Escalating…" : "Escalate"}</button>
-            <button type="button" className="button secondary" disabled={disabled || configuredCount < 2} onClick={onCompareAll} title={TOOLTIPS.routes}>{busy === "compare" ? "Comparing…" : "Compare all"}</button>
+            <button type="button" className="button secondary" disabled={disabled || openCount < 2} onClick={onCompareAll} title={TOOLTIPS.routes}>{busy === "compare" ? "Comparing…" : "Compare all"}</button>
           </div>
         </div>
         <div className="routes" role="radiogroup" aria-label="Where the reply goes" title={TOOLTIPS.routes}>
           <span className="muted">Send the reply through</span>
           {ROUTES.map((r) => (
-            <button key={r} type="button" role="radio" aria-checked={route === r} className={`chip-button route${route === r ? " done" : ""}`} disabled={disabled || !routes[r].configured} title={routes[r].configured ? (r === "airprompter" ? TOOLTIPS.hosted : r === "bedrock" ? "The release's pinned model, called from this account through Bedrock" : TOOLTIPS.provider) : `${routeLabel(r)}: not configured on this deployment (RUNBOOK.md › Keys)`} onClick={() => setRoute(r)}>
+            <button key={r} type="button" role="radio" aria-checked={route === r} className={`chip-button route${route === r ? " done" : ""}${blocked(r) ? " shut" : ""}`} disabled={disabled || blocked(r) !== null} title={blocked(r) ?? (r === "airprompter" ? TOOLTIPS.hosted : r === "bedrock" ? "The release's pinned model, called from this account through Bedrock" : TOOLTIPS.provider)} onClick={() => setRoute(r)}>
               {routeLabel(r)}{routes[r].model ? <span className="muted"> · {modelLabel(routes[r].model)}</span> : null}{r === "airprompter" && hosted ? <span className="muted"> · {hosted.target}</span> : null}
+              {routes[r].cap !== undefined && routes[r].door?.open ? <span className="muted" title={TOOLTIPS.providerDoor}> · {routes[r].used ?? 0}/{routes[r].cap}</span> : null}
             </button>
           ))}
         </div>

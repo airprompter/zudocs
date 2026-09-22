@@ -38,6 +38,7 @@ import { needsReconcile, powerView, type PowerMarker } from "./hostPower.js";
 import { redactKeyShaped } from "./redact.js";
 import { hostedConfigured, hostedRun } from "./hosted.js";
 import { DIRECT_PROVIDERS, PROVIDER_LABEL, providerConfigured, type DirectProvider } from "./providers.js";
+import { parseProviderSwitch, type SwitchState } from "./providerGuard.js";
 import { MODELS } from "./modelCatalogue.js";
 import { match } from "./router.js";
 import { runTicket, type StepRecord } from "./run.js";
@@ -191,11 +192,25 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
           ? { statusCode: 400, body: { error: "provider_on_escalate", message: "the provider switch applies to a run, not an escalation" } }
           : { statusCode: 501, body: { error: "provider_not_configured", provider, message: `the ${PROVIDER_LABEL[provider]} is not configured on this deployment: the stack names no key parameter for it (RUNBOOK.md › Keys)` } };
       }
+      // The two guards the budget's deny policy cannot apply to a door that is plain HTTPS egress (providerGuard.ts):
+      // the owner's kill switch first (cheap, and it takes no slot), then this provider's own daily line.
+      if (provider) {
+        const doors = host.providerSwitch ? await host.providerSwitch.read() : { ...parseProviderSwitch(null), parameter: "" };
+        const door = doors[provider];
+        if (!door.open) {
+          await store.appendEvent({ at: new Date().toISOString(), kind: "provider_refused", host: env.hostId, ticketId: ticket.ticketId, provider, reason: door.reason, by });
+          return { statusCode: 503, body: { error: "provider_disabled", provider, reason: door.reason, message: `the ${PROVIDER_LABEL[provider]} door is closed on this host (${door.reason}): the owner opens it from the presenter panel, or the parameter ${doors.parameter || "is not configured"}. Nothing was called.` } };
+        }
+      }
       const day = dayOf(new Date().toISOString());
       // Inside the invoke, after its sync pass: the freeze this container just verified refuses before a cap slot is
       // taken; then the slot, atomically; then the run. A refusal answers as itself, not as a run.
-      const outcome = await ap.invoke(async (): Promise<{ kind: "run"; record: Awaited<ReturnType<typeof runTicket>>; used: number } | { kind: "cap"; used: number }> => {
+      const outcome = await ap.invoke(async (): Promise<{ kind: "run"; record: Awaited<ReturnType<typeof runTicket>>; used: number } | { kind: "cap"; used: number } | { kind: "provider_cap"; provider: DirectProvider; used: number }> => {
         if (frozenOf(host).frozen) throw new FrozenError();
+        if (provider) {
+          const door = await store.takeProviderSlot(day, provider, env.providerDailyCap);
+          if (!door.ok) return { kind: "provider_cap", provider, used: door.used };
+        }
         const slot = await store.takeRunSlot(day, env.dailyRunCap);
         if (!slot.ok) return { kind: "cap", used: slot.used };
         return { kind: "run", record: await runTicket(host, ticket, { by, kind: name === "run_ticket" ? "run" : "escalate", capUsed: slot.used, ...(provider ? { provider } : {}) }), used: slot.used };
@@ -205,6 +220,10 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
         return { kind: "frozen" as const, used: 0 };
       });
       if (outcome.kind === "frozen") return { statusCode: 423, body: { error: "frozen", message: `this host refuses to render: ${FROZEN_REASON}. Unfreeze from the console; the next sync lifts it.`, reason: FROZEN_REASON } };
+      if (outcome.kind === "provider_cap") {
+        await store.appendEvent({ at: new Date().toISOString(), kind: "provider_cap_refused", host: env.hostId, ticketId: ticket.ticketId, provider: outcome.provider, capDay: day, cap: env.providerDailyCap, used: outcome.used, by });
+        return { statusCode: 429, body: { error: "provider_cap", provider: outcome.provider, message: `this host refuses past ${env.providerDailyCap} ${PROVIDER_LABEL[outcome.provider]} calls per UTC day; ${outcome.used} were used on ${day}. The release's own model is unaffected. Nothing was simulated.`, cap: env.providerDailyCap, used: outcome.used, day } };
+      }
       if (outcome.kind === "cap") {
         // `capDay`, not `day`: the events table's partition key is `day` and the reader does not return it.
         await store.appendEvent({ at: new Date().toISOString(), kind: "cap_refused", host: env.hostId, ticketId: ticket.ticketId, capDay: day, cap: env.dailyRunCap, used: outcome.used, by });
@@ -253,7 +272,14 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       // API, and the one answering this poll must know the freeze, the generation and the ramp the others do.
       await ap.invoke(async () => undefined);
       const day = dayOf(new Date().toISOString());
-      const [hosts, used, demoMode] = await Promise.all([store.listStatus(), store.readRunSlots(day), host.demoMode ? host.demoMode.read().catch((error: Error) => ({ mode: "off" as const, until: null, by: null, reason: `unreadable: ${error.name}`, parameter: env.demoModeParameter })) : Promise.resolve(null)]);
+      const [hosts, used, demoMode, doors, providerUsed] = await Promise.all([
+        store.listStatus(),
+        store.readRunSlots(day),
+        host.demoMode ? host.demoMode.read().catch((error: Error) => ({ mode: "off" as const, until: null, by: null, reason: `unreadable: ${error.name}`, parameter: env.demoModeParameter })) : Promise.resolve(null),
+        // A door the switch cannot be read for is closed, and says so: the same fail-closed rule the run route applies.
+        host.providerSwitch ? host.providerSwitch.read().catch((error: Error) => ({ ...parseProviderSwitch(null), parameter: `unreadable: ${error.name}` })) : Promise.resolve({ ...parseProviderSwitch(null), parameter: "" }),
+        store.readProviderSlots(day),
+      ]);
       // The eu-west host's power (phase 8): the marker folded into what the card says; a marker still in transition
       // past its grace makes this poll ask the power function to look now, so the card settles without the tick.
       const euHostId = `${env.euHost.region}/ec2`;
@@ -274,8 +300,9 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
           features: { wire: env.wireFunctionArn !== "", nudge: env.nudgeQueueUrl !== "", hosted: hostedConfigured(env), openai: providerConfigured(env.providers, "openai"), anthropic: providerConfigured(env.providers, "anthropic"), hostCli: env.wireFunctionArn !== "", power: env.powerFunctionArn !== "", demoMode: host.demoMode !== null },
           demoMode,
           hosted: hostedConfigured(env) ? { target: env.hosted.target, runUrl: env.hosted.runUrl } : null,
-          // The provider switch: which direct APIs this deployment can send a reply to, and the model each names (never a key).
-          providers: Object.fromEntries(DIRECT_PROVIDERS.map((p) => [p, { configured: providerConfigured(env.providers, p), model: env.providers[p].model, label: PROVIDER_LABEL[p] }])),
+          // The provider switch: which direct APIs this deployment can send a reply to, the model each names (never a
+          // key), whether the owner's door is open, and what each has spent of its own daily line.
+          providers: Object.fromEntries(DIRECT_PROVIDERS.map((p) => [p, { configured: providerConfigured(env.providers, p), model: env.providers[p].model, label: PROVIDER_LABEL[p], door: doors[p], used: providerUsed[p] ?? 0, cap: env.providerDailyCap }])),
           frozen: frozenOf(host),
           hostCliCommands: Object.keys(HOST_CLI_COMMANDS),
         },
@@ -484,6 +511,17 @@ async function presenter(host: Host, action: string, body: Record<string, unknow
       const { action: powerAction, ...rest } = answer;
       if (answer.refusal) return { statusCode: 409, body: { action, power: powerAction, ...rest, error: answer.refusal } };
       return { statusCode: 200, body: { action, power: powerAction, ...rest } };
+    }
+    case "provider_door": {
+      // The kill switch: `{ provider, state }` — the owner closes a door in a hurry, or opens it again, with no deploy.
+      if (!host.providerSwitch) return { statusCode: 501, body: { error: "switch_not_configured", message: "this deployment names no provider switch parameter (PROVIDERS_PARAMETER); every direct door reads closed" } };
+      const asked = body.provider;
+      if (!(DIRECT_PROVIDERS as readonly unknown[]).includes(asked)) return { statusCode: 400, body: { error: "unknown_provider", message: `provider must be one of ${DIRECT_PROVIDERS.join(", ")}` } };
+      const state = body.state;
+      if (state !== "on" && state !== "off") return { statusCode: 400, body: { error: "unknown_state", message: "state must be on or off" } };
+      const doors = await host.providerSwitch.write(asked as DirectProvider, state as SwitchState, by);
+      await store.appendEvent({ at: at(), kind: "presenter", host: env.hostId, action, by, provider: asked, state });
+      return { statusCode: 200, body: { action, provider: asked, state, doors: Object.fromEntries(DIRECT_PROVIDERS.map((p) => [p, doors[p]])), parameter: doors.parameter } };
     }
     case "demo_mode": {
       // The eu-west workers' cadence switch: on (until four hours from now) or off; the workers read it within a minute.

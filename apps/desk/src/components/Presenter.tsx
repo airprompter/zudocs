@@ -36,6 +36,8 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
   const asleep = euPower !== null && euPower.phase !== "awake";
   const mode = state?.demoMode ?? null;
   const policy = state?.host.status?.applyPolicy as { effective?: string; source?: string } | undefined;
+  // Phase 9: the direct doors this deployment has keys for — each with its switch and what it has spent of its line.
+  const doors = (["openai", "anthropic"] as const).filter((p) => state?.providers?.[p]?.configured);
   return (
     <section className="presenter">
       <div className="pane-title"><h2>Presenter</h2><span className="muted" title={TOOLTIPS.cap}>{cap ? `${cap.used.toLocaleString()} / ${cap.cap.toLocaleString()} runs today` : "—"}</span></div>
@@ -57,6 +59,22 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
         <div className="button-row" title={TOOLTIPS.nudge}>
           <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("nudge")}>Nudge the fleet</button>
           <span className="muted fine">placeholder for change notification: the puller reads the origin now</span>
+        </div>
+      ) : null}
+      {doors.length ? (
+        <div className="button-row" title={TOOLTIPS.providerDoor}>
+          <span className="muted fine">provider doors:</span>
+          {doors.map((p) => {
+            const row = state!.providers![p];
+            const open = row.door?.open ?? false;
+            return (
+              <span key={p} className="door">
+                <span className="muted fine">{row.label} {open ? "open" : `closed${row.door?.reason ? ` (${row.door.reason})` : ""}`} · {row.used ?? 0}/{row.cap ?? "—"} today:</span>
+                <button type="button" className={`chip-button${open ? " done" : ""}`} disabled={disabled || open} onClick={() => onAction("provider_door", { provider: p, state: "on" })}>open</button>
+                <button type="button" className="chip-button" disabled={disabled || !open} onClick={() => { if (confirm(`Close the ${row.label} door? Runs that name it answer 503 at once; the release's own model is unaffected.`)) onAction("provider_door", { provider: p, state: "off" }); }}>close</button>
+              </span>
+            );
+          })}
         </div>
       ) : null}
       {wire ? (

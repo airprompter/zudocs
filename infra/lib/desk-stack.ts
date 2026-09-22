@@ -37,7 +37,7 @@
  * ```
  */
 import * as cdk from "aws-cdk-lib";
-import { aws_apigatewayv2 as apigwv2, aws_apigatewayv2_authorizers as authorizers, aws_apigatewayv2_integrations as integrations, aws_budgets as budgets, aws_cloudfront as cloudfront, aws_cloudfront_origins as origins, aws_dynamodb as dynamodb, aws_events as events, aws_events_targets as eventTargets, aws_iam as iam, aws_kms as kms, aws_lambda as lambda, aws_logs as logs, aws_route53 as route53, aws_route53_targets as targets, aws_s3 as s3, aws_s3_deployment as deploy } from "aws-cdk-lib";
+import { aws_apigatewayv2 as apigwv2, aws_apigatewayv2_authorizers as authorizers, aws_apigatewayv2_integrations as integrations, aws_budgets as budgets, aws_cloudfront as cloudfront, aws_cloudfront_origins as origins, aws_dynamodb as dynamodb, aws_events as events, aws_events_targets as eventTargets, aws_iam as iam, aws_kms as kms, aws_lambda as lambda, aws_logs as logs, aws_route53 as route53, aws_route53_targets as targets, aws_s3 as s3, aws_s3_deployment as deploy, aws_ssm as ssm } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -104,6 +104,18 @@ export const DIRECT_PROVIDERS = ["openai", "anthropic"] as const;
 export type DirectProvider = (typeof DIRECT_PROVIDERS)[number];
 /** The SSM SecureString the desk reads a provider's key from, by name: `/zudocs/<environment>/<provider>-key`. */
 export const providerKeyParameterOf = (environment: string, provider: DirectProvider): string => `/zudocs/${environment}/${provider}-key`;
+/** The kill switch's parameter (phase 9): a String this stack creates with every enabled door open. */
+export const providerSwitchParameterOf = (environment: string): string => `/zudocs/${environment}/providers`;
+/** Calls per UTC day each direct provider allows before the desk refuses — the guard the budget's IAM deny cannot be. */
+export const PROVIDER_DAILY_CAP = 100;
+
+/** The per-provider cap from context (a positive integer up to the plan's line), else the plan's line. */
+export function providerDailyCapOf(context: unknown): number {
+  if (context === undefined || context === null) return PROVIDER_DAILY_CAP;
+  const value = Number(context);
+  if (!Number.isInteger(value) || value < 1 || value > PROVIDER_DAILY_CAP) throw new Error(`providerDailyCap must be an integer from 1 to ${PROVIDER_DAILY_CAP} (got ${String(context)})`);
+  return value;
+}
 
 /** The `providers` block of the config file: a model id per enabled provider, a plain string, never a key. Pure. */
 export function providersOf(block: unknown): AirPrompterIds["providers"] {
@@ -196,6 +208,15 @@ export class DeskStack extends cdk.Stack {
     // The provider switch (phase 9): one SecureString per enabled provider under the same key, read by NAME on the first run that names it.
     const providerParameters = DIRECT_PROVIDERS.filter((p) => airprompter.providers[p] !== null).map((p) => ({ provider: p, name: providerKeyParameterOf(airprompter.environment, p), model: airprompter.providers[p]! }));
     const providerParameterArns = providerParameters.map((p) => this.formatArn({ service: "ssm", resource: "parameter", resourceName: p.name.slice(1) }));
+    // The kill switch: one String in this region, created open for every enabled door. Read fail-closed, so a deleted
+    // parameter closes them; the function may read and write exactly this one (`providerGuard.ts`).
+    const switchParameter = providerSwitchParameterOf(airprompter.environment);
+    const switchParameterArn = this.formatArn({ service: "ssm", resource: "parameter", resourceName: switchParameter.slice(1) });
+    new ssm.StringParameter(this, "ProviderSwitch", {
+      parameterName: switchParameter,
+      stringValue: JSON.stringify({ ...Object.fromEntries(DIRECT_PROVIDERS.map((p) => [p, airprompter.providers[p] ? "on" : "off"])), by: "the stack", at: "1970-01-01T00:00:00.000Z" }),
+      description: "Zudocs provider switch: {openai:on|off, anthropic:on|off, by, at} — the desk's kill switch for the direct provider doors (read fail-closed; the release's own model is never gated by it)",
+    });
     const wireFunctionArn = `arn:${this.partition}:lambda:${config.regions.sharedHost}:${this.account}:function:${WIRE_FUNCTION_NAME}`;
     const powerFunctionArn = `arn:${this.partition}:lambda:${config.regions.sharedHost}:${this.account}:function:${POWER_FUNCTION_NAME}`;
     // The demo-mode switch (phase 8): the eu-west parameter the presenter writes; the workers read it every minute.
@@ -232,6 +253,8 @@ export class DeskStack extends cdk.Stack {
         AGENT_KEY_PARAMETER: agentKeyParameter,
         ...(airprompter.hostedRunUrl ? { RUN_KEY_PARAMETER: runKeyParameter, AIRPROMPTER_HOSTED_RUN_URL: airprompter.hostedRunUrl, AIRPROMPTER_HOSTED_TARGET: airprompter.hostedTarget } : {}),
         ...Object.fromEntries(providerParameters.flatMap((p) => [[`${p.provider.toUpperCase()}_KEY_PARAMETER`, p.name], [`${p.provider.toUpperCase()}_MODEL`, p.model]])),
+        PROVIDERS_PARAMETER: switchParameter,
+        PROVIDER_DAILY_CAP: String(providerDailyCapOf(this.node.tryGetContext("providerDailyCap"))),
         EU_HOST_REGION: config.regions.sharedHost,
         EU_HOST_NAME_TAG: EU_HOST_NAME_TAG,
         // The eu-west wire function, by its fixed name (no cross-region reference): the presenter's cut / restore.
@@ -284,6 +307,8 @@ export class DeskStack extends cdk.Stack {
     // (both by their fixed names in the other region).
     this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [this.formatArn({ service: "lambda", resource: "function", resourceName: DESK_FUNCTION_NAME, arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME }), wireFunctionArn, powerFunctionArn] }));
     // Demo mode: read and overwrite exactly the eu-west switch parameter (a String; no KMS involved).
+    // The provider kill switch: this one String, read and written; never a wildcard, never the SecureStrings.
+    this.fn.addToRolePolicy(new iam.PolicyStatement({ sid: "ProviderSwitch", actions: ["ssm:GetParameter", "ssm:PutParameter"], resources: [switchParameterArn] }));
     this.fn.addToRolePolicy(new iam.PolicyStatement({ sid: "DemoModeSwitch", actions: ["ssm:GetParameter", "ssm:PutParameter"], resources: [demoModeArn] }));
     this.fn.addToRolePolicy(new iam.PolicyStatement({ actions: ["sqs:SendMessage"], resources: [nudgeQueueArn] }));
     // The status tick (phase 5): the card never goes stale between runs; the invocation is a sync pass and one row.

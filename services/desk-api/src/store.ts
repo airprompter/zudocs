@@ -114,6 +114,13 @@ export interface Store {
   /** One more run today, unless the day is at the cap: atomic, refused at the line, never over. */
   takeRunSlot(day: string, cap: number): Promise<{ ok: true; used: number } | { ok: false; used: number }>;
   readRunSlots(day: string): Promise<number>;
+  /**
+   * Phase 9: a slot on one direct provider's own daily line, taken atomically on the same counter item as the run
+   * cap and additional to it — the provider keys are billed outside AWS, where the budget's deny policy cannot reach.
+   */
+  takeProviderSlot(day: string, provider: string, cap: number): Promise<{ ok: true; used: number } | { ok: false; used: number }>;
+  /** What each provider has spent of its line today, by provider name; absent providers read 0. */
+  readProviderSlots(day: string): Promise<Record<string, number>>;
   /** Replace the seeded tables' contents (tickets and customers) and forget the runs' headlines. */
   seed(customers: Customer[], tickets: Ticket[]): Promise<{ customers: number; tickets: number }>;
   /** A host's ticket queue (the presenter's "run this on eu-west now"): append, and take the oldest — atomically. */
@@ -277,6 +284,35 @@ export function createStore(client: Pick<DynamoDBDocumentClient, "send">, tables
     async readRunSlots(day) {
       const current = await send(new GetCommand({ TableName: tables.counters, Key: { pk: `day#${day}` } }));
       return Number(current.Item?.runs ?? 0);
+    },
+    async takeProviderSlot(day, provider, cap) {
+      // The provider's own attribute on the day's item: the name is a closed enum, and it rides as an expression
+      // name so a counter can never be confused with `runs` or with an attribute the caller chose.
+      const key = { pk: `day#${day}` };
+      const attribute = `provider_${provider}`;
+      try {
+        const out = await send(new UpdateCommand({
+          TableName: tables.counters,
+          Key: key,
+          UpdateExpression: "ADD #p :one",
+          ConditionExpression: "attribute_not_exists(#p) OR #p < :cap",
+          ExpressionAttributeNames: { "#p": attribute },
+          ExpressionAttributeValues: { ":one": 1, ":cap": cap },
+          ReturnValues: "ALL_NEW",
+        }));
+        return { ok: true, used: Number(out.Attributes?.[attribute] ?? 1) };
+      } catch (error) {
+        if (error instanceof ConditionalCheckFailedException || (error as { name?: string })?.name === "ConditionalCheckFailedException") {
+          const current = await send(new GetCommand({ TableName: tables.counters, Key: key }));
+          return { ok: false, used: Number(current.Item?.[attribute] ?? cap) };
+        }
+        throw error;
+      }
+    },
+    async readProviderSlots(day) {
+      const current = await send(new GetCommand({ TableName: tables.counters, Key: { pk: `day#${day}` } }));
+      const item = current.Item ?? {};
+      return Object.fromEntries(Object.entries(item).filter(([name]) => name.startsWith("provider_")).map(([name, value]) => [name.slice("provider_".length), Number(value ?? 0)]));
     },
     async seed(customers, tickets) {
       await batchPut(tables.customers, customers as unknown as Record<string, unknown>[]);

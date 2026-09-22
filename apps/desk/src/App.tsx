@@ -19,7 +19,7 @@ import { HostCards } from "./components/HostCards";
 import { Inbox } from "./components/Inbox";
 import { Presenter, type CliOutput } from "./components/Presenter";
 import { ReleaseBar } from "./components/ReleaseBar";
-import { TicketView, type RouteAvailability } from "./components/TicketView";
+import { TicketView, routeRefusal, type RouteAvailability } from "./components/TicketView";
 import { Timeline } from "./components/Timeline";
 import { ROUTES, mergeEvents } from "./format";
 
@@ -123,8 +123,8 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   /** The four doors and whether each is open on this deployment: the release's model always; a direct API when the stack names its key; hosted when it names the run key. */
   const routes = useMemo((): Record<Route, RouteAvailability> => ({
     bedrock: { configured: true, model: null },
-    openai: { configured: state?.providers?.openai.configured ?? false, model: state?.providers?.openai.model ?? null },
-    anthropic: { configured: state?.providers?.anthropic.configured ?? false, model: state?.providers?.anthropic.model ?? null },
+    openai: { configured: state?.providers?.openai.configured ?? false, model: state?.providers?.openai.model ?? null, door: state?.providers?.openai.door, used: state?.providers?.openai.used, cap: state?.providers?.openai.cap },
+    anthropic: { configured: state?.providers?.anthropic.configured ?? false, model: state?.providers?.anthropic.model ?? null, door: state?.providers?.anthropic.door, used: state?.providers?.anthropic.used, cap: state?.providers?.anthropic.cap },
     airprompter: { configured: (state?.features?.hosted ?? false) && !!state?.hosted, model: null },
   }), [state]);
 
@@ -132,7 +132,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   const compareAll = (ticketId: string) => act("compare", async () => {
     let answered = 0;
     for (const route of ROUTES) {
-      if (!routes[route].configured) continue;
+      if (routeRefusal(route, routes[route]) !== null) continue;
       if (route === "airprompter") {
         const { run } = await api.hostedRun(ticketId);
         setRuns((current) => [run, ...current]);

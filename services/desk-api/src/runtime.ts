@@ -31,6 +31,7 @@ import { createCallers, createGoldenCaller, type Callers } from "./bedrock.js";
 import { readEnv, type DeskEnv } from "./env.js";
 import { createHostedClient, type HostedClient } from "./hosted.js";
 import { createDirectCallers, type DirectCaller, type DirectProvider } from "./providers.js";
+import { createProviderSwitchPorts, type ProviderSwitchPorts } from "./providerGuard.js";
 import { runHostCli, type HostCliCommand, type HostCliResult } from "./hostCli.js";
 import { createDemoModePorts, invokePower, type DemoModePorts, type PowerAction, type PowerAnswer } from "./hostPower.js";
 import { MODELS } from "./modelCatalogue.js";
@@ -65,6 +66,8 @@ export interface Host extends RunHost {
   nudge(body: Record<string, unknown>): Promise<{ messageId: string | null }>;
   /** The hosted staging client (null when the deployment names no run key parameter or run URL). */
   readonly hosted: HostedClient | null;
+  /** Phase 9: the direct providers' kill switch (null when the deployment names no parameter — every door then reads closed). */
+  readonly providerSwitch: ProviderSwitchPorts | null;
   /** One allowlisted `zudocs-cli` command on the eu-west host through Run Command (`hostCli.ts`); a fake in tests. */
   hostCli(command: HostCliCommand, timeoutSeconds?: number): Promise<HostCliResult>;
   /** The eu-west power function (`hostPower.ts`): sleep, wake, tick; a fake in tests. */
@@ -178,6 +181,7 @@ async function startHost(): Promise<Host> {
     callers,
     hosted,
     direct,
+    providerSwitch: env.providersParameter ? createProviderSwitchPorts(env.region, env.providersParameter) : null,
     hostCli: (command, timeoutSeconds) => runHostCli({ region: env.euHost.region, nameTag: env.euHost.nameTag }, command, timeoutSeconds),
     power: (action, by) => invokePower(env.powerFunctionArn, { action, by }),
     demoMode: env.demoModeParameter ? createDemoModePorts(env.euHost.region, env.demoModeParameter) : null,

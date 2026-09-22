@@ -79,6 +79,7 @@ function fakeStore(): Store & { events: TimelineEvent[]; status: StatusRow[] } {
     putStatus: async (row: StatusRow) => void self.status.push(row), updateStatus: async () => undefined, listStatus: async () => self.status,
     appendEvent: async (e: TimelineEvent) => void self.events.push(e), listEvents: async () => self.events,
     takeRunSlot: async () => ({ ok: true, used: ++self.used }), readRunSlots: async () => self.used,
+    takeProviderSlot: async () => ({ ok: true as const, used: 1 }), readProviderSlots: async () => ({}),
     seed: async () => ({ customers: 1, tickets: 1 }), enqueueTicket: async () => 1, dequeueTicket: async () => null,
     openApproval: async () => ({ created: true }), getApproval: async () => null, listApprovals: async () => [], approve: async () => ({ ok: false, row: null }), settleApproval: async () => null,
     listRuns: async () => [], listAllFeedback: async () => [], reset: async () => ({ runs: 0, feedback: 0, approvals: 0, events: 0, counters: 0, customers: 1, tickets: 1 }),
@@ -95,7 +96,7 @@ function fakeHost(options: { power?: boolean; demoMode?: boolean; refusal?: stri
   if (options.euRow) store.status.push({ hostId: "eu-west-1/ec2", region: "eu-west-1", kind: "daemon", sdk: "x", writtenAt: iso(-60_000), status: {}, healthz: { ok: true, status: "ok", reasons: [] }, container: { instanceId: "d", coldStart: false, startedAt: "", invocations: 0 }, ...options.euRow } as StatusRow);
   let written: string | null = null;
   const host: Host & { store: ReturnType<typeof fakeStore>; calls: string[]; written: () => string | null } = {
-    env, ap, store, calls, written: () => written, callers: { judgeModel: "amazon.nova-micro", complete: async () => ({ text: "", response: {} }), judge: async () => "", golden: async () => ({ text: "", outputTokens: null }) }, hosted: null,
+    env, ap, store, calls, written: () => written, callers: { judgeModel: "amazon.nova-micro", complete: async () => ({ text: "", response: {} }), judge: async () => "", golden: async () => ({ text: "", outputTokens: null }) }, hosted: null, providerSwitch: null,
     hostCli: async (command) => { calls.push(`host_cli:${command}`); return { command, line: "", status: "Success", instanceId: "i-eu", document: {}, stdout: "{}", stderr: "", durationMs: 1 }; },
     startedAt: "2026-09-18T10:00:00Z", sdk: "agent-sdk-ts/test", invocations: 0, coldStart: true,
     observed: async (fn) => ({ result: await fn(), error: undefined, observations: [] }),

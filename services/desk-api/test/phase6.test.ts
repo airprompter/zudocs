@@ -277,6 +277,7 @@ function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[];
     putStatus: async () => undefined, updateStatus: async () => undefined, listStatus: async () => [],
     appendEvent: async (e: TimelineEvent) => void self.events.push(e), listEvents: async () => self.events,
     takeRunSlot: async () => ({ ok: true, used: ++self.used }), readRunSlots: async () => self.used,
+    takeProviderSlot: async () => ({ ok: true as const, used: 1 }), readProviderSlots: async () => ({}),
     seed: async (c: Customer[], t: Ticket[]) => ({ customers: c.length, tickets: t.length }),
     enqueueTicket: async () => 1, dequeueTicket: async () => null,
     openApproval: async () => ({ created: true }), getApproval: async (id: string) => self.approvals.get(id) ?? null, listApprovals: async () => [...self.approvals.values()],
@@ -312,6 +313,7 @@ function fakeHost(options: { frozen?: boolean; freezeOnInvoke?: boolean; ramps?:
     nudge: async () => ({ messageId: null }),
     power: async (action, by) => ({ action, hostId: "eu-west-1/ec2", instanceId: "i-eu", state: "running", changed: false, refusal: null, marker: null, message: `${action} by ${by}` }),
     demoMode: null,
+    providerSwitch: null,
   };
   return host;
 }

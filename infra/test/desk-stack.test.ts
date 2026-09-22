@@ -20,7 +20,7 @@ import { ROUTES } from "../../services/desk-api/src/router.js";
 import { buildStacks, STACK_IDS } from "../lib/app.js";
 import { readConfig } from "../lib/config.js";
 import { HOST_CLI_DOCUMENT_NAME } from "../../services/desk-api/src/hostCliDocument.js";
-import { DAILY_RUN_CAP, dailyRunCapOf, providersOf, readAirPrompterIds } from "../lib/desk-stack.js";
+import { DAILY_RUN_CAP, PROVIDER_DAILY_CAP, dailyRunCapOf, providerDailyCapOf, providersOf, readAirPrompterIds } from "../lib/desk-stack.js";
 import { CONTEXT, FLAGS, IDS, PINS, actionsOf, fixtures, statementsOf, synthAll, type Resources } from "./fixtures.js";
 
 const synth = synthAll;
@@ -90,10 +90,12 @@ test("IAM: exactly the catalogue's models, one SSM parameter by ARN, KMS under e
   assert.equal(mantle.length, 1, "the OpenAI-compatible endpoint's own action");
   assert.deepEqual(actionsOf(mantle[0]!), ["bedrock-mantle:CreateInference"]);
   assert.ok(JSON.stringify(mantle[0]!.Resource).includes(":bedrock-mantle:us-east-1:111122223333:project/default"), "the account's default Mantle project, nothing wider");
-  const ssm = statements.filter((st) => actionsOf(st).includes("ssm:GetParameter") && st.Sid !== "DemoModeSwitch");
+  const ssm = statements.filter((st) => actionsOf(st).includes("ssm:GetParameter") && st.Sid !== "DemoModeSwitch" && st.Sid !== "ProviderSwitch");
   assert.equal(ssm.length, 1);
   assert.ok(JSON.stringify(ssm[0]!.Resource).includes(":parameter/zudocs/dev/agent-key"), "one parameter, by ARN");
   assert.ok(!JSON.stringify(ssm[0]!.Resource).includes("demo-mode"), "the SecureStrings' statement never names the demo-mode switch (its own statement does, phase 8)");
+  assert.ok(!JSON.stringify(ssm[0]!.Resource).includes("parameter/zudocs/dev/providers"), "nor the provider kill switch (its own statement does, phase 9)");
+  assert.ok(!statements.some((st) => st.Sid === "ProviderSwitch" && JSON.stringify(st.Resource).includes("-key")), "and the switch's statement never reaches a key");
   assert.ok(!actionsOf(ssm[0]!).includes("ssm:GetParameters") && !actionsOf(ssm[0]!).includes("ssm:GetParametersByPath"));
   const kmsStatements = statements.filter((st) => actionsOf(st).some((a) => a.startsWith("kms:")));
   assert.equal(kmsStatements.length, 2, "the store's wrap/unwrap and SSM's decrypt");
@@ -146,10 +148,11 @@ test("phase 6: the staging run key is a second parameter by ARN under the same k
   assert.deepEqual(actionsOf(reads).sort(), ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"]);
   assert.ok(!statements.some((st) => actionsOf(st).some((a) => /ssm:StartSession|ec2:/.test(a))), "no session, no EC2 control (the power function in eu-west holds that, by tag)");
   const writes = statements.filter((st) => actionsOf(st).includes("ssm:PutParameter"));
-  assert.equal(writes.length, 1, "one parameter write: the demo-mode switch (phase 8)");
-  assert.equal(writes[0]!.Sid, "DemoModeSwitch");
-  assert.deepEqual(actionsOf(writes[0]!).sort(), ["ssm:GetParameter", "ssm:PutParameter"]);
-  assert.deepEqual(writes[0]!.Resource, "arn:aws:ssm:eu-west-1:111122223333:parameter/zudocs/dev/demo-mode", "the eu-west String by ARN — never the SecureStrings, never a wildcard");
+  assert.deepEqual(writes.map((st) => st.Sid).sort(), ["DemoModeSwitch", "ProviderSwitch"], "two parameter writes, each its own named statement: the demo-mode switch (phase 8) and the provider kill switch (phase 9)");
+  const demoWrite = writes.find((st) => st.Sid === "DemoModeSwitch")!;
+  assert.deepEqual(actionsOf(demoWrite).sort(), ["ssm:GetParameter", "ssm:PutParameter"]);
+  assert.deepEqual(demoWrite.Resource, "arn:aws:ssm:eu-west-1:111122223333:parameter/zudocs/dev/demo-mode", "the eu-west String by ARN — never the SecureStrings, never a wildcard");
+  assert.ok(!writes.some((st) => JSON.stringify(st.Resource).includes("*")), "no wildcard on either write");
   const [fn] = Object.values(desk.findResources("AWS::Lambda::Function", { Properties: { FunctionName: "zudocs-desk-api" } }) as Resources);
   const env = fn!.Properties.Environment.Variables as Record<string, string>;
   assert.equal(env.RUN_KEY_PARAMETER, "/zudocs/staging/run-key", "a name, never a key");
@@ -287,4 +290,30 @@ test("phase 9: the config file's providers block is a model id per enabled provi
   assert.throws(() => providersOf({ openai: { model: "sk-abc" } }), /looks like a key/);
   assert.throws(() => providersOf("openai"), /is an object/);
   assert.deepEqual(readAirPrompterIds().providers, { openai: "gpt-5.6-luna", anthropic: "claude-opus-5" });
+});
+
+test("phase 9: the kill switch is one String this stack creates with every enabled door open, and the function may read and write exactly it; the per-provider cap rides in the environment", () => {
+  const { desk } = synth();
+  const [param] = Object.values(desk.findResources("AWS::SSM::Parameter", { Properties: { Name: "/zudocs/dev/providers" } }) as Resources);
+  assert.ok(param, "the stack creates the switch, so an absent parameter means deleted — and a deleted switch closes the doors");
+  assert.equal(param!.Properties.Type, "String", "a switch is not a secret");
+  assert.deepEqual(JSON.parse(param!.Properties.Value as string).openai, "on", "a door the config enables starts open");
+  const [fn] = Object.values(desk.findResources("AWS::Lambda::Function", { Properties: { FunctionName: "zudocs-desk-api" } }) as Resources);
+  const env = fn!.Properties.Environment.Variables as Record<string, string>;
+  assert.equal(env.PROVIDERS_PARAMETER, "/zudocs/dev/providers");
+  assert.equal(env.PROVIDER_DAILY_CAP, String(PROVIDER_DAILY_CAP));
+  const [policy] = Object.values(desk.findResources("AWS::IAM::Policy") as Resources);
+  const statements = policy!.Properties.PolicyDocument.Statement as Array<{ Action: string | string[]; Resource: unknown; Sid?: string }>;
+  const sw = statements.find((st) => st.Sid === "ProviderSwitch")!;
+  assert.deepEqual((Array.isArray(sw.Action) ? sw.Action : [sw.Action]).sort(), ["ssm:GetParameter", "ssm:PutParameter"]);
+  assert.equal(JSON.stringify(sw.Resource).includes(":parameter/zudocs/dev/providers"), true);
+  assert.ok(!JSON.stringify(sw.Resource).includes("-key"), "the switch grant never reaches a key parameter");
+  // A door the config does not enable starts closed, and the cap takes a context override inside the plan's line.
+  const { desk: one } = synthAll(undefined, {}, { ...IDS, providers: { openai: null, anthropic: "claude-haiku-4-5" } });
+  const [oneParam] = Object.values(one.findResources("AWS::SSM::Parameter", { Properties: { Name: "/zudocs/dev/providers" } }) as Resources);
+  assert.deepEqual(JSON.parse(oneParam!.Properties.Value as string), { openai: "off", anthropic: "on", by: "the stack", at: "1970-01-01T00:00:00.000Z" });
+  assert.equal(providerDailyCapOf(undefined), PROVIDER_DAILY_CAP);
+  assert.equal(providerDailyCapOf("5"), 5);
+  assert.throws(() => providerDailyCapOf("0"), /integer from 1 to/);
+  assert.throws(() => providerDailyCapOf(String(PROVIDER_DAILY_CAP + 1)), /integer from 1 to/);
 });

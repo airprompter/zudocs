@@ -52,7 +52,7 @@
     "@airprompter/agent-sdk": "0.2.14"
   },
   "devDependencies": {
-    "@aws-sdk/client-budgets": "^3.1135.0",
+    "@aws-sdk/client-budgets": "^3.1137.0",
     "@aws-sdk/client-cloudformation": "^3.1135.0",
     "@aws-sdk/client-cloudwatch": "^3.1135.0",
     "@aws-sdk/client-cloudwatch-logs": "^3.1136.0",

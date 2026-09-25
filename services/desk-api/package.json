@@ -15,7 +15,7 @@
     "@airprompter/agent-sdk": "0.2.14",
     "@aws-crypto/sha256-js": "5.2.0",
     "@aws-sdk/client-dynamodb": "3.1135.0",
-    "@aws-sdk/client-kms": "3.1135.0",
+    "@aws-sdk/client-kms": "3.1137.0",
     "@aws-sdk/client-lambda": "3.1135.0",
     "@aws-sdk/client-sqs": "3.1135.0",
     "@aws-sdk/client-ssm": "3.1135.0",

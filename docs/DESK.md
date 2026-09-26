@@ -119,15 +119,21 @@ Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack
 
 ## The app (`apps/desk`)
 
-Sign-in is the hosted UI over PKCE with the `desk` client (no library; `src/auth.ts`). The columns: the inbox;
-the ticket with Run / Escalate and every run's cards (a run the eu-west worker made lands here too, marked with its
-host); the approvals (a release staged on a host, with its Approve button, and the last decisions with their
-instants), the fleet (host cards from the status table — the daemon host shows its store key in amber, its policy
-pin, its lease as a countdown, its sync failures and both attached workers), the presenter panel (replay N on this
-host, "run this ticket on eu-west now", heartbeat / upload / sync now, re-seed, cut / restore the wire), and the
-timeline (the events table, polled; every host's activation with its instant).
-Vocabulary is the customer's — *prompt version*, *release #N* — and *generation*, *manifest*, *slot*, *arm* live in
-tooltips. Everything shown is the API's record.
+Sign-in is the hosted UI over PKCE with the `desk` client (no library; `src/auth.ts`). After it, the owner lands
+on `/` — the support inbox. The pages are client routes (CloudFront already serves `index.html` for an unknown path):
+
+- `/` Inbox — Zudocs Support, the product: customer tickets about publish, search, SSO and billing,
+  a draft reply from the docs, and the account beside it. Signed out, the welcome and Sign in;
+  nothing calls the API. A quiet *how this reply is written* opens `runStep`. Route compare,
+  replay and the presenter live on Operator, not on this page.
+- `/daemon` Europe — the same inbox; the action is enqueue. Approvals live here.
+  *why this host waits* opens `--apply-policy unlock_required`.
+- `/fleet` Hosts — the status rows. A quiet *how this host starts* opens the source slice.
+- `/operate` — release bar, presenter, host cards, and the timeline. Europe, Hosts and Operator are quiet links.
+
+A run whose `host` is the other page names that host and links across. Vocabulary is the customer's — *prompt
+version*, *release #N* — and *generation*, *manifest*, *slot*, *arm* live in tooltips. Everything measured is the
+API's record. The sheet copies the source slice; it does not abbreviate it.
 
 ## Sign-in users
 

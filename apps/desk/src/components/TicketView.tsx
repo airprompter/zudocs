@@ -19,7 +19,8 @@
  */
 import { useEffect, useState } from "react";
 import { isHostedRun, type AnyRun, type DirectProvider, type HostedRun, type Route, type Run, type Step, type Ticket } from "../api";
-import { ROUTES, TOOLTIPS, armLabel, clock, latency, modelLabel, money, routeLabel, score, slug, tokens, versionBadge } from "../format";
+import { ROUTES, TOOLTIPS, armLabel, clock, latency, modelLabel, money, routeLabel, score, slug, versionBadge } from "../format";
+import { Behind } from "./Behind";
 import { WhyThisText } from "./WhyThisText";
 
 export interface RouteAvailability {
@@ -39,15 +40,14 @@ export function routeRefusal(route: Route, availability: RouteAvailability): str
   return null;
 }
 
-export function TicketView({ ticket, runs, busy, frozen, hosted, routes, onRun, onEscalate, onHosted, onCompareAll, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; hosted: { target: string; runUrl: string } | null; routes: Record<Route, RouteAvailability>; onRun: (provider?: DirectProvider) => void; onEscalate: () => void; onHosted: () => void; onCompareAll: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
+export function TicketView({ ticket, runs, busy, frozen, hosted, routes, enqueue, emptyNote, onBehind, onRun, onEscalate, onHosted, onCompareAll, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; hosted: { target: string; runUrl: string } | null; routes: Record<Route, RouteAvailability>; enqueue: { label: string; disabled: boolean; note: string | null; onEnqueue: () => void } | null; emptyNote: string; onBehind?: (id: string) => void; onRun: (provider?: DirectProvider) => void; onEscalate: () => void; onHosted: () => void; onCompareAll: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
   const isFrozen = frozen?.frozen ?? false;
   const disabled = busy !== null;
   const [route, setRoute] = useState<Route>("bedrock");
   const chosen = routes[route];
   const blocked = (r: Route) => routeRefusal(r, routes[r]);
   const go = () => (route === "airprompter" ? onHosted() : route === "bedrock" ? onRun() : onRun(route));
-  const runLabel = busy === "run" || busy === "hosted" ? "Running…" : busy === "compare" ? "Comparing…" : route === "bedrock" ? "Run" : `Run via ${routeLabel(route)}`;
-  const openCount = ROUTES.filter((r) => routeRefusal(r, routes[r]) === null).length;
+  const runLabel = busy === "run" || busy === "hosted" ? "Writing…" : route === "bedrock" ? "Draft reply" : `Draft via ${routeLabel(route)}`;
   return (
     <div className="ticket-view">
       <section className="ticket-card">
@@ -58,26 +58,25 @@ export function TicketView({ ticket, runs, busy, frozen, hosted, routes, onRun, 
             <p className="muted">{ticket.customer?.name ?? ticket.customerId} · <span className={`chip tier-${ticket.customer?.tier ?? "unknown"}`}>{ticket.customer?.tier ?? "—"}</span> {ticket.customer ? `· ${ticket.customer.seats} seats · since ${ticket.customer.since}` : ""}</p>
           </div>
           <div className="actions" title={isFrozen ? `frozen: ${frozen?.reason ?? ""}` : undefined}>
-            <button type="button" className="button" disabled={disabled || blocked(route) !== null} onClick={go} title={blocked(route) ?? undefined}>{runLabel}</button>
-            <button type="button" className="button secondary" disabled={disabled} onClick={onEscalate}>{busy === "escalate" ? "Escalating…" : "Escalate"}</button>
-            <button type="button" className="button secondary" disabled={disabled || openCount < 2} onClick={onCompareAll} title={TOOLTIPS.routes}>{busy === "compare" ? "Comparing…" : "Compare all"}</button>
+            {enqueue ? (
+              <button type="button" className="button" disabled={disabled || enqueue.disabled} title={enqueue.note ?? undefined} onClick={enqueue.onEnqueue}>{busy === "enqueue" ? "Enqueueing…" : enqueue.label}</button>
+            ) : (
+              <>
+                <button type="button" className="button" disabled={disabled || blocked(route) !== null} onClick={go} title={blocked(route) ?? undefined}>{runLabel}</button>
+                <button type="button" className="button secondary" disabled={disabled} onClick={onEscalate}>{busy === "escalate" ? "Escalating…" : "Escalate"}</button>
+              </>
+            )}
           </div>
         </div>
-        <div className="routes" role="radiogroup" aria-label="Where the reply goes" title={TOOLTIPS.routes}>
-          <span className="muted">Send the reply through</span>
-          {ROUTES.map((r) => (
-            <button key={r} type="button" role="radio" aria-checked={route === r} className={`chip-button route${route === r ? " done" : ""}${blocked(r) ? " shut" : ""}`} disabled={disabled || blocked(r) !== null} title={blocked(r) ?? (r === "airprompter" ? TOOLTIPS.hosted : r === "bedrock" ? "The release's pinned model, called from this account through Bedrock" : TOOLTIPS.provider)} onClick={() => setRoute(r)}>
-              {routeLabel(r)}{routes[r].model ? <span className="muted"> · {modelLabel(routes[r].model)}</span> : null}{r === "airprompter" && hosted ? <span className="muted"> · {hosted.target}</span> : null}
-              {routes[r].cap !== undefined && routes[r].door?.open ? <span className="muted" title={TOOLTIPS.providerDoor}> · {routes[r].used ?? 0}/{routes[r].cap}</span> : null}
-            </button>
-          ))}
-        </div>
-        {isFrozen ? <p className="problem fine">Frozen from the console — this host refuses to render: {frozen?.reason}. Run answers HTTP 423; unfreeze in AirPrompter and the next sync lifts it.</p> : null}
+        {enqueue?.note ? <p className="muted fine">{enqueue.note}</p> : null}
+        {enqueue && onBehind ? <p className="behind-row"><Behind id="enqueue-call" onOpen={onBehind}>how enqueue reaches the host</Behind></p> : null}
+        {isFrozen ? <p className="problem fine">Frozen from the console — this host refuses to render: {frozen?.reason}. Draft reply answers HTTP 423; unfreeze in AirPrompter and the next sync lifts it.</p> : null}
+        <p className="eyebrow thread-from">From the customer</p>
         <blockquote className="ticket-body">{ticket.body}</blockquote>
       </section>
-      {runs.length === 0 ? <p className="muted centre-note">No runs yet. Run sends this ticket through the promoted prompts on this host.</p> : null}
+      {runs.length === 0 ? <p className="muted centre-note">{emptyNote}</p> : null}
       <CompareTable runs={runs} />
-      {runs.map((run) => (isHostedRun(run) ? <HostedPanel key={run.runId} run={run} /> : <RunPanel key={run.runId} run={run} busy={busy} onFeedback={onFeedback} />))}
+      {runs.map((run) => (isHostedRun(run) ? <HostedPanel key={run.runId} run={run} /> : <RunPanel key={run.runId} run={run} busy={busy} onBehind={onBehind} onFeedback={onFeedback} />))}
     </div>
   );
 }
@@ -217,7 +216,7 @@ function HostedPanel({ run }: { run: HostedRun }) {
   );
 }
 
-function RunPanel({ run, busy, onFeedback }: { run: Run; busy: string | null; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
+function RunPanel({ run, busy, onBehind, onFeedback }: { run: Run; busy: string | null; onBehind?: (id: string) => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
   const step = (name: Step["step"]) => run.steps.find((s) => s.step === name) ?? null;
   const triage = step("triage");
   const reply = step("reply");
@@ -226,8 +225,9 @@ function RunPanel({ run, busy, onFeedback }: { run: Run; busy: string | null; on
   return (
     <section className={`run${run.ok ? "" : " run-failed"}`}>
       <div className="run-head">
-        <span className="muted">{run.kind === "run" ? "Run" : "Escalation"} · {clock(run.at)} · {run.host} · by {run.by} · {latency(run.durationMs)} end to end · run {run.capUsed.toLocaleString()} of the day</span>
+        <span className="muted">{run.kind === "run" ? "Reply" : "Escalation"} · {clock(run.at)}</span>
         {run.route && run.route !== "bedrock" ? <span className="badge route" title={TOOLTIPS.provider}>via {routeLabel(run.route)}</span> : null}
+        {onBehind ? <Behind id="run-step" onOpen={onBehind} title={TOOLTIPS.version}>how this reply is written</Behind> : null}
       </div>
       {triage ? <StepCard step={triage} title="Triage" body={run.triage ? <TriageBody triage={run.triage} raw={triage.output} /> : <pre className="output">{triage.output ?? ""}</pre>} /> : null}
       {reply ? <StepCard step={reply} title="Reply" body={<pre className="output reply">{reply.output ?? ""}</pre>} feedback={<FeedbackRow run={run} step="reply" busy={busy} onFeedback={onFeedback} />} /> : null}
@@ -261,25 +261,10 @@ function StepCard({ step, title, body, feedback }: { step: Step; title: string; 
         {step.rendered ? <button type="button" className="link" onClick={() => setWhy((v) => !v)}>{why ? "Hide" : "Why this text"}</button> : null}
       </header>
       {why && step.rendered ? <WhyThisText rendered={step.rendered} /> : null}
-      {step.provider ? (
-        <p className="muted fine" title={TOOLTIPS.provider}>
-          via the {routeLabel(step.provider.name)} with your own key · the call named <code>{step.provider.model}</code> ·
-          settings applied: {Object.entries(step.provider.applied).map(([k, v]) => `${k}=${v}`).join(", ") || "none"}
-          {step.provider.ignored.length ? <> · <span className="refusal">{step.provider.ignored.join(", ")}: the model takes none</span></> : null}
-        </p>
-      ) : null}
       {step.error ? <p className="problem">{step.error.name}: {step.error.message}{o?.errorClass ? ` (observed as ${o.errorClass})` : ""}</p> : body}
       <div className="checks">
-        {step.checks.length === 0 ? <span className="muted">no output checks declared</span> : step.checks.map((c) => <span key={c.name} className={`chip check-${c.verdict}`} title={c.reason ? `${c.kind}: ${c.reason}` : c.kind}>{c.verdict === "pass" ? "✓" : "✗"} {c.name}</span>)}
+        {step.checks.length === 0 ? null : step.checks.map((c) => <span key={c.name} className={`chip check-${c.verdict}`} title={c.reason ? `${c.kind}: ${c.reason}` : c.kind}>{c.verdict === "pass" ? "✓" : "✗"} {c.name}</span>)}
       </div>
-      <dl className="metrics">
-        <div><dt>latency</dt><dd>{latency(o?.latencyMs)}</dd></div>
-        <div><dt>tokens</dt><dd>{tokens(o?.tokens, o?.usageSource)}</dd></div>
-        <div><dt title={TOOLTIPS.usage}>usage</dt><dd>{o?.usageSource ?? "—"}</dd></div>
-        <div><dt>cost</dt><dd>{money(step.costUsd)}</dd></div>
-        <div><dt>status</dt><dd>{o?.status ?? "—"}</dd></div>
-        {step.judge ? <div><dt title={TOOLTIPS.judge}>judge</dt><dd>{score(step.judge)} <span className="muted">on {modelLabel(step.judge.model)}{step.judge.flagged ? " · flagged" : ""}</span></dd></div> : null}
-      </dl>
       {feedback}
     </article>
   );

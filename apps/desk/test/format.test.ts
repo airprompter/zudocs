@@ -19,8 +19,9 @@ test("vocabulary: the badge says prompt version and release #N; generation/manif
   assert.equal(versionBadge("support.reply", "rev-2", 1), "reply rev-2 · release #1");
   assert.equal(versionBadge("support.escalate.handoff", "rev-2", 3), "escalate handoff rev-2 · release #3");
   assert.equal(versionBadge("support.triage", null, null), "triage — · release #—");
-  assert.equal(armLabel("none"), "no experiment");
-  assert.equal(armLabel("candidate"), "arm candidate");
+  assert.equal(armLabel("none"), "no test on this ticket");
+  assert.equal(armLabel("control"), "current reply");
+  assert.equal(armLabel("candidate"), "new reply");
   assert.equal(modelLabel("openai.gpt-5-6-luna"), "GPT-5.6 Luna");
   assert.equal(modelLabel("something.else"), "something.else");
   for (const word of ["generation", "manifest", "slot"]) assert.ok(Object.values(TOOLTIPS).some((t) => t.includes(word)), `${word} is explained in a tooltip`);

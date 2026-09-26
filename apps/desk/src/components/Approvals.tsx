@@ -33,10 +33,10 @@ const DECISION_LABEL: Record<Approval["decision"], string> = { pending: "awaitin
 export function Approvals({ approvals, busy, onApprove }: { approvals: Approval[]; busy: string | null; onApprove: (approvalId: string) => void }) {
   const pending = approvals.filter((a) => a.decision === "pending");
   const recent = approvals.filter((a) => a.decision !== "pending").slice(0, 3);
-  if (approvals.length === 0) return null;
   return (
     <section className="approvals" title={TOOLTIPS.approval}>
       <div className="pane-title"><h2>Approvals</h2><span className="muted">{pending.length ? `${pending.length} staged` : "nothing waiting"}</span></div>
+      {approvals.length === 0 ? <p className="muted fine approvals-empty">nothing waiting</p> : null}
       {pending.map((a) => (
         <article key={a.approvalId} className="approval approval-pending">
           <div className="approval-head">

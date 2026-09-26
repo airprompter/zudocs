@@ -18,20 +18,42 @@
  */
 import type { HostStatus, State } from "../api";
 import { TOOLTIPS, ago, countdown, effectiveApplyState, staleRefusal } from "../format";
+import { Behind } from "./Behind";
 
-export function HostCards({ state }: { state: State | null }) {
+function snippetFor(kind: string): { id: string; label: string; title: string } | null {
+  switch (kind) {
+    case "lambda":
+      return { id: "lambda-start", label: "how this function starts", title: TOOLTIPS.release };
+    case "daemon":
+      return { id: "daemon-start", label: "how the workers attach", title: TOOLTIPS.daemon };
+    case "airgapped":
+      return { id: "airgap-start", label: "how this host starts offline", title: TOOLTIPS.airgap };
+    case "puller":
+      return { id: "airgap-start", label: "how the exchange is filled", title: TOOLTIPS.puller };
+    default:
+      return null;
+  }
+}
+
+function BehindLine({ kind, onBehind }: { kind: string; onBehind?: (id: string) => void }) {
+  const spec = snippetFor(kind);
+  if (!onBehind || !spec) return null;
+  return <p className="behind-row"><Behind id={spec.id} onOpen={onBehind} title={spec.title}>{spec.label}</Behind></p>;
+}
+
+export function HostCards({ state, onBehind }: { state: State | null; onBehind?: (id: string) => void }) {
   const hosts = [...(state?.hosts ?? [])].sort((a, b) => (a.hostId < b.hostId ? 1 : -1));
   return (
     <section className="hosts">
       <div className="pane-title"><h2>Hosts</h2><span className="muted">{hosts.length} reporting</span></div>
-      {hosts.length === 0 ? <p className="muted">No host has written its status yet — run a ticket.</p> : hosts.map((h) => (h.kind === "puller" ? <PullerCard key={h.hostId} host={h} /> : h.kind === "airgapped" ? <AirgapCard key={h.hostId} host={h} /> : <HostCard key={h.hostId} host={h} />))}
+      {hosts.length === 0 ? <p className="muted">No host has written its status yet — run a ticket.</p> : hosts.map((h) => (h.kind === "puller" ? <PullerCard key={h.hostId} host={h} onBehind={onBehind} /> : h.kind === "airgapped" ? <AirgapCard key={h.hostId} host={h} onBehind={onBehind} /> : <HostCard key={h.hostId} host={h} onBehind={onBehind} />))}
     </section>
   );
 }
 
 const shortKey = (keyId: string | null | undefined): string => (keyId ? `${keyId.slice(0, 8)}…` : "—");
 
-function HostCard({ host }: { host: HostStatus }) {
+function HostCard({ host, onBehind }: { host: HostStatus; onBehind?: (id: string) => void }) {
   // A row written while the daemon was unreachable carries a health verdict and no status block: render what is there.
   const s = host.status ?? {};
   const z = host.healthz ?? {};
@@ -80,11 +102,12 @@ function HostCard({ host }: { host: HostStatus }) {
       </dl>
       {z.reasons?.length && !asleep ? <p className={z.status === "ok" ? "muted" : "problem fine"}>{z.reasons.join(", ")}</p> : null}
       <footer className="muted">written {ago(host.writtenAt)}{asleep ? " · before the sleep" : ""}</footer>
+      <BehindLine kind={host.kind} onBehind={onBehind} />
     </article>
   );
 }
 
-function PullerCard({ host }: { host: HostStatus }) {
+function PullerCard({ host, onBehind }: { host: HostStatus; onBehind?: (id: string) => void }) {
   const s = host.status ?? {};
   const z = host.healthz ?? {};
   const stale = Date.now() - Date.parse(host.writtenAt) > 15 * 60_000;
@@ -109,11 +132,12 @@ function PullerCard({ host }: { host: HostStatus }) {
       </dl>
       {z.reasons?.length ? <p className={z.status === "ok" ? "muted" : "problem fine"}>{z.reasons.join(", ")}</p> : null}
       <footer className="muted">written {ago(host.writtenAt)}</footer>
+      <BehindLine kind={host.kind} onBehind={onBehind} />
     </article>
   );
 }
 
-function AirgapCard({ host }: { host: HostStatus }) {
+function AirgapCard({ host, onBehind }: { host: HostStatus; onBehind?: (id: string) => void }) {
   const s = host.status ?? {};
   const z = host.healthz ?? {};
   const a = host.airgap;
@@ -143,6 +167,7 @@ function AirgapCard({ host }: { host: HostStatus }) {
       </dl>
       {z.reasons?.length ? <p className={z.status === "ok" ? "muted" : "problem fine"}>{z.reasons.join(", ")}</p> : null}
       <footer className="muted">written {ago(host.writtenAt)}{host.mirroredAt ? ` · mirrored by the puller ${ago(host.mirroredAt)}` : ""}</footer>
+      <BehindLine kind={host.kind} onBehind={onBehind} />
     </article>
   );
 }

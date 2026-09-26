@@ -39,7 +39,7 @@ infra/             CDK: ZudocsCi (the deploy role), ZudocsDns (the zone), Zudocs
                    releases table, the exchange bucket, the nudge queue) and ZudocsAirgap (the air-gapped host, on demand) in
                    ap-southeast-1
 apps/landing/      the public site at zudocs.com
-apps/desk/         the desk at desk.zudocs.com: React + Vite, hosted-UI sign-in, the run panel, the fleet, approvals, the timeline
+apps/desk/         the support desk at desk.zudocs.com: React + Vite, hosted-UI sign-in, the inbox, Europe / Hosts / Operator as quiet links
 services/desk-api/ the us-east-1 host: one Lambda running the Agent SDK in on_invoke mode (docs/DESK.md)
 services/eu-host/  the eu-west-1 host: airprompterd, the Node and Python workers, the import timer, the units, the boot script, the wire, the power (docs/EU-WEST.md)
 services/cost-check/ the monthly cost check: Cost Explorer → cost/YYYY-MM.json in the trail bucket + Zudocs/Cost metrics

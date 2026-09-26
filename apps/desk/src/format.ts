@@ -92,8 +92,10 @@ export function modelLabel(model: string | null): string {
 }
 
 export function armLabel(arm: string | null): string {
-  if (!arm || arm === "none") return "no experiment";
-  return `arm ${arm}`;
+  if (!arm || arm === "none") return "no test on this ticket";
+  if (arm === "control") return "current reply";
+  if (arm === "candidate") return "new reply";
+  return arm;
 }
 
 export function latency(ms: number | null | undefined): string {

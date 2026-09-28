@@ -90,11 +90,16 @@ button:disabled { cursor: default; opacity: 0.55; }
 .release .staged { color: var(--amber); }
 .release-bad { background: var(--red-soft); color: var(--red); }
 .release .refusal { font-weight: 600; }
+.agent-line { margin: 0; padding: 7px 24px; border-bottom: 1px solid var(--rule); background: var(--card); font-size: 13px; color: var(--muted); }
+.agent-line strong { color: var(--ink); font-weight: 600; }
+.agent-line .staged { color: var(--amber); }
+.byline { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+.sync p { margin: 0 0 10px; font-size: 15px; line-height: 1.5; }
 .notice { display: flex; gap: 12px; align-items: center; padding: 8px 20px; font-size: 13px; border-bottom: 1px solid var(--rule); }
 .notice-info { background: var(--accent-soft); color: var(--accent); }
 .notice-warn { background: var(--amber-soft); color: var(--amber); }
 .notice-error { background: var(--red-soft); color: var(--red); }
-.columns { display: grid; grid-template-columns: 200px minmax(0, 1fr) 210px; flex: 1; min-height: 0; }
+.columns { display: grid; grid-template-columns: 280px minmax(0, 1fr); flex: 1; min-height: 0; }
 .route-architecture .columns, .route-operate .columns { grid-template-columns: minmax(0, 1fr); }
 .inbox, .centre, .code-drawer, .side, .rail { overflow-y: auto; min-height: 0; }
 .inbox { background: var(--card); border-right: 1px solid var(--rule); }
@@ -109,7 +114,17 @@ button:disabled { cursor: default; opacity: 0.55; }
 .behind-row { padding: 4px 16px 8px; margin: 0; }
 .host .behind-row, .this-answer .behind-row, .ticket-card .behind-row { padding-left: 0; }
 .snippet-focus { outline: 1px solid var(--accent); outline-offset: 4px; border-radius: 8px; }
-.centre { padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.centre { padding: 28px 40px 48px; display: flex; flex-direction: column; gap: 12px; }
+.reading { width: 100%; max-width: 680px; display: flex; flex-direction: column; gap: 8px; }
+.fold { border-top: 1px solid var(--rule-soft); }
+.fold summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 10px 0; }
+.fold summary:hover { color: var(--accent); }
+.fold-body { padding: 0 0 12px; display: flex; flex-direction: column; gap: 10px; }
+.fold .experiments, .fold .approvals, .fold .host { border: 0; margin: 0; padding: 0; background: transparent; }
+.fold .pane-title { padding-left: 0; padding-right: 0; }
+.letter { background: transparent; border: 0; padding: 8px 0 0; }
+.ticket-row.urgent { box-shadow: inset 3px 0 0 var(--red); }
+.ticket-row.urgent.selected { box-shadow: inset 3px 0 0 var(--accent); }
 .guide { font-size: 15px; max-width: 68ch; color: var(--ink); }
 .callout { background: var(--amber-soft); color: var(--ink); padding: 8px 12px; border-radius: 8px; }
 .centre .approvals { border: 1px solid var(--rule); border-radius: 10px; background: var(--card); }

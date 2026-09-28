@@ -7,8 +7,8 @@
     "url": "https://github.com/airprompter/airprompter-agent-sdk/releases/download/cli/v0.1.0/airprompter-linux-arm64"
   },
   "pythonSdk": {
-    "tag": "sdk-python/v0.2.14",
-    "commit": "009ea8b6e3501fc25eb88e23e2ae217384b15a0f",
+    "tag": "sdk-python/v0.2.15",
+    "commit": "12b164607e20e1b6292334cf86a434d4c4406d29",
     "repo": "https://github.com/airprompter/airprompter-agent-sdk",
     "packages": ["core", "sync", "telemetry", "runtime", "agent"]
   },

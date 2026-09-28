@@ -61,7 +61,6 @@ export function mirrorAirgap(input: { doc: AirgapStatusDoc; previous: PullerStat
       keyId: doc.keyId,
       keyPublished: doc.keyId !== null && input.keyIdInExchange === doc.keyId,
       phase: doc.phase,
-      waitingFor: doc.waitingFor,
       applies: doc.applies.slice(-5),
       renders: doc.renders,
       export: doc.export,

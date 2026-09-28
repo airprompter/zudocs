@@ -122,10 +122,15 @@ Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack
 Sign-in is the hosted UI over PKCE with the `desk` client (no library; `src/auth.ts`). After it, the owner lands
 on `/` — the support inbox. The pages are client routes (CloudFront already serves `index.html` for an unknown path):
 
-- `/` Inbox — Zudocs Support, the product: customer tickets about publish, search, SSO and billing,
-  a draft reply from the docs, and the account beside it. Signed out, the welcome and Sign in;
-  nothing calls the API. A quiet *how this reply is written* opens `runStep`. Route compare,
-  replay and the presenter live on Operator, not on this page.
+- `/` Inbox — Zudocs Support, the product: a customer list and one conversation. The customer's
+  message and the drafted reply are the page. One line under the reply names the support agent,
+  the prompt version, and — when a test is on — which reply this customer got. A line under the
+  header names the release and when AirPrompter last updated it. The A|B mix is the closed row
+  under the letter; opening it shows the scorecard. *How this reply got here* says whether this
+  letter and the desk are on the same AirPrompter release, which reply this customer got, and
+  whether the checks passed. The filled-in prompt is one more disclosure inside that.
+  Signed out, the welcome and Sign in; nothing calls the API. *how this reply is written* is
+  inside that disclosure and opens `runStep`. Route compare, replay and the presenter live on Operator.
 - `/daemon` Europe — the same inbox; the action is enqueue. Approvals live here.
   *why this host waits* opens `--apply-policy unlock_required`.
 - `/fleet` Hosts — the status rows. A quiet *how this host starts* opens the source slice.

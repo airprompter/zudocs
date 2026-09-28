@@ -90,11 +90,11 @@ demo:dryrun -- --hosted` after the fix lands; the assertion becomes the full run
   `unlock_required` — approve it on the desk (`npm run eu:proof -- --approve` proves it). The sticky flags from a
   rollback drill (SDK #45/#46) go with the old store.
 - **the air-gapped host**: `npm run airgap:down` then `npm run airgap:up` (~6 minutes); a new host is a new
-  distribution key and the puller re-seals the held generation to it — no promotion needed. Never deployed by CI.
-  While it is down no distribution key is published, and the puller writes plaintext bundles to the (private)
-  exchange bucket — allowed on dev only; the SDK refuses plaintext on any other target.
-- **the puller**: a Lambda; redeploys with `ZudocsFleet`. Its state row (`puller#…`) in the releases table carries
-  the backoff and the pointer etag; deleting it is a fresh start.
+  distribution key. A generation already written stays as written; the new key seals the next promotion. Never
+  deployed by CI. While it is down no distribution key is published, and the puller writes plaintext rows to the
+  (private) exchange bucket — allowed on dev only; the SDK refuses plaintext on any other target.
+- **the puller**: a Lambda; redeploys with `ZudocsFleet`. Its schedule is `puller/state.json` in the exchange
+  bucket (the backoff and the nudge ids). Deleting that object is a fresh schedule; the datastore's rows stay.
 
 ## Reset means advance
 

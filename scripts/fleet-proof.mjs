@@ -2,8 +2,8 @@
 /**
  * The ap-southeast-1 fleet, proved from the owner's session: the puller's row in the status table says what the
  * plan promised (a generation in the exchange, its pulls pointer-first — the log's idle ticks are CDN reads, the
- * origin at most once an hour by the stuck-pointer bound), the releases table's newest row names an object that
- * exists and `latest.json` agrees; with the flags: a nudge from the desk reaches the puller within a minute and it
+ * origin at most once an hour by the stuck-pointer bound), and the SDK datastore's `latest.json` names that
+ * generation; with the flags: a nudge from the desk reaches the puller within a minute and it
  * pulls with `skipPointer`; the air-gapped host's row is fresh, serves the exchange's generation, carries the key
  * born on it (the public half in the bucket, no private member), its probe says no route out — and, through the
  * Instance Connect Endpoint, a live `curl` from the host times out, the route table has no default route, the
@@ -13,7 +13,7 @@
  * @example
  * ```sh
  * export AWS_PROFILE=zudocs ZUDOCS_PROOF_PASSWORD='…'     # the proof user's password, from the owner's store
- * npm run fleet:proof                                     # the puller: row, table, bucket, pointer reads in the log
+ * npm run fleet:proof                                     # the puller: row, datastore, pointer reads in the log
  * npm run fleet:proof -- --nudge                          # nudge from the desk → the puller reads the origin
  * npm run fleet:proof -- --airgap                         # the air-gapped host: row, key, probe, a live shell probe
  * npm run fleet:proof -- --wait-generation 4              # a promotion reached the exchange and the air-gapped host
@@ -25,9 +25,9 @@ import { join } from "node:path";
 import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import { CloudWatchLogsClient, FilterLogEventsCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { AdminInitiateAuthCommand, CognitoIdentityProviderClient } from "@aws-sdk/client-cognito-identity-provider";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DescribeRouteTablesCommand, EC2Client } from "@aws-sdk/client-ec2";
-import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { GetFunctionConfigurationCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import { datastoreKeys } from "@airprompter/agent-sdk";
 import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { repoRoot, secretFromEnv } from "./lib/config.mjs";
 
@@ -66,7 +66,7 @@ const desk = await outputsOf(siteRegion, "ZudocsDesk");
 const fleet = await outputsOf(fleetRegion, "ZudocsFleet");
 const airgapStack = await outputsOf(fleetRegion, "ZudocsAirgap");
 if (!fleet) { console.log("ZudocsFleet is not deployed"); process.exit(1); }
-console.log(`stacks: api ${desk.ApiUrl} · exchange s3://${fleet.ExchangeBucketName} · table ${fleet.ReleasesTableName} · puller ${fleet.PullerFunctionName} (every ${fleet.PullMinutes} min) · queue ${fleet.NudgeQueueUrl.split("/").pop()} · airgap ${airgapStack ? airgapStack.InstanceId : "not deployed"}`);
+console.log(`stacks: api ${desk.ApiUrl} · exchange s3://${fleet.ExchangeBucketName} · datastore ${fleet.DatastorePrefix} · puller ${fleet.PullerFunctionName} (every ${fleet.PullMinutes} min) · queue ${fleet.NudgeQueueUrl.split("/").pop()} · airgap ${airgapStack ? airgapStack.InstanceId : "not deployed"}`);
 
 const cognito = new CognitoIdentityProviderClient({ region: siteRegion });
 const auth = await cognito.send(new AdminInitiateAuthCommand({ UserPoolId: site.UserPoolId, ClientId: site.ProofClientId, AuthFlow: "ADMIN_USER_PASSWORD_AUTH", AuthParameters: { USERNAME: proofEmail, PASSWORD: password } }));
@@ -80,7 +80,6 @@ const hostRow = async (hostId) => (await api("GET", "/state")).json.hosts?.find(
 const eventsSince = async (since) => (await api("GET", `/events?since=${encodeURIComponent(since)}`)).json.events ?? [];
 
 const s3 = new S3Client({ region: fleetRegion });
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: fleetRegion }));
 const logsClient = new CloudWatchLogsClient({ region: fleetRegion });
 const readJson = async (key) => {
   try {
@@ -100,11 +99,14 @@ const exists = async (key) => {
     throw error;
   }
 };
-const newestRow = async () => {
+const newestRelease = async () => {
   const state = (await api("GET", "/state")).json;
-  const scope = `release#${state.airprompter.agentId}/${state.airprompter.environment}`;
-  const out = await ddb.send(new QueryCommand({ TableName: fleet.ReleasesTableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": scope }, ScanIndexForward: false, Limit: 1, ConsistentRead: true }));
-  return out.Items?.[0] ?? null;
+  const cfg = await new LambdaClient({ region: fleetRegion }).send(new GetFunctionConfigurationCommand({ FunctionName: fleet.PullerFunctionName }));
+  const organizationId = cfg.Environment?.Variables?.AIRPROMPTER_ORGANIZATION_ID;
+  if (!organizationId) throw new Error("the puller has no AIRPROMPTER_ORGANIZATION_ID");
+  const keys = datastoreKeys(fleet.DatastorePrefix, { organizationId, agentId: state.airprompter.agentId, target: state.airprompter.environment, region: fleetRegion });
+  const latest = await readJson(keys.latest);
+  return { keys, latest };
 };
 const pullerLog = async (sinceMs, pattern) => {
   const events = [];
@@ -126,15 +128,12 @@ if (puller) {
   check(Date.now() - Date.parse(puller.writtenAt) < 15 * 60_000, `written ${ago(puller.writtenAt)} (within the schedule)`);
   check(puller.healthz?.status === "ok", `healthz ${puller.healthz?.status}${puller.healthz?.reasons?.length ? ` (${puller.healthz.reasons.join(", ")})` : ""}`);
   check(s.generation >= 1, `the exchange holds generation ${s.generation} (${s.keyId ? `sealed to ${String(s.keyId).slice(0, 8)}…` : "plaintext, dev"}), pulled ${ago(s.pulledAt)}`);
-  check(s.edge?.pointerKnown === true, `the edge pointer is known: idle checks go to the CDN (last origin read ${ago(s.edge?.lastOriginAt)})`);
   console.log(`  this hour: ${s.reads?.pointer ?? 0} CDN reads, ${s.reads?.origin ?? 0} API reads · last pull ${s.lastPull?.outcome}${s.lastPull?.via ? ` via ${s.lastPull.via}` : ""} (${s.lastPull?.trigger}) ${ago(s.lastPull?.at)} · nudges ${s.nudges ?? 0} · streak ${s.unchangedStreak}`);
-  const row = await newestRow();
-  check(row && row.generation === s.generation, `the releases table's newest row is generation ${row?.generation} (digest ${String(row?.releaseDigest ?? "").slice(0, 19)}…, via ${row?.via})`);
-  if (row) {
-    const object = await exists(row.object);
-    check(object.exists, `the bundle object ${row.object} exists (${object.bytes} bytes; metadata generation ${object.metadata?.generation}, keyid ${object.metadata?.keyid})`);
-    const latest = await readJson("latest.json");
-    check(latest && latest.generation === row.generation && latest.object === row.object, `latest.json points at generation ${latest?.generation}, ${latest?.object}`);
+  const held = await newestRelease();
+  check(held.latest && held.latest.generation === s.generation, `the datastore's latest.json is generation ${held.latest?.generation} (${held.keys.latest})`);
+  if (held.latest) {
+    const object = await exists(held.keys.release(held.latest.generation));
+    check(object.exists, `the release row ${held.keys.release(held.latest.generation)} exists (${object.bytes} bytes)`);
   }
   const unchanged = await pullerLog(2 * 3_600_000, '{ $.event = "unchanged" }');
   const viaPointer = unchanged.filter((e) => e.via === "pointer").length;
@@ -197,7 +196,7 @@ if (flag("--airgap")) {
     // Presence of only the allowed: the local route and the two gateway endpoints' prefix lists — no default route, no NAT, no
     // peering, no transit gateway, no interface, no egress-only gateway, nothing else.
     const allowed = (r) => r.GatewayId === "local" || (r.DestinationPrefixListId && /^vpce-/.test(String(r.GatewayId)));
-    check(routes.length === 3 && routes.every(allowed), "the VPC route table carries exactly the local route and the two gateway-endpoint prefix-list routes (S3, DynamoDB)");
+    check(routes.length === 2 && routes.every(allowed), "the VPC route table carries exactly the local route and the S3 gateway-endpoint prefix-list route");
     check((tables.RouteTables?.[0]?.Associations ?? []).some((a) => a.SubnetId === airgapStack.SubnetId), `the host's subnet ${airgapStack.SubnetId} is associated with it`);
     console.log("  through the Instance Connect Endpoint (a session key, pushed for sixty seconds):");
     const run = (remote) => spawnSync("node", [join(repoRoot, "scripts", "airgap.mjs"), "run", remote], { encoding: "utf8", env: process.env, timeout: 180_000 });

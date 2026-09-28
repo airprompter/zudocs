@@ -30,9 +30,9 @@ export const TOOLTIPS = {
   ignoredByContract: "The hosted route accepts these OpenAI parameters and ignores them by contract: the sealed version owns its settings. The response carries no settings, so this is the contract's word, not an observation.",
   lease: "How long this host may keep serving without hearing from AirPrompter. After it lapses the host degrades (keeps serving, says so) — the wire-cut drill shows it.",
   wire: "Cut: the host's outbound rules are replaced so only the desk's tables stay reachable — AirPrompter and Bedrock go dark and the card shows it. A rule restores the wire 15 minutes after a cut whatever happens.",
-  puller: "The fleet pattern: one function holds the Agent key for the region and pulls each promoted release pointer-first (an idle interval is one CDN read, no API call) into a table and an exchange bucket. Runtimes behind it hold no key.",
+  puller: "The fleet pattern: one function holds the Agent key for the region and writes each sealed release into the exchange bucket with the SDK's pullToDatastore. An idle interval is one CDN read and no API call. Runtimes behind it hold no key and hydrate from that bucket.",
   nudge: "The change-notification placeholder: one message on a queue the company owns. The puller reads the origin now instead of waiting for its schedule. A nudge can only say \"look\" — pull-and-verify stays the only source of truth.",
-  airgap: "A host with no route out: no internet gateway, no NAT. It reads the exchange bucket and the releases table through gateway endpoints, applies each bundle the puller sealed to its key, and cannot call a model — every render it files is a refusal, never an invented answer. Its telemetry leaves by export and arrives by import on eu-west.",
+  airgap: "A host with no route out: no internet gateway, no NAT. It hydrates from the exchange bucket through an S3 gateway endpoint, opens each bundle with the key born on the host, and cannot call a model — every render it files is a refusal, never an invented answer. Its telemetry leaves by export and arrives by import on eu-west.",
   distributionKey: "The X25519 keypair airprompter keygen generated on the host at first boot. Only the public half left it (to the exchange); the puller seals every bundle to it; the private half opens them and never leaves.",
   routes: "The same prompt, four doors: the release's model in your own AWS account (Bedrock), the OpenAI API or the Claude API with a key of your own, or AirPrompter's hosted route where AirPrompter fronts the model. The prompt text, the variables, the checks and the judge are the same every way; what changes is where the model call goes — and what it costs, how long it takes, and how it rates.",
   provider: "A direct API with your own key: an ordinary OpenAI or Anthropic client under the SDK's wrap(); the call names the provider's model, so the observation is filed under that model and the release's settings are applied here in the provider's names — a reasoning model takes no temperature, and the chip says so.",
@@ -96,6 +96,44 @@ export function armLabel(arm: string | null): string {
   if (arm === "control") return "current reply";
   if (arm === "candidate") return "new reply";
   return arm;
+}
+
+/** The sentence under a reply: the support agent, the prompt version, and which side of a test this customer got. */
+export function replyByline(tag: string, versionId: string | null, generation: number | null, arm: string | null): string {
+  const side = arm && arm !== "none" ? ` · this customer got the ${armLabel(arm)}` : "";
+  return `Support agent · ${versionBadge(tag, versionId, generation)}${side}`;
+}
+
+/** The closed A|B row. A live mix names the split; an idle release says so instead of hiding the row. */
+export function abTitle(ramps: Array<{ arms: string[]; weightBps: number[] }> | null | undefined, hasHistory: boolean): string {
+  if (ramps == null) return "A|B";
+  if (ramps.length === 0) return hasHistory ? "A|B · earlier results, none on this release" : "A|B · no test on this release";
+  const ramp = ramps[0]!;
+  const index = Math.max(0, ramp.arms.indexOf("candidate"));
+  const next = Math.round((ramp.weightBps[index] ?? 0) / 100);
+  const more = ramps.length > 1 ? ` · ${ramps.length - 1} more` : "";
+  return `A|B · ${100 - next}% current reply · ${next}% new reply${more}`;
+}
+
+/** Whether this reply and the desk are on the same AirPrompter release. */
+export function syncLead(replyGeneration: number | null, deskGeneration: number | null): string {
+  if (replyGeneration == null) return "This reply has no release on its record.";
+  if (deskGeneration == null || replyGeneration === deskGeneration) return `This reply was written from release #${replyGeneration}, the release this desk is running.`;
+  return `This reply was written from release #${replyGeneration}. This desk is now running release #${deskGeneration}.`;
+}
+
+/** What an A|B assignment means for the customer in front of the room. */
+export function testLine(arm: string | null): string {
+  if (!arm || arm === "none") return "No test is on this release, so every customer gets this reply.";
+  return `This customer got the ${armLabel(arm)}. The same customer gets that reply on every desk.`;
+}
+
+export function checkLine(checks: Array<{ verdict: string }>): string | null {
+  if (checks.length === 0) return null;
+  const passed = checks.filter((check) => check.verdict === "pass").length;
+  const failed = checks.length - passed;
+  if (failed === 0) return `All ${passed} checks on this reply passed.`;
+  return `${passed} passed, ${failed} failed.`;
 }
 
 export function latency(ms: number | null | undefined): string {

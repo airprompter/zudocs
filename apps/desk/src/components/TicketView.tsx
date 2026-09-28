@@ -19,8 +19,9 @@
  */
 import { useEffect, useState } from "react";
 import { isHostedRun, type AnyRun, type DirectProvider, type HostedRun, type Route, type Run, type Step, type Ticket } from "../api";
-import { ROUTES, TOOLTIPS, armLabel, clock, latency, modelLabel, money, routeLabel, score, slug, versionBadge } from "../format";
+import { ROUTES, TOOLTIPS, ago, armLabel, checkLine, clock, latency, modelLabel, money, replyByline, routeLabel, score, syncLead, testLine, versionBadge } from "../format";
 import { Behind } from "./Behind";
+import { Fold } from "./Fold";
 import { WhyThisText } from "./WhyThisText";
 
 export interface RouteAvailability {
@@ -40,43 +41,43 @@ export function routeRefusal(route: Route, availability: RouteAvailability): str
   return null;
 }
 
-export function TicketView({ ticket, runs, busy, frozen, hosted, routes, enqueue, emptyNote, onBehind, onRun, onEscalate, onHosted, onCompareAll, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; hosted: { target: string; runUrl: string } | null; routes: Record<Route, RouteAvailability>; enqueue: { label: string; disabled: boolean; note: string | null; onEnqueue: () => void } | null; emptyNote: string; onBehind?: (id: string) => void; onRun: (provider?: DirectProvider) => void; onEscalate: () => void; onHosted: () => void; onCompareAll: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
+export function TicketView({ ticket, runs, busy, frozen, routes, enqueue, elsewhere, desk, emptyNote, onBehind, onRun, onEscalate, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; hosted: { target: string; runUrl: string } | null; routes: Record<Route, RouteAvailability>; enqueue: { label: string; disabled: boolean; note: string | null; onEnqueue: () => void } | null; elsewhere: { href: string; label: string; onClick: (event: { preventDefault: () => void; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; button: number }) => void } | null; desk: { generation: number | null; staged: number | null; updatedAt: string | null } | null; emptyNote: string; onBehind?: (id: string) => void; onRun: (provider?: DirectProvider) => void; onEscalate: () => void; onHosted: () => void; onCompareAll: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
   const isFrozen = frozen?.frozen ?? false;
   const disabled = busy !== null;
-  const [route, setRoute] = useState<Route>("bedrock");
-  const chosen = routes[route];
-  const blocked = (r: Route) => routeRefusal(r, routes[r]);
-  const go = () => (route === "airprompter" ? onHosted() : route === "bedrock" ? onRun() : onRun(route));
-  const runLabel = busy === "run" || busy === "hosted" ? "Writing…" : route === "bedrock" ? "Draft reply" : `Draft via ${routeLabel(route)}`;
+  const blocked = routeRefusal("bedrock", routes.bedrock);
+  const ordered = [...runs].sort((a, b) => (a.at < b.at ? 1 : -1));
+  const latest = ordered[0] ?? null;
+  const earlier = ordered.slice(1);
   return (
     <div className="ticket-view">
       <section className="ticket-card">
         <div className="ticket-head">
           <div>
-            <p className="eyebrow">{ticket.ticketId} · {ticket.channel} · {clock(ticket.receivedAt)}</p>
             <h1>{ticket.subject}</h1>
-            <p className="muted">{ticket.customer?.name ?? ticket.customerId} · <span className={`chip tier-${ticket.customer?.tier ?? "unknown"}`}>{ticket.customer?.tier ?? "—"}</span> {ticket.customer ? `· ${ticket.customer.seats} seats · since ${ticket.customer.since}` : ""}</p>
+            <p className="muted">{ticket.customer?.name ?? ticket.customerId} · <span className={`chip tier-${ticket.customer?.tier ?? "unknown"}`}>{ticket.customer?.tier ?? "—"}</span>{ticket.customer ? ` · ${ticket.customer.seats} seats` : ""} · {ticket.ticketId}</p>
           </div>
           <div className="actions" title={isFrozen ? `frozen: ${frozen?.reason ?? ""}` : undefined}>
             {enqueue ? (
               <button type="button" className="button" disabled={disabled || enqueue.disabled} title={enqueue.note ?? undefined} onClick={enqueue.onEnqueue}>{busy === "enqueue" ? "Enqueueing…" : enqueue.label}</button>
             ) : (
               <>
-                <button type="button" className="button" disabled={disabled || blocked(route) !== null} onClick={go} title={blocked(route) ?? undefined}>{runLabel}</button>
+                <button type="button" className="button" disabled={disabled || blocked !== null} onClick={() => onRun()} title={blocked ?? undefined}>{busy === "run" || busy === "hosted" ? "Writing…" : "Draft reply"}</button>
                 <button type="button" className="button secondary" disabled={disabled} onClick={onEscalate}>{busy === "escalate" ? "Escalating…" : "Escalate"}</button>
               </>
             )}
           </div>
         </div>
-        {enqueue?.note ? <p className="muted fine">{enqueue.note}</p> : null}
-        {enqueue && onBehind ? <p className="behind-row"><Behind id="enqueue-call" onOpen={onBehind}>how enqueue reaches the host</Behind></p> : null}
         {isFrozen ? <p className="problem fine">Frozen from the console — this host refuses to render: {frozen?.reason}. Draft reply answers HTTP 423; unfreeze in AirPrompter and the next sync lifts it.</p> : null}
         <p className="eyebrow thread-from">From the customer</p>
         <blockquote className="ticket-body">{ticket.body}</blockquote>
       </section>
-      {runs.length === 0 ? <p className="muted centre-note">{emptyNote}</p> : null}
+      {latest ? (isHostedRun(latest) ? <HostedPanel run={latest} /> : <RunPanel run={latest} busy={busy} elsewhere={elsewhere} desk={desk} enqueueNote={enqueue?.note ?? null} onBehind={onBehind} onFeedback={onFeedback} />) : <p className="muted centre-note">{emptyNote}</p>}
+      {earlier.length ? (
+        <Fold title={`Earlier replies · ${earlier.length}`}>
+          {earlier.map((run) => (isHostedRun(run) ? <HostedPanel key={run.runId} run={run} /> : <RunPanel key={run.runId} run={run} busy={busy} elsewhere={null} desk={desk} enqueueNote={null} onBehind={onBehind} onFeedback={onFeedback} />))}
+        </Fold>
+      ) : null}
       <CompareTable runs={runs} />
-      {runs.map((run) => (isHostedRun(run) ? <HostedPanel key={run.runId} run={run} /> : <RunPanel key={run.runId} run={run} busy={busy} onBehind={onBehind} onFeedback={onFeedback} />))}
     </div>
   );
 }
@@ -107,6 +108,7 @@ function CompareTable({ runs }: { runs: AnyRun[] }) {
   const rows = compareRows(runs);
   if (rows.length < 2) return null;
   return (
+    <Fold title={`Same ticket, ${rows.length} routes`}>
     <section className="compare" title={TOOLTIPS.routes}>
       <div className="run-head"><span className="muted">The same ticket, the same prompt — {rows.length} routes, latest run each.</span></div>
       <div className="table-wrap">
@@ -130,6 +132,7 @@ function CompareTable({ runs }: { runs: AnyRun[] }) {
       </div>
       <p className="muted fine">cost is list price from reported usage; the hosted route's price is the route's own price book; the judge runs on this host's judge model for the runs it made.</p>
     </section>
+    </Fold>
   );
 }
 
@@ -151,8 +154,12 @@ function HostedPanel({ run }: { run: HostedRun }) {
   const result = run.stream.result;
   const inference = run.catalogue.slot?.inference ?? null;
   const total = deltas.length ? deltas[deltas.length - 1]!.atMs : 0;
+  const letter = deltas.slice(0, shown || (replaying ? 0 : deltas.length)).map((d) => d.text).join("");
   return (
-    <section className={`run hosted${run.ok ? "" : " run-failed"}`}>
+    <section className={`run hosted letter${run.ok ? "" : " run-failed"}`}>
+      {run.stream.refusal ? <p className="problem">the run route refused: {run.stream.refusal.code} (HTTP {run.stream.refusal.status}) — {run.stream.refusal.message}{run.stream.refusal.detail ? ` · ${run.stream.refusal.detail}` : ""}</p> : <pre className="output reply">{letter}{replaying && shown < deltas.length ? "▍" : ""}</pre>}
+      {result && !run.stream.refusal ? <p className="byline" title={TOOLTIPS.version}>{replyByline(run.catalogue.slot?.tag ?? "support.reply", result.versionId, result.generation, result.arm)}</p> : null}
+      <Fold title="Details">
       <div className="run-head">
         <span className="muted">Hosted run on {run.target} · {clock(run.at)} · via {run.runUrl.replace("https://", "")} · by {run.by} · {latency(run.durationMs)} end to end · release #{run.catalogue.generation}</span>
       </div>
@@ -167,12 +174,7 @@ function HostedPanel({ run }: { run: HostedRun }) {
           </> : <span className="badge model">no run</span>}
           {deltas.length ? <button type="button" className="link" onClick={() => { setShown(0); setReplaying(true); }}>{replaying ? "Replaying…" : shown ? "Replay the stream again" : "Replay the stream"}</button> : null}
         </header>
-        {run.stream.refusal ? <p className="problem">the run route refused: {run.stream.refusal.code} (HTTP {run.stream.refusal.status}) — {run.stream.refusal.message}{run.stream.refusal.detail ? ` · ${run.stream.refusal.detail}` : ""}</p> : (
-          <>
-            <pre className="output reply">{deltas.slice(0, shown || (replaying ? 0 : deltas.length)).map((d) => d.text).join("")}{replaying && shown < deltas.length ? "▍" : ""}</pre>
-            <p className="muted fine">{deltas.length} deltas over {latency(total)} as the route sent them (first byte {latency(run.stream.firstByteMs)} after the POST); the replay keeps every gap as recorded — a recording, not an animation.</p>
-          </>
-        )}
+        <p className="muted fine">{deltas.length} deltas over {latency(total)} as the route sent them (first byte {latency(run.stream.firstByteMs)} after the POST); the replay keeps every gap as recorded — a recording, not an animation.</p>
         {result ? (
           <dl className="metrics">
             <div><dt>latency</dt><dd>{latency(result.latencyMs)}</dd></div>
@@ -212,61 +214,42 @@ function HostedPanel({ run }: { run: HostedRun }) {
           <p className="muted fine">answer model {run.compat.response.model ?? "—"} · finish {run.compat.response.finishReason ?? "—"} · runRef {run.compat.response.runRef ? `${run.compat.response.runRef.slice(0, 12)}…` : "—"} · runId {run.compat.response.runId ?? "—"}</p>
         </article>
       ) : null}
+      </Fold>
     </section>
   );
 }
 
-function RunPanel({ run, busy, onBehind, onFeedback }: { run: Run; busy: string | null; onBehind?: (id: string) => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
+function RunPanel({ run, busy, elsewhere, desk, enqueueNote, onBehind, onFeedback }: { run: Run; busy: string | null; elsewhere: { href: string; label: string; onClick: (event: { preventDefault: () => void; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; button: number }) => void } | null; desk: { generation: number | null; staged: number | null; updatedAt: string | null } | null; enqueueNote: string | null; onBehind?: (id: string) => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
   const step = (name: Step["step"]) => run.steps.find((s) => s.step === name) ?? null;
-  const triage = step("triage");
   const reply = step("reply");
   const summary = step("summary");
   const handoff = step("handoff");
+  const letter = reply ?? summary ?? handoff;
+  const checks = checkLine(letter?.checks ?? []);
   return (
-    <section className={`run${run.ok ? "" : " run-failed"}`}>
-      <div className="run-head">
-        <span className="muted">{run.kind === "run" ? "Reply" : "Escalation"} · {clock(run.at)}</span>
-        {run.route && run.route !== "bedrock" ? <span className="badge route" title={TOOLTIPS.provider}>via {routeLabel(run.route)}</span> : null}
-        {onBehind ? <Behind id="run-step" onOpen={onBehind} title={TOOLTIPS.version}>how this reply is written</Behind> : null}
-      </div>
-      {triage ? <StepCard step={triage} title="Triage" body={run.triage ? <TriageBody triage={run.triage} raw={triage.output} /> : <pre className="output">{triage.output ?? ""}</pre>} /> : null}
-      {reply ? <StepCard step={reply} title="Reply" body={<pre className="output reply">{reply.output ?? ""}</pre>} feedback={<FeedbackRow run={run} step="reply" busy={busy} onFeedback={onFeedback} />} /> : null}
-      {summary ? <StepCard step={summary} title="Summary" body={<pre className="output">{summary.output ?? ""}</pre>} /> : null}
-      {handoff ? <StepCard step={handoff} title="Hand-off note" body={<pre className="output">{handoff.output ?? ""}</pre>} feedback={<FeedbackRow run={run} step="handoff" busy={busy} onFeedback={onFeedback} />} /> : null}
+    <section className={`run letter${run.ok ? "" : " run-failed"}`}>
+      {reply ? (reply.error ? <p className="problem">{reply.error.name}: {reply.error.message}</p> : <pre className="output reply">{reply.output ?? ""}</pre>) : null}
+      {!reply && summary ? (summary.error ? <p className="problem">{summary.error.name}: {summary.error.message}</p> : <pre className="output reply">{summary.output ?? ""}</pre>) : null}
+      {handoff ? (handoff.error ? <p className="problem">{handoff.error.name}: {handoff.error.message}</p> : <pre className="output">{handoff.output ?? ""}</pre>) : null}
+      {letter && !letter.error ? <p className="byline" title={TOOLTIPS.version}>{replyByline(letter.tag, letter.versionId, letter.generation, letter.arm)}</p> : null}
+      <Fold title="How this reply got here">
+        <div className="sync">
+          <p>{syncLead(letter?.generation ?? null, desk?.generation ?? null)}{desk?.updatedAt ? ` AirPrompter last updated this desk ${ago(desk.updatedAt)}.` : ""}</p>
+          {desk?.staged != null ? <p>Release #{desk.staged} is waiting. Replies keep using the release already running until it is approved.</p> : null}
+          {letter ? <p title={TOOLTIPS.arm}>{testLine(letter.arm)}</p> : null}
+          {run.triage?.category || run.triage?.priority ? <p>The agent read this as {run.triage.category ?? "—"}, {run.triage.priority ?? "—"}.{run.triage.summary ? ` ${run.triage.summary}` : ""}</p> : null}
+          {checks ? <p>{checks}</p> : null}
+          {letter?.judge ? <p title={TOOLTIPS.judge}>Quality {score(letter.judge)}.</p> : null}
+          {letter?.model ? <p className="muted">Answered with {modelLabel(letter.model)}.</p> : null}
+          {letter?.rendered ? <Fold title="The prompt AirPrompter filled in"><WhyThisText rendered={letter.rendered} /></Fold> : null}
+          {reply ? <FeedbackRow run={run} step="reply" busy={busy} onFeedback={onFeedback} /> : null}
+          {handoff ? <FeedbackRow run={run} step="handoff" busy={busy} onFeedback={onFeedback} /> : null}
+          {enqueueNote ? <p className="muted">{enqueueNote}</p> : null}
+          {elsewhere ? <p><a href={elsewhere.href} onClick={elsewhere.onClick}>{elsewhere.label}</a></p> : null}
+          {onBehind ? <p className="behind-row"><Behind id="run-step" onOpen={onBehind} title={TOOLTIPS.version}>how this reply is written</Behind></p> : null}
+        </div>
+      </Fold>
     </section>
-  );
-}
-
-function TriageBody({ triage, raw }: { triage: NonNullable<Run["triage"]>; raw: string | null }) {
-  if (!triage.category && !triage.priority) return <pre className="output">{raw ?? ""}</pre>;
-  return (
-    <div className="triage">
-      <span className={`chip cat-${slug(triage.category)}`}>{triage.category ?? "—"}</span>
-      <span className={`chip prio-${slug(triage.priority)}`}>{triage.priority ?? "—"}</span>
-      <span className="triage-summary">{triage.summary}</span>
-    </div>
-  );
-}
-
-function StepCard({ step, title, body, feedback }: { step: Step; title: string; body: React.ReactNode; feedback?: React.ReactNode }) {
-  const [why, setWhy] = useState(false);
-  const o = step.observation;
-  return (
-    <article className="step">
-      <header className="step-head">
-        <h3>{title}</h3>
-        <span className="badge version" title={TOOLTIPS.version}>{versionBadge(step.tag, step.versionId, step.generation)}</span>
-        <span className="badge model">{modelLabel(step.model)}</span>
-        <span className={`badge arm${step.arm && step.arm !== "none" ? " arm-live" : ""}`} title={TOOLTIPS.arm}>{armLabel(step.arm)}</span>
-        {step.rendered ? <button type="button" className="link" onClick={() => setWhy((v) => !v)}>{why ? "Hide" : "Why this text"}</button> : null}
-      </header>
-      {why && step.rendered ? <WhyThisText rendered={step.rendered} /> : null}
-      {step.error ? <p className="problem">{step.error.name}: {step.error.message}{o?.errorClass ? ` (observed as ${o.errorClass})` : ""}</p> : body}
-      <div className="checks">
-        {step.checks.length === 0 ? null : step.checks.map((c) => <span key={c.name} className={`chip check-${c.verdict}`} title={c.reason ? `${c.kind}: ${c.reason}` : c.kind}>{c.verdict === "pass" ? "✓" : "✗"} {c.name}</span>)}
-      </div>
-      {feedback}
-    </article>
   );
 }
 
@@ -277,7 +260,7 @@ function FeedbackRow({ run, step, busy, onFeedback }: { run: Run; step: string; 
   const disabled = busy !== null || !run.steps.find((s) => s.step === step)?.runRef;
   return (
     <div className="feedback">
-      <span className="muted">Feedback</span>
+      <span className="muted">Rate this reply</span>
       <button type="button" className={`chip-button${has("thumbs", "up") ? " done" : ""}`} disabled={disabled} onClick={() => onFeedback(run.runId, step, { thumbs: "up" })}>👍 Good</button>
       <button type="button" className={`chip-button${has("thumbs", "down") ? " done" : ""}`} disabled={disabled} onClick={() => onFeedback(run.runId, step, { thumbs: "down" })}>👎 Poor</button>
       <button type="button" className={`chip-button${has("accepted") ? " done" : ""}`} disabled={disabled} onClick={() => onFeedback(run.runId, step, { accepted: true })}>Sent as is</button>

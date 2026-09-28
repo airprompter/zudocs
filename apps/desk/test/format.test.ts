@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { authorizeUrl, challengeOf, claimsOf, logoutUrl, randomVerifier, tokensFrom } from "../src/auth";
 import { parseConfig } from "../src/config";
-import { ORIGIN_LABELS, TOOLTIPS, armLabel, countdown, effectiveApplyState, latency, mergeEvents, modelLabel, money, releaseSummary, score, segmentRender, slug, staleRefusal, tokens, versionBadge } from "../src/format";
+import { ORIGIN_LABELS, TOOLTIPS, abTitle, armLabel, checkLine, countdown, effectiveApplyState, latency, mergeEvents, modelLabel, money, releaseSummary, replyByline, score, segmentRender, slug, staleRefusal, syncLead, testLine, tokens, versionBadge } from "../src/format";
 
 test("vocabulary: the badge says prompt version and release #N; generation/manifest/slot/arm live in tooltips only", () => {
   assert.equal(versionBadge("support.reply", "rev-2", 1), "reply rev-2 · release #1");
@@ -22,6 +22,16 @@ test("vocabulary: the badge says prompt version and release #N; generation/manif
   assert.equal(armLabel("none"), "no test on this ticket");
   assert.equal(armLabel("control"), "current reply");
   assert.equal(armLabel("candidate"), "new reply");
+  assert.equal(replyByline("support.reply", "rev-3", 86, "none"), "Support agent · reply rev-3 · release #86");
+  assert.equal(replyByline("support.reply", "rev-3", 86, "candidate"), "Support agent · reply rev-3 · release #86 · this customer got the new reply");
+  assert.equal(abTitle(null, false), "A|B");
+  assert.equal(abTitle([], false), "A|B · no test on this release");
+  assert.equal(abTitle([{ arms: ["control", "candidate"], weightBps: [7000, 3000] }], false), "A|B · 70% current reply · 30% new reply");
+  assert.equal(syncLead(86, 86), "This reply was written from release #86, the release this desk is running.");
+  assert.equal(syncLead(80, 86), "This reply was written from release #80. This desk is now running release #86.");
+  assert.equal(testLine("none"), "No test is on this release, so every customer gets this reply.");
+  assert.equal(testLine("candidate"), "This customer got the new reply. The same customer gets that reply on every desk.");
+  assert.equal(checkLine([{ verdict: "pass" }, { verdict: "pass" }, { verdict: "fail" }]), "2 passed, 1 failed.");
   assert.equal(modelLabel("openai.gpt-5-6-luna"), "GPT-5.6 Luna");
   assert.equal(modelLabel("something.else"), "something.else");
   for (const word of ["generation", "manifest", "slot"]) assert.ok(Object.values(TOOLTIPS).some((t) => t.includes(word)), `${word} is explained in a tooltip`);

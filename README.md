@@ -36,14 +36,14 @@ Nothing here can be stood up from a clone alone; `git log` owns the how, the tre
 infra/             CDK: ZudocsCi (the deploy role), ZudocsDns (the zone), ZudocsSite (landing page, sign-in, budget,
                    trail, the monthly cost check), ZudocsDesk (the desk API, its tables and key, the desk app) in us-east-1;
                    ZudocsSharedHost (the daemon host, the wire and power functions, the nightly sleep, the demo-mode switch) in eu-west-1; ZudocsFleet (the puller, the
-                   releases table, the exchange bucket, the nudge queue) and ZudocsAirgap (the air-gapped host, on demand) in
+                   exchange bucket, the nudge queue) and ZudocsAirgap (the air-gapped host, on demand) in
                    ap-southeast-1
 apps/landing/      the public site at zudocs.com
 apps/desk/         the support desk at desk.zudocs.com: React + Vite, hosted-UI sign-in, the inbox, Europe / Hosts / Operator as quiet links
 services/desk-api/ the us-east-1 host: one Lambda running the Agent SDK in on_invoke mode (docs/DESK.md)
 services/eu-host/  the eu-west-1 host: airprompterd, the Node and Python workers, the import timer, the units, the boot script, the wire, the power (docs/EU-WEST.md)
 services/cost-check/ the monthly cost check: Cost Explorer → cost/YYYY-MM.json in the trail bucket + Zudocs/Cost metrics
-services/puller/   the ap-southeast-1 puller: pointer-first pullBundle into the releases table and the exchange bucket, the nudge's consumer (docs/FLEET.md)
+services/puller/   the ap-southeast-1 puller: pullToDatastore into the exchange bucket, the nudge's consumer (docs/FLEET.md)
 services/airgap/   the ap-southeast-1 air-gapped host: the offline runtime, the keygen, the export timer, the units, the boot script (docs/FLEET.md)
 airprompter.config.json   where the prompts live in AirPrompter: identifiers only, never a key; `providers` names the model the
                    desk's provider switch sends a reply to on the OpenAI API and the Claude API (the keys are SSM parameters)

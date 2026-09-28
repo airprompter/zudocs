@@ -23,7 +23,7 @@
 export const TEARDOWN_ORDER = Object.freeze([
   { stack: "ZudocsAirgap", region: "ap-southeast-1", optional: true, why: "the air-gapped host (on demand; usually absent) reads the fleet's bucket and table" },
   { stack: "ZudocsDesk", region: "us-east-1", optional: false, why: "imports the site's certificate and user pool; names the eu-west role, the wire and power functions and the nudge queue" },
-  { stack: "ZudocsFleet", region: "ap-southeast-1", optional: false, why: "the puller, the releases table, the nudge queue; the exchange bucket is retained" },
+  { stack: "ZudocsFleet", region: "ap-southeast-1", optional: false, why: "the puller and the nudge queue; the exchange bucket is retained" },
   { stack: "ZudocsSharedHost", region: "eu-west-1", optional: false, why: "the eu-west host (terminated, its volume with it), the wire and power functions, the nightly schedule, the demo-mode parameter" },
   { stack: "ZudocsSite", region: "us-east-1", optional: false, why: "imports the zone; the user pool and the trail bucket are retained" },
   { stack: "ZudocsDns", region: "us-east-1", optional: false, why: "the zone is retained (the registrar still points at it until repointed)" },

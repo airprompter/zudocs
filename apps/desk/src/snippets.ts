@@ -132,7 +132,7 @@ export const AIRGAP_START: Snippet = {
   "id": "airgap-start",
   "file": "services/airgap/src/runtime.ts",
   "caption": "A host with no route out",
-  "text": "const agent = await AirPrompterAgent.start({\n          organizationId: env.airprompter.organizationId,\n          agentId: env.airprompter.agentId,\n          target: env.airprompter.environment,\n          stateDir: env.stateDir,\n          root: { pinned: rootJwk as never, hostedEnvironment: env.airprompter.hostedEnvironment },\n          sync: { mode: \"offline\" },\n          distributionKey,\n          ...(existsSync(env.vendoredBundlePath) ? { vendoredBundle: { bundle: env.vendoredBundlePath } } : {}),\n          apply: { policy: \"auto\" },\n          // No `models`: this host declares no catalogue — it can call none — so no release is refused over a model; it renders only.\n          telemetry: { sink: \"directory\", instanceClass: \"resident\" },\n          logger: sdkLogger,\n        });",
+  "text": "const agent = await AirPrompterAgent.start({\n          organizationId: env.airprompter.organizationId,\n          agentId: env.airprompter.agentId,\n          target: env.airprompter.environment,\n          stateDir: env.stateDir,\n          root: { pinned: rootJwk as never, hostedEnvironment: env.airprompter.hostedEnvironment },\n          sync: { mode: \"offline\" },\n          distributionKey,\n          datastore: { store: datastore, region: env.region },\n          apply: { policy: \"auto\" },\n          telemetry: { sink: \"directory\", instanceClass: \"resident\" },\n          logger: (event) => log({ source: \"airprompter-sdk\", ...event }),\n        });",
   "marks": [
     {
       "needle": "mode: \"offline\"",

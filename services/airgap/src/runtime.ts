@@ -1,21 +1,13 @@
 /**
  * The air-gapped runtime: the Agent SDK **offline** on a host with no route out. It holds no Agent key and never
- * calls home; what it has is the exchange bucket and the releases table through the VPC's gateway endpoints, and
- * a distribution keypair `airprompter keygen` generated on this host at first boot (the private half at 0600 here,
- * the public half in the exchange). In the order a fresh host needs:
+ * calls home. The puller writes each sealed release into the exchange bucket in the SDK's datastore format; this
+ * process hydrates from that store (`AirPrompterAgent.start({ datastore })`, then `hydrate()` on the apply
+ * interval) and opens every bundle with the distribution keypair `airprompter keygen` generated on this host at
+ * first boot (the private half at 0600 here, the public half in the exchange). A restart serves what the local
+ * store already holds; an empty datastore is `no_verified_release` and is tried again on the next interval.
  *
- * - **the key**: the private half is loaded (its mode checked) and its id is what the puller must seal to.
- * - **the newest row**: every `ZUDOCS_APPLY_INTERVAL_SECONDS` the releases table's newest generation. A row sealed
- *   to another key (the puller has not re-sealed yet) is waited on and said so; a row above what this host holds is
- *   fetched from the exchange and handed to the SDK — the first as the **vendored bundle** `AirPrompterAgent.start`
- *   boots on (`sync: "offline"`), every later one to `applyBundle()`; each outcome is the SDK's own and is recorded.
- *   A bundle the SDK could not start on is recorded (`startFailure`) and tried again after a cooldown, or as soon as
- *   a newer row appears — never silently given up. The vendored file is refreshed with every activation, so a restart
- *   boots on the newest and the floor is never stale.
- * - **renders**: every `ZUDOCS_RENDER_INTERVAL_SECONDS` one render of `support.triage` for a seeded customer id — the
- *   release resolves (version, arm, model) exactly as on every other host — and the observation filed is `refused`:
- *   this host has no route to any model and says so; it never invents an answer. The SDK writes the windows to its
- *   spool; the export timer carries them to the exchange.
+ * - **renders**: every `ZUDOCS_RENDER_INTERVAL_SECONDS` one render of `support.triage` for a seeded customer id.
+ *   The observation filed is `refused`: this host has no route to any model and says so; it never invents an answer.
  * - **status**: every `ZUDOCS_STATUS_INTERVAL_SECONDS` the document (`status.ts`) to `status/airgap.json`.
  *
  * The loop is built over ports (`createRuntime`) so a test drives it with fakes; `main` wires the real ones.
@@ -27,12 +19,12 @@
  * node /opt/zudocs/runtime.mjs
  * ```
  */
-import { existsSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { AirPrompterAgent, SDK_NAME, SDK_VERSION, distributionKeyId, isAgentStartError, x25519PrivateKeyFromRaw, type AgentStatus, type BundleOutcome, type DistributionKey, type Healthz, type Observation } from "@airprompter/agent-sdk";
+import { S3Client } from "@aws-sdk/client-s3";
+import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { AirPrompterAgent, SDK_NAME, SDK_VERSION, distributionKeyId, isAgentStartError, kvReleaseDatastore, x25519PrivateKeyFromRaw, type AgentStatus, type DistributionKey, type Healthz, type HydrateOutcome, type Observation } from "@airprompter/agent-sdk";
+import { s3KvStore } from "@airprompter/datastore-s3";
 import { SEED_CUSTOMERS } from "../../desk-api/src/seedData.js";
 import { readAirgapEnv, type AirgapEnv } from "./env.js";
 import { buildStatusDoc, type AirgapPhase, type AirgapStatusDoc, type ApplyRecord, type ExportInfo, type ProbeInfo, type RenderInfo, type StartFailure } from "./status.js";
@@ -41,7 +33,7 @@ const RUNTIME_VERSION = "0.1.0";
 /** The slot the render probe resolves and the end-user text it is given — a fixed sentence, never a ticket. */
 export const PROBE_TAG = "support.triage";
 export const PROBE_TICKET = "[render-only probe: this host has no route to a model and runs no ticket]";
-/** A bundle the SDK could not start on is not re-fetched for this long, unless a newer row appears. */
+/** A start the SDK refused for a reason other than an empty datastore is not retried for this long. */
 export const START_RETRY_MS = 10 * 60_000;
 const STATUS_KEY = "status/airgap.json";
 const recent: Array<Record<string, unknown>> = [];
@@ -64,25 +56,6 @@ export function parseDistributionKeyFile(text: string, mode: number): { key: Dis
   const keyId = distributionKeyId(publicRaw);
   if (typeof file.keyId === "string" && file.keyId !== keyId) throw new Error("keyId does not match the public key");
   return { key: { privateKey: x25519PrivateKeyFromRaw(privateRaw, publicRaw), publicRaw }, keyId };
-}
-
-export interface NewestRow {
-  generation: number;
-  releaseDigest: string;
-  keyId: string | null;
-  object: string;
-  pulledAt: string;
-}
-
-/** What to do with the table's newest row, given this host's key, what it last handed to the SDK, and a start that failed. Pure. */
-export function decideApply(input: { newest: NewestRow | null; keyId: string; attempted: number; startFailure: StartFailure | null; now: string }): { action: "nothing" | "wait_for_reseal" | "apply"; reason: string } {
-  const { newest } = input;
-  if (!newest) return { action: "nothing", reason: "the table holds no release yet" };
-  if (newest.keyId !== input.keyId) return { action: "wait_for_reseal", reason: `generation ${newest.generation} is ${newest.keyId ? `sealed to key ${newest.keyId.slice(0, 8)}…` : "plaintext"}; this host's key is ${input.keyId.slice(0, 8)}… — waiting for the puller to seal to it` };
-  if (newest.generation <= input.attempted) return { action: "nothing", reason: `generation ${newest.generation} was already handed to the SDK` };
-  const failed = input.startFailure;
-  if (failed && failed.releaseDigest === newest.releaseDigest && Date.parse(input.now) - Date.parse(failed.at) < START_RETRY_MS) return { action: "nothing", reason: `generation ${newest.generation} could not start the SDK at ${failed.at} (${failed.code ?? "error"}); retried after the cooldown or a newer row` };
-  return { action: "apply", reason: `generation ${newest.generation} is above ${input.attempted}` };
 }
 
 /** The instance id and zone from IMDSv2 (link-local, reachable without a route); null when it does not answer. */
@@ -109,20 +82,13 @@ export function readJsonFile<T>(path: string): T | null {
   }
 }
 
-/** The vendored file, replaced atomically so a restart never reads a half-written bundle. */
-export function writeVendoredFile(path: string, text: string): void {
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, text, { mode: 0o600 });
-  renameSync(tmp, path);
-}
-
 /** What the loop needs of the SDK: the part of `AirPrompterAgent` it calls (a fake in a test). */
 export interface Agent {
   readonly generation: number;
   readonly instanceId: string;
   status(): AgentStatus;
   healthz(): Healthz;
-  applyBundle(text: string): Promise<BundleOutcome>;
+  hydrate(): Promise<HydrateOutcome>;
   prompt(tag: string, options: { subject?: string }): { renderAsync(values: Record<string, string>): Promise<{ tag: string; versionId: string; arm: string; model: string; text: string }> };
   report(observation: Observation): void;
   stop(): Promise<void>;
@@ -134,47 +100,48 @@ export interface RuntimePorts {
   keyId: string;
   sdk: string;
   ec2: { instanceId: string; availabilityZone: string } | null;
-  newestRow(): Promise<NewestRow | null>;
-  fetchBundle(object: string): Promise<string>;
-  /** Start the SDK on the vendored file (when it exists) and the store; null when it could not (logged with the SDK's code). */
+  /** Start the SDK on the local store and the datastore; null when it could not (logged with the SDK's code). */
   start(): Promise<{ agent: Agent } | { agent: null; code: string | null; message: string }>;
-  writeVendored(text: string): void;
   putStatus(doc: AirgapStatusDoc): Promise<void>;
   readExport(): ExportInfo | null;
   readProbe(): ProbeInfo | null;
   now(): string;
   log(event: Record<string, unknown>): void;
   recentLog(): Array<Record<string, unknown>>;
-  /** What the SDK's logger said about the vendored bundle since the last start (the outcome `start()` does not return). */
-  takeVendoredOutcomes(): ApplyRecord[];
 }
 
 export interface Runtime {
-  applyTick(): Promise<void>;
+  hydrateTick(): Promise<void>;
   renderTick(): Promise<void>;
   writeStatus(): Promise<void>;
   stop(signal: string): Promise<void>;
   readonly agent: Agent | null;
-  readonly attempted: number;
   readonly phase: AirgapPhase;
   readonly applies: ApplyRecord[];
   readonly renders: RenderInfo;
   readonly startFailure: StartFailure | null;
 }
 
-/** The loop over its ports. `boot()` is the first thing to call: a store from an earlier run starts without the table. */
+const recordOf = (at: string, outcome: HydrateOutcome): ApplyRecord => ({
+  at,
+  generation: outcome.generation,
+  outcome: outcome.outcome,
+  reason: outcome.outcome === "refused" ? outcome.reason : outcome.outcome === "unavailable" ? "unavailable" : null,
+  detail: "detail" in outcome && outcome.detail ? outcome.detail.slice(0, 200) : null,
+  source: "datastore",
+  object: null,
+});
+
+/** The loop over its ports. `boot()` is the first thing to call: a store from an earlier run starts without the datastore. */
 export function createRuntime(p: RuntimePorts): Runtime & { boot(): Promise<void> } {
   const startedAt = p.now();
   const applies: ApplyRecord[] = [];
   const renders: RenderInfo = { count: 0, lastAt: null, last: null, observation: "refused" };
   let agent: Agent | null = null;
   let phase: AirgapPhase = "awaiting_bundle";
-  let waitingFor: { newest: { generation: number; keyId: string | null } | null } | null = null;
-  let attempted = 0;
   let startFailure: StartFailure | null = null;
   let seq = 0;
-  let lastWait: string | null = null;
-  let applying = false;
+  let hydrating = false;
   const subjects = SEED_CUSTOMERS.map((c) => c.customerId);
   let cursor = 0;
 
@@ -182,25 +149,21 @@ export function createRuntime(p: RuntimePorts): Runtime & { boot(): Promise<void
     applies.push(entry);
     if (applies.length > 50) applies.shift();
   };
-  const startAgent = async (row: NewestRow | null): Promise<boolean> => {
+  const startAgent = async (): Promise<boolean> => {
     const started = await p.start();
-    for (const outcome of p.takeVendoredOutcomes()) record(outcome);
-    if (started.agent) {
+    if ("agent" in started && started.agent) {
       agent = started.agent;
-      attempted = Math.max(attempted, agent.generation, row?.generation ?? 0);
       phase = agent.generation > 0 ? "serving" : "awaiting_bundle";
       startFailure = null;
-      p.log({ event: "sdk_started", instanceId: agent.instanceId, generation: agent.generation, source: agent.status().source, storageProtection: agent.status().storageProtection, syncMode: "offline" });
+      const datastore = agent.status().datastore;
+      if (datastore?.lastOutcome) {
+        record({ at: p.now(), generation: datastore.newestGeneration || null, outcome: datastore.lastOutcome, reason: null, detail: null, source: "datastore", object: null });
+      }
+      p.log({ event: "sdk_started", instanceId: agent.instanceId, generation: agent.generation, source: agent.status().source, storageProtection: agent.status().storageProtection, syncMode: "offline", datastore: datastore?.lastOutcome ?? null });
       return true;
     }
-    if (row) {
-      // Not `attempted`: the row is tried again after the cooldown, or the moment a newer one appears.
-      startFailure = { at: p.now(), generation: row.generation, releaseDigest: row.releaseDigest, code: started.code, message: started.message.slice(0, 300) };
-      p.log({ event: "sdk_not_started", generation: row.generation, code: started.code, message: started.message.slice(0, 300), retryAfterMs: START_RETRY_MS });
-    } else {
-      // At boot with no store and no vendored file this is the expected answer: the first bundle from the table starts it.
-      p.log({ event: "sdk_not_started", boot: true, code: started.code, message: started.message.slice(0, 300) });
-    }
+    startFailure = { at: p.now(), generation: null, releaseDigest: null, code: started.code, message: started.message.slice(0, 300) };
+    p.log({ event: "sdk_not_started", code: started.code, message: started.message.slice(0, 300), retryAfterMs: started.code === "no_verified_release" ? 0 : START_RETRY_MS });
     return false;
   };
 
@@ -216,7 +179,6 @@ export function createRuntime(p: RuntimePorts): Runtime & { boot(): Promise<void
       ec2: p.ec2,
       keyId: p.keyId,
       phase: agent && agent.generation > 0 ? "serving" : phase,
-      waitingFor,
       status: agent?.status() ?? null,
       healthz: agent?.healthz() ?? null,
       applies,
@@ -233,41 +195,25 @@ export function createRuntime(p: RuntimePorts): Runtime & { boot(): Promise<void
     }
   };
 
-  const applyTick = async (): Promise<void> => {
-    if (applying) return;
-    applying = true;
+  const hydrateTick = async (): Promise<void> => {
+    if (hydrating) return;
+    hydrating = true;
     try {
-      const newest = await p.newestRow();
-      const decision = decideApply({ newest, keyId: p.keyId, attempted, startFailure, now: p.now() });
-      waitingFor = decision.action === "wait_for_reseal" && newest ? { newest: { generation: newest.generation, keyId: newest.keyId } } : null;
-      if (decision.action === "wait_for_reseal") {
-        if (lastWait !== decision.reason) p.log({ event: "waiting_for_reseal", newest: newest?.generation ?? null, sealedTo: newest?.keyId ?? null, keyId: p.keyId });
-        lastWait = decision.reason;
-        return;
-      }
-      lastWait = null;
-      if (decision.action !== "apply" || !newest) return;
-      const text = await p.fetchBundle(newest.object);
       if (!agent) {
-        p.writeVendored(text);
-        p.log({ event: "vendored_bundle_written", generation: newest.generation, object: newest.object, bytes: Buffer.byteLength(text) });
-        await startAgent(newest);
+        if (startFailure && startFailure.code !== "no_verified_release" && Date.parse(p.now()) - Date.parse(startFailure.at) < START_RETRY_MS) return;
+        await startAgent();
         await writeStatus();
         return;
       }
-      const outcome = await agent.applyBundle(text);
-      attempted = newest.generation;
-      record({ at: p.now(), generation: outcome.generation, outcome: outcome.outcome, reason: outcome.outcome === "refused" ? outcome.reason : null, detail: outcome.outcome === "refused" && outcome.detail ? outcome.detail.slice(0, 200) : null, source: "exchange", object: newest.object });
-      p.log({ event: "bundle_applied", generation: newest.generation, outcome: outcome.outcome, reason: outcome.outcome === "refused" ? outcome.reason : null, held: outcome.outcome === "refused" ? (outcome.held ?? null) : null, object: newest.object });
-      if (outcome.outcome === "activated") {
-        p.writeVendored(text);
-        phase = "serving";
-      }
+      const outcome = await agent.hydrate();
+      record(recordOf(p.now(), outcome));
+      if (agent.generation > 0) phase = "serving";
+      p.log({ event: "hydrated", outcome: outcome.outcome, generation: outcome.generation, held: agent.generation });
       await writeStatus();
     } catch (error) {
-      p.log({ event: "apply_tick_failed", message: (error as Error).message.slice(0, 300) });
+      p.log({ event: "hydrate_tick_failed", message: (error as Error).message.slice(0, 300) });
     } finally {
-      applying = false;
+      hydrating = false;
     }
   };
 
@@ -277,7 +223,6 @@ export function createRuntime(p: RuntimePorts): Runtime & { boot(): Promise<void
     cursor += 1;
     try {
       const rendered = await agent.prompt(PROBE_TAG, { subject }).renderAsync({ ticket: PROBE_TICKET });
-      // The observation: the call was refused on this host — no route to any model — with no latency and no usage. Nothing invented.
       agent.report({ tag: rendered.tag, versionId: rendered.versionId, arm: rendered.arm, model: rendered.model, status: "refused", latencyMs: 0, usageSource: "unavailable" });
       renders.count += 1;
       renders.lastAt = p.now();
@@ -290,9 +235,9 @@ export function createRuntime(p: RuntimePorts): Runtime & { boot(): Promise<void
 
   return {
     async boot() {
-      await startAgent(null);
+      await startAgent();
     },
-    applyTick,
+    hydrateTick,
     renderTick,
     writeStatus,
     async stop(signal) {
@@ -301,7 +246,6 @@ export function createRuntime(p: RuntimePorts): Runtime & { boot(): Promise<void
       if (agent) await agent.stop();
     },
     get agent() { return agent; },
-    get attempted() { return attempted; },
     get phase() { return agent && agent.generation > 0 ? "serving" : phase; },
     get applies() { return applies; },
     get renders() { return renders; },
@@ -317,17 +261,8 @@ async function main(): Promise<void> {
   const { key: distributionKey, keyId } = parseDistributionKeyFile(readFileSync(env.distributionKeyPath, "utf8"), statSync(env.distributionKeyPath).mode);
   const ec2 = await readEc2Identity();
   const s3 = new S3Client({ region: env.region });
-  const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: env.region }));
-  const scope = `release#${env.airprompter.agentId}/${env.airprompter.environment}`;
-  log({ event: "runtime_started", hostId: env.hostId, keyId, ec2: ec2?.instanceId ?? null, stateDir: env.stateDir, sdk, runtime: RUNTIME_VERSION });
-
-  // The SDK's own words on the bundle it boots on: the logger is the only place `start()` reports the vendored outcome.
-  let vendoredOutcomes: ApplyRecord[] = [];
-  const sdkLogger = (event: Record<string, unknown>): void => {
-    log({ source: "airprompter-sdk", ...event });
-    const match = /^vendored_bundle_(applied|activated|staged|refused|unusable|held_back)$/.exec(String(event.event ?? ""));
-    if (match) vendoredOutcomes.push({ at: new Date().toISOString(), generation: typeof event.generation === "number" ? event.generation : typeof event.bundleGeneration === "number" ? event.bundleGeneration : null, outcome: (match[1] === "applied" ? "activated" : match[1] === "unusable" ? "refused" : match[1]) as BundleOutcome["outcome"], reason: typeof event.reason === "string" ? event.reason : null, detail: null, source: "vendored", object: null });
-  };
+  const datastore = kvReleaseDatastore(s3KvStore({ client: s3, bucket: env.exchangeBucket }));
+  log({ event: "runtime_started", hostId: env.hostId, keyId, ec2: ec2?.instanceId ?? null, stateDir: env.stateDir, sdk, runtime: RUNTIME_VERSION, region: env.region });
 
   const runtime = createRuntime({
     hostId: env.hostId,
@@ -335,16 +270,6 @@ async function main(): Promise<void> {
     keyId,
     sdk,
     ec2,
-    async newestRow() {
-      const out = await ddb.send(new QueryCommand({ TableName: env.releasesTable, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": scope }, ScanIndexForward: false, Limit: 1 }));
-      const item = out.Items?.[0] as (NewestRow & { pk: string }) | undefined;
-      return item ? { generation: item.generation, releaseDigest: item.releaseDigest, keyId: item.keyId ?? null, object: item.object, pulledAt: item.pulledAt } : null;
-    },
-    async fetchBundle(object) {
-      const out = await s3.send(new GetObjectCommand({ Bucket: env.exchangeBucket, Key: object }));
-      if (!out.Body) throw new Error(`${object}: empty object`);
-      return out.Body.transformToString("utf8");
-    },
     async start() {
       try {
         const agent = await AirPrompterAgent.start({
@@ -355,11 +280,10 @@ async function main(): Promise<void> {
           root: { pinned: rootJwk as never, hostedEnvironment: env.airprompter.hostedEnvironment },
           sync: { mode: "offline" },
           distributionKey,
-          ...(existsSync(env.vendoredBundlePath) ? { vendoredBundle: { bundle: env.vendoredBundlePath } } : {}),
+          datastore: { store: datastore, region: env.region },
           apply: { policy: "auto" },
-          // No `models`: this host declares no catalogue — it can call none — so no release is refused over a model; it renders only.
           telemetry: { sink: "directory", instanceClass: "resident" },
-          logger: sdkLogger,
+          logger: (event) => log({ source: "airprompter-sdk", ...event }),
         });
         agent.onChange((change) => log({ event: "release_changed", generation: change.generation, stagedGeneration: change.stagedGeneration, applyState: agent.status().applyState }));
         return { agent };
@@ -367,7 +291,6 @@ async function main(): Promise<void> {
         return { agent: null, code: isAgentStartError(error) ? error.code : null, message: (error as Error).message };
       }
     },
-    writeVendored: (text) => writeVendoredFile(env.vendoredBundlePath, text),
     async putStatus(doc) {
       await s3.send(new PutObjectCommand({ Bucket: env.exchangeBucket, Key: STATUS_KEY, Body: JSON.stringify(doc), ContentType: "application/json", CacheControl: "no-store" }));
     },
@@ -376,14 +299,13 @@ async function main(): Promise<void> {
     now: () => new Date().toISOString(),
     log,
     recentLog: () => recent,
-    takeVendoredOutcomes: () => { const taken = vendoredOutcomes; vendoredOutcomes = []; return taken; },
   });
 
   await runtime.boot();
-  await runtime.applyTick();
+  await runtime.hydrateTick();
   await runtime.writeStatus();
   const timers = [
-    setInterval(() => void runtime.applyTick(), env.applyIntervalSeconds * 1000),
+    setInterval(() => void runtime.hydrateTick(), env.applyIntervalSeconds * 1000),
     setInterval(() => void runtime.renderTick(), env.renderIntervalSeconds * 1000),
     setInterval(() => void runtime.writeStatus(), env.statusIntervalSeconds * 1000),
   ];
@@ -394,12 +316,10 @@ async function main(): Promise<void> {
   };
   process.once("SIGTERM", () => void stop("SIGTERM"));
   process.once("SIGINT", () => void stop("SIGINT"));
-  // The first render probe soon after start, so the first export has a window to carry.
   await sleep(5_000);
   await runtime.renderTick();
 }
 
-// Run as the main module only (compared by real path: the bundle is reached through /opt/zudocs); a test imports the helpers.
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   main().catch((error: Error & { code?: string }) => {
     log({ event: "runtime_failed", name: error.name, code: error.code ?? null, message: error.message.slice(0, 400) });

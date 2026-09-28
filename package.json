@@ -49,7 +49,16 @@
     "ci:telemetry-validate": "node scripts/ci-telemetry-validate.mjs"
   },
   "dependencies": {
-    "@airprompter/agent-sdk": "0.2.14"
+    "@airprompter/agent-sdk": "file:third_party/airprompter/airprompter-agent-sdk-0.2.15.tgz",
+    "@airprompter/datastore-s3": "file:third_party/airprompter/airprompter-datastore-s3-0.2.15.tgz"
+  },
+  "overrides": {
+    "@airprompter/agent-core": "file:third_party/airprompter/airprompter-agent-core-0.2.15.tgz",
+    "@airprompter/agent-sync": "file:third_party/airprompter/airprompter-agent-sync-0.2.15.tgz",
+    "@airprompter/agent-runtime": "file:third_party/airprompter/airprompter-agent-runtime-0.2.15.tgz",
+    "@airprompter/agent-telemetry": "file:third_party/airprompter/airprompter-agent-telemetry-0.2.15.tgz",
+    "@airprompter/agent-sdk": "file:third_party/airprompter/airprompter-agent-sdk-0.2.15.tgz",
+    "@airprompter/datastore-s3": "file:third_party/airprompter/airprompter-datastore-s3-0.2.15.tgz"
   },
   "devDependencies": {
     "@aws-sdk/client-budgets": "^3.1135.0",

@@ -1,0 +1,6 @@
+{
+  "version": "0.2.15",
+  "commit": "12b164607e20e1b6292334cf86a434d4c4406d29",
+  "repo": "https://github.com/airprompter/airprompter-agent-sdk",
+  "packedFrom": "sdk-typescript packages core, sync, runtime, telemetry, sdk, datastore-s3"
+}

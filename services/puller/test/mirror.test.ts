@@ -18,10 +18,9 @@ const doc = (over: Partial<Parameters<typeof buildStatusDoc>[0]> = {}): AirgapSt
     ec2: { instanceId: "i-abc", availabilityZone: "ap-southeast-1a" },
     keyId: "k1",
     phase: "serving",
-    waitingFor: null,
     status: { instanceId: "inst-1", generation: 3, stagedGeneration: null, applyState: "active", leaseExpiresAt: null } as never,
     healthz: { ok: true, status: "ok", reasons: [] } as never,
-    applies: [{ at: "2026-09-18T20:01:00.000Z", generation: 3, outcome: "activated", reason: null, detail: null, source: "vendored", object: null }],
+    applies: [{ at: "2026-09-18T20:01:00.000Z", generation: 3, outcome: "activated", reason: null, detail: null, source: "datastore", object: null }],
     startFailure: null,
     renders: { count: 4, lastAt: "2026-09-18T20:09:00.000Z", last: { tag: "support.triage", versionId: "rev-2", arm: "none", model: "amazon.nova-micro", subject: "cust-1001" }, observation: "refused" },
     export: { at: "2026-09-18T20:06:00.000Z", segments: 1, bytes: 400, instances: 1, object: "telemetry/i-abc/x.aptelemetry", generation: 3 },
@@ -50,8 +49,8 @@ test("the second mirror: only what is new — a newer apply, a newer export, a h
   const moved = doc({
     now: "2026-09-18T20:15:00.000Z",
     applies: [
-      { at: "2026-09-18T20:01:00.000Z", generation: 3, outcome: "activated", reason: null, detail: null, source: "vendored", object: null },
-      { at: "2026-09-18T20:14:00.000Z", generation: 4, outcome: "activated", reason: null, detail: null, source: "exchange", object: "releases/4-k1.apbundle" },
+      { at: "2026-09-18T20:01:00.000Z", generation: 3, outcome: "activated", reason: null, detail: null, source: "datastore", object: null },
+      { at: "2026-09-18T20:14:00.000Z", generation: 4, outcome: "activated", reason: null, detail: null, source: "datastore", object: null },
     ],
     export: { at: "2026-09-18T20:11:00.000Z", segments: 2, bytes: 800, instances: 1, object: "telemetry/i-abc/y.aptelemetry", generation: 4 },
     healthz: { ok: false, status: "degraded", reasons: ["lease_expired"] } as never,
@@ -67,7 +66,7 @@ test("the second mirror: only what is new — a newer apply, a newer export, a h
 
 test("a host that restarted is a new startedAt; a document with no SDK yet reports its phase as the health; a key not yet in the exchange is unpublished", () => {
   const first = mirrorAirgap({ doc: doc(), previous: EMPTY_STATE.airgap, now, keyIdInExchange: "k1" });
-  const restarted = doc({ startedAt: "2026-09-18T21:00:00.000Z", now: "2026-09-18T21:00:30.000Z", status: null, healthz: null, phase: "awaiting_bundle", waitingFor: { newest: { generation: 4, keyId: "old" } }, applies: [], export: null });
+  const restarted = doc({ startedAt: "2026-09-18T21:00:00.000Z", now: "2026-09-18T21:00:30.000Z", status: null, healthz: null, phase: "awaiting_bundle", applies: [], export: null });
   const m = mirrorAirgap({ doc: restarted, previous: first.next, now: "2026-09-18T21:01:00.000Z", keyIdInExchange: "old" });
   assert.deepEqual(m.events.map((e) => e.kind), ["airgap_started", "health_changed"]);
   assert.deepEqual(m.fields.healthz, { ok: false, status: "degraded", reasons: ["awaiting_bundle"] });

@@ -1,6 +1,6 @@
 /**
- * The puller's configuration, read once from its environment and validated: the exchange bucket, the releases
- * table, the desk's status and events tables (in their own region), the NAME of the SSM parameter that holds the
+ * The puller's configuration, read once from its environment and validated: the exchange bucket (the S3
+ * datastore and the puller's state object), the desk's status and events tables (in their own region), the NAME of the SSM parameter that holds the
  * Agent key (never the key — the stack's tests pin that no value-shaped variable exists), the AirPrompter
  * identifiers and the pinned root, the host ids, the schedule's interval. A missing name is an error that says
  * which, so a misdeployed function fails its first tick loudly.
@@ -14,7 +14,6 @@
 
 export interface PullerEnv {
   readonly exchangeBucket: string;
-  readonly releasesTable: string;
   readonly statusTable: string;
   readonly eventsTable: string;
   readonly tablesRegion: string;
@@ -57,7 +56,6 @@ export function readPullerEnv(env: NodeJS.ProcessEnv = process.env): PullerEnv {
   const pointer = env.AIRPROMPTER_EDGE_POINTER_URL?.trim() || null;
   return Object.freeze({
     exchangeBucket: need(env, "EXCHANGE_BUCKET"),
-    releasesTable: need(env, "RELEASES_TABLE"),
     statusTable: need(env, "STATUS_TABLE"),
     eventsTable: need(env, "EVENTS_TABLE"),
     tablesRegion: need(env, "TABLES_REGION"),

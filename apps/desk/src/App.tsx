@@ -11,18 +11,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, type AnyRun, type Api, type Approval, type Arms, type DirectProvider, type Route, type State, type Ticket, type TimelineEvent } from "./api";
 import type { DeskConfig } from "./config";
+import { AgentLine } from "./components/AgentLine";
 import { Approvals } from "./components/Approvals";
 import { CodeDrawer } from "./components/CodeDrawer";
 import { DaemonSummary } from "./components/DaemonSummary";
 import { Fleet } from "./components/Fleet";
 import { HostCards } from "./components/HostCards";
+import { Experiments } from "./components/Experiments";
+import { Fold } from "./components/Fold";
 import { Inbox } from "./components/Inbox";
-import { LiveBoard } from "./components/LiveBoard";
 import { Presenter, type CliOutput } from "./components/Presenter";
 import { ReleaseBar } from "./components/ReleaseBar";
 import { TicketView, routeRefusal, type RouteAvailability } from "./components/TicketView";
 import { Timeline } from "./components/Timeline";
-import { ROUTES, mergeEvents } from "./format";
+import { ROUTES, abTitle, mergeEvents, releaseSummary } from "./format";
 import { PAGE_LABEL, deskHref, mismatchRoute, newestHost, parseDeskRoute, ticketParam, type DeskRoute } from "./route";
 import { AIRGAP_START, CLIENT_RUN, DAEMON_CONNECT, DAEMON_GUARD, DAEMON_START, ENQUEUE_CALL, LAMBDA_START, POLICY_LINE, RUN_STEP, type Snippet } from "./snippets";
 
@@ -271,6 +273,9 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   const selected = tickets.find((t) => t.ticketId === selectedId) ?? null;
   const missing = missingId !== null && missingId === selectedId;
   const powerNote = daemonHost?.powerView && daemonHost.powerView.phase !== "awake" ? daemonHost.powerView.label : null;
+  const fleet = state ? releaseSummary(state.hosts) : null;
+  const updatedAt = [...events].reverse().find((event) => event.kind === "release_changed" || event.kind === "release_activated")?.at ?? null;
+  const desk = { generation: fleet?.generation ?? null, staged: fleet?.staged?.generation ?? null, updatedAt };
 
   return (
     <div className={`desk route-${route}${sheet ? " sheet-open" : ""}`}>
@@ -287,6 +292,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
           <button type="button" className="link" onClick={onSignOut}>Sign out</button>
         </div>
       </header>
+      <AgentLine state={state} events={events} />
       {notice ? <div className={`notice notice-${notice.tone}`} role="status">{notice.text}<button type="button" className="link" onClick={() => setNotice(null)}>dismiss</button></div> : null}
       <div className="columns">
         {route === "architecture" ? (
@@ -298,11 +304,18 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
           <>
             <Inbox tickets={tickets} selectedId={selectedId} onSelect={selectTicket} />
             <main className="centre">
-              {missing ? <p className="problem">no_such_ticket</p> : selected ? (
-                <>
-                  {other && runHost ? (
-                    <p className="callout">This run is {runHost}. <a href={deskHref(other, selected.ticketId)} onClick={(event) => follow(event, other)}>{other === "daemon" ? "Open it on Europe" : "Open it in the inbox"}</a></p>
-                  ) : null}
+              <div className="reading">
+                {route === "daemon" ? (
+                  <>
+                    <Fold title={approvals.some((a) => a.decision === "pending") ? "Approvals · waiting" : "Approvals"}>
+                      <Approvals approvals={approvals} busy={busy} onApprove={approve} />
+                    </Fold>
+                    <Fold title="Europe host">
+                      <DaemonSummary host={daemonHost} onBehind={openBehind} />
+                    </Fold>
+                  </>
+                ) : null}
+                {missing ? <p className="problem">no_such_ticket</p> : selected ? (
                   <TicketView
                     ticket={selected}
                     runs={runs}
@@ -310,6 +323,8 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
                     frozen={state?.frozen ?? null}
                     hosted={state?.features?.hosted ? state.hosted ?? null : null}
                     routes={routes}
+                    desk={desk}
+                    elsewhere={other ? { href: deskHref(other, selected.ticketId), label: other === "daemon" ? "This reply was written on the Europe desk" : "This reply was written in the inbox", onClick: (event) => follow(event, other) } : null}
                     enqueue={route === "daemon" ? {
                       label: daemonHostId ? `Enqueue ${selected.ticketId}` : "Enqueue",
                       disabled: daemonHostId === null,
@@ -324,14 +339,12 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
                     onCompareAll={() => compareAll(selected.ticketId)}
                     onFeedback={feedback}
                   />
-                </>
-              ) : inboxReady ? <div className="empty">No tickets yet — re-seed the inbox from Operator controls.</div> : <div className="empty">Reading the inbox…</div>}
+                ) : inboxReady ? <div className="empty">No tickets yet — re-seed the inbox from Operator controls.</div> : <div className="empty">Reading the inbox…</div>}
+                <Fold title={abTitle(arms?.ramps, (arms?.arms ?? []).some((arm) => arm.arm !== "none"))}>
+                  <Experiments arms={arms} />
+                </Fold>
+              </div>
             </main>
-            <aside className="rail" aria-label={route === "daemon" ? "Europe" : "Account"}>
-              {route === "daemon" ? <DaemonSummary host={daemonHost} onBehind={openBehind} /> : null}
-              {route === "daemon" ? <Approvals approvals={approvals} busy={busy} onApprove={approve} /> : null}
-              <LiveBoard ticket={selected} runs={runs} arms={arms} onBehind={openBehind} />
-            </aside>
           </>
         ) : null}
         {route === "operate" ? (

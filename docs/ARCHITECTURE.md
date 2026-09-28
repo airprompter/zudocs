@@ -10,15 +10,15 @@ are the product's brain and none of them are in this repository.
    us-east-1            │              eu-west-1                         │           ap-southeast-1
    ┌────────────────────┴───┐          ┌──────────────────────────┐      │    ┌──────────────────────────┐
    │ desk API (Lambda)      │          │ t4g.micro, no inbound    │      └────┤ puller (Lambda, schedule)│
-   │  SDK on_invoke, auto   │          │  airprompterd (daemon)   │           │  pointer-first pull      │
-   │  KMS store key         │          │  Node worker (Luna, wrap)│           │  → releases table        │
+   │  SDK on_invoke, auto   │          │  airprompterd (daemon)   │           │  pullToDatastore         │
+   │  KMS store key         │          │  Node worker (Luna, wrap)│           │                          │
    │  key from SSM at start │          │  Python worker (LiteLLM) │           │  → exchange bucket (S3)  │
    │  tee sink → AP + EMF   │          │  unlock_required, file_key│          └────────────┬─────────────┘
    │  approvals: desk grants  │
-   └──────────┬─────────────┘          │  imports airgap exports  │                        │ S3/DynamoDB gateway endpoints
+   └──────────┬─────────────┘          │  imports airgap exports  │                        │ S3 gateway endpoint
               │                        └──────────────────────────┘           ┌────────────▼─────────────┐
    CloudFront ▼ landing (S3)                                                  │ air-gapped t4g.micro      │
-   desk.zudocs.com (React) · Cognito                                          │  offline, vendored bundle │
+   desk.zudocs.com (React) · Cognito                                          │  offline, hydrate()      │
    status table · events table (DynamoDB, every host writes)                  │  keypair born on the host │
                                                                               │  export-telemetry → bucket│
                                                                               └───────────────────────────┘
@@ -30,9 +30,9 @@ Phase 3: the us-east-1 host and the desk (`DESK.md`) — the API, its tables and
 Phase 4: the eu-west-1 host (`EU-WEST.md`) — `airprompterd` with a Node and a Python worker attached, the approvals
 table and page, the wire function and its restore rule; the reply and escalation slots re-pinned to Nova 2 Lite
 while Luna is gated (generation 2 on dev, the first change that reached every host).
-Phase 5: ap-southeast-1 (`FLEET.md`) — the puller (pointer-first `pullBundle` into a releases table and an exchange
-bucket, the nudge queue as the change-notification placeholder), the air-gapped host on demand (no route out; gateway
-endpoints; the SDK offline on a vendored bundle, `applyBundle` from the exchange, a distribution key born on the host,
+Phase 5: ap-southeast-1 (`FLEET.md`) — the puller (`pullToDatastore` into the exchange bucket, the nudge queue as the
+change-notification placeholder), the air-gapped host on demand (no route out; an S3 gateway endpoint; the SDK
+offline, `hydrate()` from that datastore, a distribution key born on the host,
 render probes filed as refusals, `export-telemetry` to the bucket) and the import timer on eu-west that carries the
 exports to AirPrompter; the desk's two new cards, the nudge, and the us-east status tick.
 The full plan, its reviewers' findings and the demo script live with the AirPrompter team; the phases land here

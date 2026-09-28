@@ -20,18 +20,12 @@ export function Inbox({ tickets, selectedId, onSelect }: { tickets: Ticket[]; se
       <ul>
         {tickets.map((t) => (
           <li key={t.ticketId}>
-            <button type="button" className={`ticket-row${t.ticketId === selectedId ? " selected" : ""}`} onClick={() => onSelect(t.ticketId)}>
+            <button type="button" className={`ticket-row${t.ticketId === selectedId ? " selected" : ""}${slug(t.lastRun?.priority) === "urgent" ? " urgent" : ""}`} onClick={() => onSelect(t.ticketId)}>
               <div className="ticket-row-top">
                 <span className="ticket-customer">{t.customer?.name ?? t.customerId}</span>
                 <span className="muted">{ago(t.receivedAt)}</span>
               </div>
               <div className="ticket-subject">{t.subject}</div>
-              <div className="ticket-row-meta">
-                <span className="ticket-id">{t.ticketId}</span>
-                <span className={`chip tier-${t.customer?.tier ?? "unknown"}`}>{t.customer?.tier ?? "—"}</span>
-                {t.lastRun?.category ? <span className={`chip cat-${slug(t.lastRun.category)}`}>{t.lastRun.category}</span> : null}
-                {t.lastRun?.priority ? <span className={`chip prio-${slug(t.lastRun.priority)}`}>{t.lastRun.priority}</span> : null}
-              </div>
             </button>
           </li>
         ))}

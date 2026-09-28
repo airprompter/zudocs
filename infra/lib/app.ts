@@ -8,7 +8,7 @@
  *   ZudocsDns         the owner's session first (the registrar is repointed at its output), then CI
  *   ZudocsSite        CI (and the owner's session for the first deploy); needs `npm run build` since phase 8 (the cost check)
  *   ZudocsSharedHost  CI: the eu-west-1 host (the daemon, two workers, the wire function); needs `npm run build`
- *   ZudocsFleet       CI: the ap-southeast-1 puller, the releases table, the exchange bucket, the nudge queue; needs `npm run build`
+ *   ZudocsFleet       CI: the ap-southeast-1 puller, the exchange bucket, the nudge queue; needs `npm run build`
  *   ZudocsDesk        CI (the desk API, its tables and key, the desk SPA); needs `npm run build` first. Ordered after
  *                     the shared host and the fleet (no reference crosses the regions, but its Budgets action names the
  *                     host's role, its function names the wire function and the nudge queue — all must exist first)
@@ -69,11 +69,11 @@ export function buildStacks(app: cdk.App, config: ZudocsConfig, options: BuildOp
   const site = new SiteStack(app, STACK_IDS.site, { config, zone: dns.zone, env, tags, assets: { costCheck: assets.costCheck }, description: "Zudocs: landing page, sign-in, budget, trail, the monthly cost check" });
   const sharedHost = new SharedHostStack(app, STACK_IDS.sharedHost, { config, env: { account: config.account, region: config.regions.sharedHost }, tags, assets: { euHostBundle: assets.euHostBundle, wire: assets.wire, power: assets.power }, airprompter, ...(options.pins ? { pins: options.pins } : {}), description: "Zudocs: the eu-west-1 shared host (airprompterd, a Node and a Python worker) and the wire function" });
   const fleetEnv = { account: config.account, region: config.regions.fleet };
-  const fleet = new FleetStack(app, STACK_IDS.fleet, { config, env: fleetEnv, tags, assets: { puller: assets.puller }, airprompter, description: "Zudocs: the ap-southeast-1 fleet — the puller, the releases table, the exchange bucket, the nudge queue" });
+  const fleet = new FleetStack(app, STACK_IDS.fleet, { config, env: fleetEnv, tags, assets: { puller: assets.puller }, airprompter, description: "Zudocs: the ap-southeast-1 fleet — the puller, the exchange bucket, the nudge queue" });
   const desk = new DeskStack(app, STACK_IDS.desk, { config, site, zone: dns.zone, env, tags, assets: { deskApi: assets.deskApi, deskSite: assets.deskSite }, airprompter, description: "Zudocs: the desk API (the AirPrompter SDK on Lambda), its tables and key, the desk app" });
   desk.addStackDependency(sharedHost, "the Budgets action names the host's role and the function names the wire function; both exist first");
   desk.addStackDependency(fleet, "the presenter's nudge names the queue by its fixed name; it exists first");
   const airgap = new AirgapStack(app, STACK_IDS.airgap, { config, env: fleetEnv, tags, assets: { airgapBundle: assets.airgapBundle }, airprompter, ...(options.pins ? { pins: options.pins } : {}), ...(options.airgapPins ? { airgapPins: options.airgapPins } : {}), description: "Zudocs: the ap-southeast-1 air-gapped host (on demand; never deployed by CI)" });
-  airgap.addStackDependency(fleet, "the host reads the exchange bucket and the releases table by their fixed names; both exist first");
+  airgap.addStackDependency(fleet, "the host reads the exchange bucket by its fixed name; the bucket exists first");
   return { ci, dns, site, sharedHost, fleet, desk, airgap };
 }

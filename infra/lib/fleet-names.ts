@@ -1,10 +1,10 @@
 /**
  * The fixed names the ap-southeast-1 stacks, the desk stack and the eu-west host agree on without a cross-region
- * reference: the exchange bucket (account-qualified — bucket names are global), the releases table, the nudge queue,
+ * reference: the exchange bucket (account-qualified — bucket names are global), the nudge queue,
  * the puller function, the two host ids in the status table, the air-gapped host's role — and the layout of the
- * exchange bucket, which is the contract between the puller (writes releases, reads the host's public key and its
- * status), the air-gapped host (reads releases, writes its key's public half, its status and its telemetry
- * exports) and the eu-west import cron (reads the exports). The pins of what the air-gapped host installs
+ * exchange bucket, which is the contract between the puller (writes the SDK datastore and its schedule object,
+ * reads the host's public key and its status), the air-gapped host (reads the datastore, writes its key's public
+ * half, its status and its telemetry exports) and the eu-west import cron (reads the exports). The pins of what the air-gapped host installs
  * (`services/airgap/pins.json`: the Node runtime's digest, the AMI per region) are read here too; the CLI's digest
  * is the fleet's one pin in `services/eu-host/pins.json`.
  *
@@ -12,7 +12,7 @@
  * ```ts
  * import { EXCHANGE, exchangeBucketName, NUDGE_QUEUE_NAME, readAirgapPins } from "./fleet-names.js";
  * exchangeBucketName("111122223333");           // "zudocs-exchange-111122223333"
- * `${EXCHANGE.releasesPrefix}${generation}-${keyId.slice(0, 8)}.apbundle`;   // where the puller writes a sealed bundle
+ * EXCHANGE.datastorePrefix;                     // "airprompter/" — the SDK's release datastore in the bucket
  * readAirgapPins().node.sha256;                  // the digest the boot checks before Node is extracted
  * ```
  */
@@ -22,8 +22,6 @@ import { fileURLToPath } from "node:url";
 
 /** `zudocs-exchange-<account>`: the fleet's own artefact store in ap-southeast-1 (versioned, private, SSE-S3). */
 export const exchangeBucketName = (account: string): string => `zudocs-exchange-${account}`;
-/** One row per generation the puller pulled (and the puller's own state row); the air-gapped host reads the newest. */
-export const RELEASES_TABLE_NAME = "zudocs-agent-releases";
 /** The change-notification placeholder: the desk posts, the puller pulls with `skipPointer`. */
 export const NUDGE_QUEUE_NAME = "zudocs-nudge";
 export const NUDGE_DLQ_NAME = "zudocs-nudge-dlq";
@@ -39,14 +37,17 @@ export const PULL_MINUTES_DEMO = 1;
 export const DESK_STATUS_TICK_MINUTES = 5;
 
 /**
- * The exchange bucket's layout. Everything the puller writes is under `releases/` and `latest.json`; everything the
- * air-gapped host writes is under `keys/` (its public half only — the role can put exactly one key there),
- * `status/` and `telemetry/`; `tools/` is what `npm run airgap:up` stages for the first boot (Node and the CLI,
- * verified on the host against the pinned digests before either runs).
+ * The exchange bucket's layout. The puller writes the SDK's release datastore under `airprompter/` (the format in
+ * the SDK's `protocol/datastore-format.md`) and its own schedule at `puller/state.json`. The air-gapped host writes
+ * under `keys/` (its public half only — the role can put exactly one key there), `status/` and `telemetry/`;
+ * `tools/` is what `npm run airgap:up` stages for the first boot (Node and the CLI, verified on the host against
+ * the pinned digests before either runs).
  */
 export const EXCHANGE = Object.freeze({
-  releasesPrefix: "releases/",
-  latest: "latest.json",
+  /** The SDK's `kvReleaseDatastore` prefix. Keys under it are the shared format, not a layout of ours. */
+  datastorePrefix: "airprompter/",
+  /** The puller's schedule (backoff, nudge ids, what it mirrored). Not a release. */
+  pullerState: "puller/state.json",
   /** The air-gapped host's distribution PUBLIC key, as `airprompter keygen` wrote it (kind airprompter-distribution-public-key). */
   publicKey: "keys/airgap.distribution.pub.json",
   status: "status/airgap.json",

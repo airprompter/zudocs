@@ -1,7 +1,8 @@
 """The Zudocs Python worker on the eu-west host: the public Python SDK (``airprompter-agent``) loads its own release
 beside the Node worker. The telemetry daemon ships the spool and serves nothing. This process syncs with the Agent
-key systemd injects, pins ``unlock_required``, and retries ``start`` while the first release is still staged (the
-Node worker minds the desk's approval). It runs one ticket every two hours idle (every five minutes while the
+key systemd injects and pins ``unlock_required`` in its own store. It unlocks a staged generation once the Node
+worker reports that same generation active after the desk's approval. Both write telemetry into the daemon's spool.
+It runs one ticket every two hours idle (every five minutes while the
 demo-mode parameter it reads every minute says on; the same fail-closed rules as the Node worker's ``demoMode.ts``)
 through LiteLLM to Bedrock (Converse, the instance role's credentials): ``support.reply`` rendered with
 ``customer_tier`` from the desk's own table, the model called with the release's inference settings, the observation
@@ -174,6 +175,14 @@ class Tables:
     def merge_status(self, host_id: str, python: dict[str, Any]) -> None:
         self.status.update_item(Key={"hostId": host_id}, UpdateExpression="SET python = :p", ExpressionAttributeValues={":p": marshal(python)})
 
+    def node_active_generation(self, host_id: str, since: str) -> int:
+        """A fresh Node status is the local approval gate for this worker's separate store."""
+        row = plain(self.status.get_item(Key={"hostId": host_id}, ConsistentRead=True).get("Item") or {})
+        status = row.get("status") or {}
+        if row.get("writtenAt", "") < since or status.get("applyState") != "active":
+            return 0
+        return int(status.get("generation") or 0)
+
 
 class ReleaseNamedCallback(AirPrompterLiteLLMCallback):
     """The SDK's LiteLLM callback, with one change: the observation is filed under the release's model name (the
@@ -232,9 +241,11 @@ def main() -> None:
     if not api_key:
         raise SystemExit("host env: AIRPROMPTER_AGENT_KEY is not set; this process syncs its own release")
     host_id = need("ZUDOCS_HOST_ID")
-    state_dir = need("AIRPROMPTER_STATE_DIR")
+    base_state_dir = need("AIRPROMPTER_STATE_DIR")
+    state_dir = os.path.join(base_state_dir, "python")
     agent_id = need("AIRPROMPTER_AGENT")
     target = need("AIRPROMPTER_ENVIRONMENT")
+    spool_dir = os.path.join(base_state_dir, "airprompter", agent_id, target, "spool", "telemetry")
     by = os.environ.get("ZUDOCS_WORKER_NAME", "eu-west python worker")
     idle_interval = int(os.environ.get("ZUDOCS_PY_TICKET_INTERVAL_SECONDS", "7200"))
     demo_interval = int(os.environ.get("ZUDOCS_PY_DEMO_TICKET_INTERVAL_SECONDS", "300"))
@@ -249,8 +260,7 @@ def main() -> None:
     if "d" in root:
         raise SystemExit("the pinned root carries a private member")
 
-    # This process syncs its own release. The first one under unlock_required is staged until the Node worker's
-    # approval unlocks the store; start refuses until something is active, and this loop waits that out.
+    # This process syncs its own release. The first one under unlock_required is staged at generation 0.
     while True:
         try:
             ap = AirPrompterAgent.start(
@@ -263,7 +273,7 @@ def main() -> None:
                 state_dir=state_dir,
                 sync={"mode": "resident", "poll_seconds": 30, "edge_pointer_url": need("AIRPROMPTER_EDGE_POINTER_URL"), "root_url": need("AIRPROMPTER_ROOT_URL")},
                 apply={"policy": "unlock_required"},
-                telemetry={"upload": False},
+                telemetry={"upload": False, "spool_dir": spool_dir},
                 models=MODELS,
                 variables={"customer_tier": {"resolve": lambda ctx: (tables.get_customer(ctx.subject) or {}).get("tier") if getattr(ctx, "subject", None) else None, "trust": "operator", "timeout_seconds": 1.5}},
                 logger=lambda event: log(source="airprompter-sdk", **event),
@@ -401,9 +411,21 @@ def main() -> None:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     next_status = time.time() + 30
+    next_approval_check = time.time()
     next_demo_read = time.time() + demo_poll
     while not stopping:
         now = time.time()
+        if now >= next_approval_check:
+            next_approval_check = now + 5
+            try:
+                staged = ap.status().staged_generation
+                if staged and tables.node_active_generation(host_id, started_at) >= staged:
+                    activated = ap.unlock()
+                    if activated:
+                        log(event="release_activated", generation=activated["generation"], by="node_worker_approval")
+                        write_status()
+            except Exception as error:  # noqa: BLE001 — the next pass retries a transient read or unlock
+                log(event="approval_check_failed", reason=str(error)[:300])
         if now >= next_run:
             next_run = now + interval
             try:

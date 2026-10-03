@@ -14,9 +14,9 @@ boot does, and the honest notes.
 | Instance | `t4g.micro`, Amazon Linux 2023 arm64, IMDSv2 required, 8 GiB gp3 encrypted, a public IPv4 for egress; one public subnet, no NAT, no endpoints; a security group with **no inbound rule** (Session Manager only, through the instance role) | `shared-host-stack.ts` |
 | `airprompterd` | Telemetry only (`protocol/daemon.md` at SDK 0.3.0): `--org`, `--agent`, `--environment`, dev `--base-url`, `--json`. The Agent key in `/etc/airprompter/airprompterd.env` (root:root 0600, written from the eu-west SSM SecureString by `zudocs-agent-key` before every start) is an upload grant. The executable is pinned to `cli/v0.3.0` by digest | `host/units/airprompterd.service`, `host/bin/zudocs-agent-key` |
 | Node worker | `@airprompter/agent-sdk` 0.3.0 in resident mode, with the Agent key systemd injects and `apply.policy: "unlock_required"`. The first staged release is held inside `start()` until the desk approves; later ones are `ap.unlock()`. Tickets run through the same `runTicket` the us-east host uses: `support.triage` and `support.reply` on the release's models through Bedrock in us-east-1, the judge, the checks; feedback from the SDK's own check verdicts; the record in the runs table with `host: eu-west-1/ec2`, under the fleet's shared daily cap | `src/worker.ts` |
-| Approvals | The `ApprovalWatcher`: a staged generation → a row in the approvals table → the owner's decision on the desk → `ap.unlock()` on this process's store (or the boot hook's `activate()`, before `start()` has returned) → the row settled and the host card flipped (below) | `src/approvals.ts` |
+| Approvals | The `ApprovalWatcher`: a staged generation → a row in the approvals table → the owner's decision on the desk → `ap.unlock()` on this process's store → the row settled and the host card flipped (below) | `src/approvals.ts` |
 | Status | Every 30 s: this process's `status()` and `healthz()` written as the host's row; every health transition is a timeline row. `healthz.telemetry` says whether the daemon is shipping the spool | `src/statusRow.ts` |
-| Python worker | `airprompter-agent` 0.3.0 (installed by the pinned commit; PyPI also carries the release) in resident mode on the same store, retrying `start` while nothing is active yet; `support.reply` through LiteLLM to Bedrock's Converse API with the instance role, the SDK's LiteLLM callback, the declared checks, its own record in the runs table and its own part of the status row (`python`) | `host/pyworker.py` |
+| Python worker | `airprompter-agent` 0.3.0 (installed by the pinned commit; PyPI also carries the release) in resident mode with its own store under `/var/lib/airprompter/python`. It stages a release under `unlock_required` and unlocks it when a fresh Node status says that generation is active after desk approval. It writes to the daemon's shared telemetry spool; `support.reply` runs through LiteLLM to Bedrock's Converse API with the instance role, the SDK's LiteLLM callback, the declared checks, its own record in the runs table and its own part of the status row (`python`) | `host/pyworker.py` |
 | The wire | A Lambda (`zudocs-wire`) that replaces the group's open egress with HTTPS to DynamoDB in us-east-1 only (cut) or puts it back (restore); an EventBridge rule every five minutes restores a cut older than 15 minutes whatever the presenter forgot; every change is a timeline row | `src/wire.ts` |
 | Logs | The units append JSON lines to `/var/log/zudocs/*.log`; the CloudWatch agent ships them to `/zudocs/eu-host` (seven days). Never a render, a ticket or an answer | `host/cloudwatch-agent.json` |
 | The operator's CLI | `zudocs-cli <command>`: `airprompter <command>` as the airprompter user, scoped to this host, on the worker's store — `status`, `doctor` (with the key in its environment, from the root-only file), `unlock`, `rollback`, `policy show|set`, `diff`, `export-telemetry`. The pinned binary is `cli/v0.3.0` | `host/bin/zudocs-cli` |
@@ -56,24 +56,22 @@ The workers and daemon run as the same local user and share the spool. This is o
 this repository's code, and each needs its own key to sync its release. The import timer receives the key as a
 systemd credential; the key file remains root-only on disk.
 
-The store key is a **file** (`store.key`, 0600, next to the workers' store), so the host reports
+Each worker's store key is a **file** (`store.key`, 0600, next to its store), so the host reports
 `storageProtection: file_key` and the host card shows it in amber.
 
 ## The approval, step by step
 
 1. AirPrompter promotes generation N. The worker's next poll (30 s) verifies it and, under `unlock_required`,
-   stages it: `applyState: awaiting_unlock`, `stagedGeneration: N`. `apply.onStaged` runs in this process. On a
-   fresh store nothing is active yet, so `start()` waits inside that hook until the desk approves.
+   stages it: `applyState: awaiting_unlock`, `stagedGeneration: N`. On a fresh store `start()` returns at
+   generation 0, leaving the staged release visible to the approval watcher.
 2. The watcher opens the row `eu-west-1-ec2-gN-<store id>` (`pending`; created once — a restarted worker on the
    same store resumes it, a replaced instance gets a fresh one) and writes `release_staged` to the timeline. The desk's Approvals section shows *release #N · staged — awaiting your
    approval on eu-west-1/ec2*, with the console's request note if the worker received one.
 3. The owner presses *Approve*: `POST /approvals/{id}/approve` flips `pending → approved` exactly once
    (a conditional write; a second press, another tab, another container answers `already: true` with the row as it
    stands) under the signer's e-mail, and writes `approval_decided`.
-4. The watcher's next tick (5 s) sees `approved` and calls `ap.unlock()` (or the boot hook's `activate()` before
-   `start()` has returned). The store flips, the row settles `activated`, and the timeline writes
-   `release_activated … by seth@zudocs.com`. The card flips to `#N · active`. On a fresh host this is also the
-   moment `start()` returns.
+4. The watcher's next tick (5 s) sees `approved` and calls `ap.unlock()`. The store flips, the row settles
+   `activated`, and the timeline writes `release_activated … by seth@zudocs.com`. The card flips to `#N · active`.
 5. If an operator unlocked the worker's store on the host instead (or a window opened, or a rollback moved
    the generation), the staged generation vanishes without the watcher's unlock: the row settles `superseded`
    with the reason and the timeline says `activated on the host`. If the console promoted again before anyone

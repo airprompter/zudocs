@@ -1,0 +1,8 @@
+{
+  "version": "0.3.0",
+  "commit": "5c289765f38bab7384dd611968f178567c534a6c",
+  "repo": "https://github.com/airprompter/airprompter-agent-sdk",
+  "npm": ["@airprompter/agent-sdk", "@airprompter/datastore-s3"],
+  "pypi": "airprompter-agent==0.3.0",
+  "cli": "cli/v0.3.0, pinned by release-asset SHA-256 in services/eu-host/pins.json"
+}

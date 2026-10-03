@@ -16,7 +16,7 @@ import { createHandler } from "../src/handler.js";
 import type { Host } from "../src/runtime.js";
 import type { ApprovalRow, Customer, Store, StatusRow, Ticket, TimelineEvent } from "../src/store.js";
 
-function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[]; status: StatusRow[]; feedback: any[]; used: number; queues: Map<string, string[]>; approvals: Map<string, ApprovalRow> } {
+function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[]; status: StatusRow[]; feedback: any[]; used: number; providerSlots: Record<string, number>; queues: Map<string, string[]>; approvals: Map<string, ApprovalRow> } {
   const customers: Customer[] = [{ customerId: "cust-3003", name: "Orbital Bank", tier: "enterprise", seats: 240, since: "2024-11-20" }];
   const tickets: Ticket[] = [{ ticketId: "T-1", customerId: "cust-3003", subject: "s", body: "the ticket text", receivedAt: "2026-09-18T09:05:00Z", channel: "email", lastRun: null }];
   const self = {
@@ -41,6 +41,14 @@ function fakeStore(): Store & { runs: Map<string, any>; events: TimelineEvent[];
     appendEvent: async (event: TimelineEvent) => void self.events.push(event),
     listEvents: async () => self.events,
     takeRunSlot: async (_day: string, cap: number) => (self.used < cap ? { ok: true as const, used: ++self.used } : { ok: false as const, used: self.used }),
+    providerSlots: {} as Record<string, number>,
+    takeProviderSlot: async (_day: string, provider: string, cap: number) => {
+      const n = self.providerSlots[provider] ?? 0;
+      if (n >= cap) return { ok: false as const, used: n };
+      self.providerSlots[provider] = n + 1;
+      return { ok: true as const, used: n + 1 };
+    },
+    readProviderSlots: async () => ({ ...self.providerSlots }),
     readRunSlots: async () => self.used,
     seed: async (c: Customer[], t: Ticket[]) => ({ customers: c.length, tickets: t.length }),
     enqueueTicket: async (hostId: string, ticketId: string) => { const q = self.queues.get(hostId) ?? []; q.push(ticketId); self.queues.set(hostId, q); return q.length; },
@@ -108,11 +116,19 @@ function fakeAp(store: Store, calls: string[]) {
   };
 }
 
+/** The kill switch in memory: both doors open unless a test closes one. */
+function fakeSwitch(doors: Record<string, string> = { openai: "on", anthropic: "on" }) {
+  const parameter = "/zudocs/dev/providers";
+  const state = { ...doors };
+  const view = () => ({ ...Object.fromEntries(Object.entries(state).map(([p, v]) => [p, { open: v === "on", reason: v === "on" ? null : "off" }])), parameter }) as never;
+  return { parameter, read: async () => view(), write: async (provider: string, next: string) => { state[provider] = next; return view(); }, state };
+}
+
 function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string[] } {
   const store = fakeStore();
   const calls: string[] = [];
   const ap = fakeAp(store, calls) as unknown as Host["ap"];
-  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "", nudgeQueueUrl: "", powerFunctionArn: "", demoModeParameter: "", hosted: { runKeyParameter: "", runUrl: "", target: "staging" }, euHost: { region: "eu-west-1", nameTag: "zudocs-eu-host" }, airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
+  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "", nudgeQueueUrl: "", powerFunctionArn: "", demoModeParameter: "", hosted: { runKeyParameter: "", runUrl: "", target: "staging" }, providers: { openai: { keyParameter: "", model: "gpt-5.6-luna" }, anthropic: { keyParameter: "", model: "claude-opus-5" } }, euHost: { region: "eu-west-1", nameTag: "zudocs-eu-host" }, airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "", heartbeatSeconds: 60 } as Host["env"];
   const host: Host & { store: ReturnType<typeof fakeStore>; calls: string[] } = {
     env,
     ap,
@@ -128,6 +144,7 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
       golden: async () => ({ text: "{}", outputTokens: 2 }),
     },
     hosted: null,
+    providerSwitch: fakeSwitch() as unknown as Host["providerSwitch"],
     hostCli: async (command) => { calls.push(`host_cli:${command}`); return { command, line: `zudocs-cli ${command} --json`, status: "Success" as const, instanceId: "i-eu", document: command === "policy show" ? { via: "daemon", applyPolicy: { effective: "unlock_required", source: "local", manifestSaid: "auto" } } : command === "rollback" ? { generation: 3, forced: true, outcome: "rolled_back" } : { ok: true }, stdout: "{}", stderr: "", durationMs: 1200 }; },
     startedAt: "2026-09-18T10:00:00Z",
     sdk: "agent-sdk-ts/test",
@@ -301,7 +318,7 @@ test("state, events, healthz and unknown routes; a failed start answers 503 with
   assert.equal(state.host.status.storageProtection, "kms");
   assert.deepEqual(state.host.models, ["openai.gpt-5-6-luna", "amazon.nova-2-lite", "amazon.nova-micro", "anthropic.claude-haiku-4-5"]);
   assert.deepEqual(state.cap, { day: new Date().toISOString().slice(0, 10), used: 0, cap: 2 });
-  assert.deepEqual(state.features, { wire: false, nudge: false, hosted: false, hostCli: false, power: false, demoMode: false }, "no wire function, no nudge queue, no run key configured on this fake host");
+  assert.deepEqual(state.features, { wire: false, nudge: false, hosted: false, openai: false, anthropic: false, hostCli: false, power: false, demoMode: false }, "no wire function, no nudge queue, no run key configured on this fake host");
   const nudge = await handler(event("POST", "/presenter/nudge"));
   assert.equal((nudge as { statusCode: number }).statusCode, 501, "without the fleet stack there is nothing to nudge, and it says so");
   assert.equal(parse(nudge).error, "no_nudge_queue");
@@ -364,4 +381,84 @@ test("the status tick from EventBridge is a sync pass and one status row: no req
   const failing = createHandler(async () => { attempts += 1; throw Object.assign(new Error("no parameter"), { code: "kek_unavailable" }); });
   assert.equal(await failing({ tick: "status" } as never), undefined, "a failed start on a tick answers nothing and does not throw");
   assert.equal(attempts, 1);
+});
+
+test("the provider switch: a run names openai or anthropic and the reply goes there — the record's route, model, settings and price are the provider's, triage stays on the host; unconfigured is 501, unknown is 400, on an escalation 400", async () => {
+  const host = fakeHost();
+  const handler = createHandler(async () => host);
+  // Nothing configured: the ask is refused honestly, no slot taken, no model touched.
+  const refused = await handler(event("POST", "/tickets/T-1/run", { provider: "anthropic" }));
+  assert.equal((refused as { statusCode: number }).statusCode, 501);
+  assert.equal(parse(refused).error, "provider_not_configured");
+  assert.equal(host.store.used, 0, "no cap slot for a refused ask");
+  assert.deepEqual(host.calls.filter((c) => c.startsWith("model:")), []);
+  assert.equal((await handler(event("POST", "/tickets/T-1/run", { provider: "mistral" })) as { statusCode: number }).statusCode, 400);
+
+  // Configured: the reply goes to the Claude API, its observation filed under the model the call named.
+  (host as { env: Host["env"] }).env = { ...host.env, providers: { ...host.env.providers, anthropic: { keyParameter: "/zudocs/dev/anthropic-key", model: "claude-opus-5" } } };
+  (host as { direct: Host["direct"] }).direct = { openai: null, anthropic: { provider: "anthropic", model: "claude-opus-5", complete: async (rendered) => { host.calls.push(`direct:anthropic:${rendered.model}`); return { text: "Hi Orbital — the team", response: {}, provider: "anthropic", model: "claude-opus-5", applied: { max_tokens: 600 }, ignored: ["temperature"] }; } } };
+  host.observed = async (fn) => ({ result: await fn(), error: undefined, observations: [{ tag: "support.reply", versionId: "rev-2", arm: "none", model: "claude-opus-5", status: "ok", latencyMs: 2100, tokens: { input: 210, output: 38 }, usageSource: "reported" }] });
+  const result = await handler(event("POST", "/tickets/T-1/run", { provider: "anthropic" }));
+  assert.equal((result as { statusCode: number }).statusCode, 200);
+  const { run } = parse(result);
+  assert.equal(run.route, "anthropic");
+  assert.deepEqual(host.calls.filter((c) => c.startsWith("model:") || c.startsWith("direct:")), ["model:amazon.nova-micro", "direct:anthropic:openai.gpt-5-6-luna"], "triage on the host's path, the reply on the provider, the render's pinned model handed over");
+  const reply = run.steps.find((s: any) => s.step === "reply");
+  assert.deepEqual(reply.provider, { name: "anthropic", model: "claude-opus-5", applied: { max_tokens: 600 }, ignored: ["temperature"] });
+  assert.equal(reply.model, "claude-opus-5");
+  assert.equal(reply.costUsd, (210 * 5 + 38 * 25) / 1_000_000, "the Claude API's list price");
+  assert.equal(reply.observation.latencyMs, 2100);
+  assert.equal(host.store.events.find((e) => e.kind === "ticket_run")?.route, "anthropic");
+  // The plain run says bedrock, and an escalation refuses the switch.
+  assert.equal(parse(await handler(event("POST", "/tickets/T-1/run"))).run.route, "bedrock");
+  assert.equal((await handler(event("POST", "/tickets/T-1/escalate", { provider: "anthropic" })) as { statusCode: number }).statusCode, 400);
+});
+
+test("the guards on a direct provider: a closed door refuses 503 before any call and takes no slot, the provider's own daily cap refuses 429 while Bedrock still runs, and the presenter flips a door", async () => {
+  const host = fakeHost();
+  const handler = createHandler(async () => host);
+  (host as { env: Host["env"] }).env = { ...host.env, providerDailyCap: 1, providers: { ...host.env.providers, anthropic: { keyParameter: "/zudocs/dev/anthropic-key", model: "claude-opus-5" } } };
+  (host as { direct: Host["direct"] }).direct = { openai: null, anthropic: { provider: "anthropic", model: "claude-opus-5", complete: async () => { host.calls.push("direct:anthropic"); return { text: "Hi", response: {}, provider: "anthropic", model: "claude-opus-5", applied: {}, ignored: [] }; } } };
+
+  // Door closed: 503, nothing called, no slot of either kind taken.
+  await handler(event("POST", "/presenter/provider_door", { provider: "anthropic", state: "off" }));
+  const refused = await handler(event("POST", "/tickets/T-1/run", { provider: "anthropic" }));
+  assert.equal((refused as { statusCode: number }).statusCode, 503);
+  assert.deepEqual([parse(refused).error, parse(refused).reason], ["provider_disabled", "off"]);
+  assert.deepEqual(host.calls.filter((c) => c.startsWith("direct:")), [], "a closed door calls nothing");
+  assert.equal(host.store.used, 0, "and takes no run slot");
+  assert.deepEqual(host.store.providerSlots, {}, "and no provider slot");
+  assert.ok(host.store.events.some((e) => e.kind === "provider_refused" && e.reason === "off"));
+
+  // Open it again and the run goes through, taking one slot on that provider's own line.
+  await handler(event("POST", "/presenter/provider_door", { provider: "anthropic", state: "on" }));
+  assert.equal((await handler(event("POST", "/tickets/T-1/run", { provider: "anthropic" })) as { statusCode: number }).statusCode, 200);
+  assert.deepEqual(host.store.providerSlots, { anthropic: 1 });
+
+  // The provider's line is one: the next ask refuses 429 as itself, and the release's own model still answers.
+  const capped = await handler(event("POST", "/tickets/T-1/run", { provider: "anthropic" }));
+  assert.equal((capped as { statusCode: number }).statusCode, 429);
+  assert.deepEqual([parse(capped).error, parse(capped).provider, parse(capped).cap], ["provider_cap", "anthropic", 1]);
+  assert.equal(host.calls.filter((c) => c.startsWith("direct:")).length, 1, "the capped ask called nothing");
+  assert.equal(parse(await handler(event("POST", "/tickets/T-1/run"))).run.route, "bedrock", "the daily cap on a provider never closes the host's own door");
+
+  // /state carries the doors, what each has spent and its line; the presenter refuses an unknown door or state.
+  const state = parse(await handler(event("GET", "/state")));
+  assert.deepEqual(state.providers.anthropic.door, { open: true, reason: null });
+  assert.deepEqual([state.providers.anthropic.used, state.providers.anthropic.cap], [1, 1]);
+  assert.equal(state.providers.openai.configured, false);
+  assert.equal((await handler(event("POST", "/presenter/provider_door", { provider: "mistral", state: "on" })) as { statusCode: number }).statusCode, 400);
+  assert.equal((await handler(event("POST", "/presenter/provider_door", { provider: "anthropic", state: "maybe" })) as { statusCode: number }).statusCode, 400);
+});
+
+test("a deployment that names no switch parameter reads every direct door closed, and says so rather than guessing", async () => {
+  const host = fakeHost();
+  (host as { providerSwitch: Host["providerSwitch"] }).providerSwitch = null;
+  (host as { env: Host["env"] }).env = { ...host.env, providers: { ...host.env.providers, anthropic: { keyParameter: "/p", model: "claude-opus-5" } } };
+  (host as { direct: Host["direct"] }).direct = { openai: null, anthropic: { provider: "anthropic", model: "claude-opus-5", complete: async () => ({ text: "", response: {}, provider: "anthropic", model: "claude-opus-5", applied: {}, ignored: [] }) } };
+  const handler = createHandler(async () => host);
+  const refused = await handler(event("POST", "/tickets/T-1/run", { provider: "anthropic" }));
+  assert.equal((refused as { statusCode: number }).statusCode, 503);
+  assert.equal(parse(refused).reason, "absent");
+  assert.equal((await handler(event("POST", "/presenter/provider_door", { provider: "anthropic", state: "on" })) as { statusCode: number }).statusCode, 501);
 });

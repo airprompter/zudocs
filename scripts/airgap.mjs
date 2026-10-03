@@ -167,11 +167,10 @@ async function down() {
 }
 
 async function status() {
-  const { ExchangeBucketName: bucket, PullerFunctionName } = await fleet();
+  const { ExchangeBucketName: bucket, DatastorePrefix } = await fleet();
   const stack = await outputsOf("ZudocsAirgap");
   console.log(`ZudocsAirgap: ${stack ? `${stack.status} · instance ${stack.outputs.InstanceId}` : "not deployed"}`);
-  const latest = await readJson(bucket, "latest.json");
-  console.log(`exchange latest.json: ${latest ? `generation ${latest.generation} · ${latest.keyId ? `sealed to ${latest.keyId.slice(0, 8)}…` : "plaintext (dev)"} · ${latest.object} · pulled ${latest.pulledAt}` : "none (the puller has not pulled; is the SSM parameter written in this region?)"}`);
+  console.log(`datastore prefix: ${DatastorePrefix}`);
   const key = await readJson(bucket, "keys/airgap.distribution.pub.json");
   console.log(`public key: ${key ? `${key.keyId} (${key.createdAt})` : "none"}`);
   const doc = await readJson(bucket, "status/airgap.json");
@@ -186,7 +185,6 @@ async function status() {
   console.log(`  renders: ${doc.renders.count} (refused: no model here)${doc.renders.last ? ` · last ${doc.renders.last.versionId} on ${doc.renders.last.model} arm ${doc.renders.last.arm}` : ""}`);
   console.log(`  export: ${doc.export ? `${doc.export.segments} segments at ${doc.export.at}${doc.export.object ? ` → ${doc.export.object}` : ""}` : "none yet"}`);
   console.log(`  probe: ${doc.probe ? `curl ${doc.probe.curl.url} exit ${doc.probe.curl.exit} in ${doc.probe.curl.seconds}s (${doc.probe.curl.meaning}); DNS ${doc.probe.dns.name} ${doc.probe.dns.detail}` : "none"}`);
-  if (doc.waitingFor?.newest) console.log(`  waiting: the exchange holds #${doc.waitingFor.newest.generation} ${doc.waitingFor.newest.keyId ? `sealed to ${doc.waitingFor.newest.keyId.slice(0, 8)}…` : "plaintext"}; the puller (${PullerFunctionName}) re-seals on its next tick`);
 }
 
 /** One command on the host: a session key, pushed through the API; ssh through the endpoint's tunnel. */

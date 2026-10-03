@@ -1,8 +1,8 @@
 /**
  * The ap-southeast-1 air-gapped host, deployed on demand (`npm run airgap:up` / `airgap:down` from the owner's
  * profile — never by CI): one t4g.micro in a VPC that has **no internet gateway and no NAT** — no route out at all.
- * What it can reach is exactly what the route table names: the region's S3 and DynamoDB through **gateway endpoints**
- * (free; their policies name the exchange bucket, the deployment's asset bucket and the releases table), and a shell
+ * What it can reach is exactly what the route table names: the region's S3 through a **gateway endpoint**
+ * (free; its policy names the exchange bucket and the deployment's asset bucket), and a shell
  * for the owner through an **EC2 Instance Connect Endpoint** (free; the only inbound rule on the host is port 22 from
  * the endpoint's own security group). IMDSv2 is required. The host has no Agent key, no SSM agent connectivity, no
  * CloudWatch: its status document and its telemetry exports go to the exchange bucket and the puller mirrors them.
@@ -13,8 +13,8 @@
  * Then the host generates its distribution keypair (`airprompter keygen --purpose distribution`, under
  * `/var/lib/airprompter/keys`, never a git directory), keeps the private half at 0600 and publishes only the public
  * half to the exchange; the instance role can put exactly that one key object, so the private half cannot leave
- * even by mistake. A change to the bundle, the boot script or the pinned image replaces the instance — a new host,
- * a new keypair, a re-seal by the puller.
+ * even by mistake. A change to the bundle, the boot script or the pinned image replaces the instance — a new host
+ * and a new keypair. A generation already in the datastore stays as it was written; the next pull seals to the new key.
  *
  * @example
  * ```ts
@@ -22,14 +22,14 @@
  * ```
  */
 import * as cdk from "aws-cdk-lib";
-import { aws_dynamodb as dynamodb, aws_ec2 as ec2, aws_iam as iam, aws_s3 as s3, aws_s3_assets as assets } from "aws-cdk-lib";
+import { aws_ec2 as ec2, aws_iam as iam, aws_s3 as s3, aws_s3_assets as assets } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ZudocsConfig } from "./config.js";
 import type { AirPrompterIds } from "./desk-stack.js";
-import { AIRGAP_HOST_ID, AIRGAP_ROLE_NAME, EXCHANGE, RELEASES_TABLE_NAME, exchangeBucketName, readAirgapPins, type AirgapPins } from "./fleet-names.js";
+import { AIRGAP_HOST_ID, AIRGAP_ROLE_NAME, EXCHANGE, exchangeBucketName, readAirgapPins, type AirgapPins } from "./fleet-names.js";
 import { readPins, type Pins } from "./shared-host-names.js";
 import { renderUserData } from "./shared-host-stack.js";
 
@@ -58,7 +58,6 @@ export class AirgapStack extends cdk.Stack {
     for (const [name, path] of Object.entries(props.assets)) if (!existsSync(path)) throw new Error(`airgap stack: the ${name} artefact is missing at ${path} — run \`npm run build\` first`);
     const bucketName = exchangeBucketName(this.account);
     const exchange = s3.Bucket.fromBucketName(this, "ExchangeRef", bucketName);
-    const releases = dynamodb.Table.fromTableName(this, "ReleasesRef", RELEASES_TABLE_NAME);
 
     // --- The network: one private subnet, no gateway of any kind, two gateway endpoints, one Instance Connect Endpoint
     // L1 on purpose (the `Vpc` construct's zone lookup breaks the credential-less synth); the zone is the region's first.
@@ -73,8 +72,8 @@ export class AirgapStack extends cdk.Stack {
     const bundle = new assets.Asset(this, "HostBundle", { path: props.assets.airgapBundle });
     const assetBucketArn = `arn:${this.partition}:s3:::${bundle.s3BucketName}`;
 
-    // The S3 endpoint: the exchange bucket and the deployment's asset bucket, nothing else; the DynamoDB endpoint: the
-    // releases table. A host that could reach any bucket through the endpoint would have a route out after all.
+    // The S3 endpoint: the exchange bucket and the deployment's asset bucket, nothing else. A host that could reach
+    // any bucket through the endpoint would have a route out after all.
     const s3Endpoint = new ec2.CfnVPCEndpoint(this, "S3Endpoint", {
       vpcId: cfnVpc.ref,
       serviceName: `com.amazonaws.${this.region}.s3`,
@@ -82,14 +81,6 @@ export class AirgapStack extends cdk.Stack {
       routeTableIds: [routeTable.ref],
       policyDocument: new iam.PolicyDocument({ statements: [new iam.PolicyStatement({ principals: [new iam.AnyPrincipal()], actions: ["s3:GetObject", "s3:PutObject", "s3:ListBucket"], resources: [exchange.bucketArn, exchange.arnForObjects("*"), assetBucketArn, `${assetBucketArn}/*`] })] }),
     });
-    const dynamoEndpoint = new ec2.CfnVPCEndpoint(this, "DynamoEndpoint", {
-      vpcId: cfnVpc.ref,
-      serviceName: `com.amazonaws.${this.region}.dynamodb`,
-      vpcEndpointType: "Gateway",
-      routeTableIds: [routeTable.ref],
-      policyDocument: new iam.PolicyDocument({ statements: [new iam.PolicyStatement({ principals: [new iam.AnyPrincipal()], actions: ["dynamodb:Query"], resources: [releases.tableArn] })] }),
-    });
-
     // --- The shell: an Instance Connect Endpoint in the subnet; port 22 on the host from the endpoint's group only ---
     const eiceGroup = new ec2.SecurityGroup(this, "EiceGroup", { vpc, description: "Zudocs air-gapped host: the Instance Connect Endpoint (egress to the host on 22 only)", allowAllOutbound: false });
     const hostGroup = new ec2.SecurityGroup(this, "HostGroup", { vpc, description: "Zudocs air-gapped host: port 22 from the Instance Connect Endpoint only; egress on 443 (the route table has no route out)", allowAllOutbound: false });
@@ -100,12 +91,12 @@ export class AirgapStack extends cdk.Stack {
     hostGroup.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), "HTTPS to the gateway endpoints (no other route exists)");
     const eice = new ec2.CfnInstanceConnectEndpoint(this, "Eice", { subnetId: cfnSubnet.ref, securityGroupIds: [eiceGroup.securityGroupId], preserveClientIp: false, tags: [{ key: "Name", value: "zudocs-airgap" }] });
 
-    // --- The instance role: the exchange's exact keys, the bundle, the releases table — and nothing that talks to the world
-    this.role = new iam.Role(this, "HostRole", { roleName: AIRGAP_ROLE_NAME, assumedBy: new iam.ServicePrincipal("ec2.amazonaws.com"), description: "Zudocs air-gapped host: the exchange bucket's exact keys, the boot bundle, the releases table; no SSM, no logs, no models" });
-    this.role.addToPolicy(new iam.PolicyStatement({ sid: "ExchangeRead", actions: ["s3:GetObject"], resources: [exchange.arnForObjects(`${EXCHANGE.releasesPrefix}*`), exchange.arnForObjects(EXCHANGE.latest), exchange.arnForObjects(`${EXCHANGE.toolsPrefix}*`)] }));
+    // --- The instance role: the datastore, the tools, the bundle — and nothing that talks to the world
+    this.role = new iam.Role(this, "HostRole", { roleName: AIRGAP_ROLE_NAME, assumedBy: new iam.ServicePrincipal("ec2.amazonaws.com"), description: "Zudocs air-gapped host: the exchange bucket's datastore and tools, the boot bundle; no SSM, no logs, no models" });
+    this.role.addToPolicy(new iam.PolicyStatement({ sid: "ExchangeRead", actions: ["s3:GetObject"], resources: [exchange.arnForObjects(`${EXCHANGE.datastorePrefix}*`), exchange.arnForObjects(`${EXCHANGE.toolsPrefix}*`)] }));
+    this.role.addToPolicy(new iam.PolicyStatement({ sid: "DatastoreList", actions: ["s3:ListBucket"], resources: [exchange.bucketArn], conditions: { StringLike: { "s3:prefix": [`${EXCHANGE.datastorePrefix}*`] } } }));
     // Exactly the public half of the key, the status document and the exports: the private key's path is not writable by this role.
     this.role.addToPolicy(new iam.PolicyStatement({ sid: "ExchangeWrite", actions: ["s3:PutObject"], resources: [exchange.arnForObjects(EXCHANGE.publicKey), exchange.arnForObjects(EXCHANGE.status), exchange.arnForObjects(`${EXCHANGE.telemetryPrefix}*`)] }));
-    this.role.addToPolicy(new iam.PolicyStatement({ sid: "ReleasesRead", actions: ["dynamodb:Query"], resources: [releases.tableArn] }));
     // The bundle: exactly this object in the deployment's asset bucket (not `grantRead`, which lists the whole bucket).
     this.role.addToPolicy(new iam.PolicyStatement({ sid: "BundleRead", actions: ["s3:GetObject"], resources: [`${assetBucketArn}/${bundle.s3ObjectKey}`] }));
 
@@ -140,7 +131,7 @@ export class AirgapStack extends cdk.Stack {
       userDataCausesReplacement: true,
     });
     // The boot's first act is an S3 read through the endpoint: the instance waits for the endpoints and the route association.
-    this.instance.node.addDependency(s3Endpoint, dynamoEndpoint, association);
+    this.instance.node.addDependency(s3Endpoint, association);
 
     new cdk.CfnOutput(this, "InstanceId", { value: this.instance.instanceId });
     new cdk.CfnOutput(this, "HostId", { value: AIRGAP_HOST_ID, description: "The host's row in the status table (mirrored by the puller)" });

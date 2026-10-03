@@ -2,7 +2,7 @@
   "name": "@zudocs/eu-host",
   "version": "0.1.0",
   "private": true,
-  "description": "The Zudocs eu-west-1 host: what runs on the t4g.micro beside airprompterd — the Node ticket worker (attached to the daemon, approvals, the status writer), the Python worker, the import pass for the air-gapped host's telemetry exports, the systemd units and the boot script — and two Lambda functions beside the host: the wire (cuts and restores its egress) and the power (sleeps and wakes it, the nightly schedule).",
+  "description": "The Zudocs eu-west-1 host: a telemetry daemon beside Node and Python workers that each load their own release, the approval watcher, the import pass for air-gapped telemetry exports, the systemd units and boot script, plus wire and power Lambda functions.",
   "license": "BSD-3-Clause",
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "5.0.87",
-    "@airprompter/agent-sdk": "0.2.14",
+    "@airprompter/agent-sdk": "0.3.0",
     "@aws-crypto/sha256-js": "5.2.0",
     "@aws-sdk/client-dynamodb": "3.1135.0",
     "@aws-sdk/client-ec2": "3.1135.0",

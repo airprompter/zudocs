@@ -4,17 +4,16 @@
  *
  * - The **exchange bucket** (`zudocs-exchange-<account>`: versioned, private, SSE-S3, TLS only; noncurrent versions
  *   and telemetry exports expire after thirty days): the puller writes each generation as a sealed `.apbundle` under
- *   `releases/` and a `latest.json` pointer; the air-gapped host writes the public half of its distribution key, its
- *   status document and its telemetry exports; the eu-west host reads the exports. `fleet-names.ts` is the layout.
- * - The **releases table** (`zudocs-agent-releases`, on demand): one row per generation pulled — digest, when, which
- *   key it is sealed to, where the object is — and the puller's own state row (the edge pointer's ETags, the backoff,
- *   what it mirrored last), written in the same transaction as the release row so a saved ETag never outruns a row.
+ *   the SDK's datastore under `airprompter/` and the puller's schedule at `puller/state.json`; the air-gapped host
+ *   writes the public half of its distribution key, its status document and its telemetry exports; the eu-west host
+ *   reads the exports. `fleet-names.ts` is the layout.
  * - The **nudge queue** (`zudocs-nudge`, with a dead-letter queue after three failed receipts): the placeholder for
  *   the SDK's change-notification proposal. The desk's presenter posts one message; the puller consumes it and
- *   pulls with `skipPointer` — the origin is read once, conditionally. Pull-and-verify stays the only source of truth.
- * - The **puller** (Node 22, arm64): every `PULL_MINUTES` (one minute with `--context demo=true`) the
- *   pointer-first `pullBundle` against AirPrompter with the Agent key read from the region's SSM SecureString at cold
- *   start, sealed to the air-gapped host's public key when the bucket holds one (plaintext otherwise — allowed on the
+ *   pulls with `skipPointer` — the origin is read once, conditionally. The datastore is the carrier; every runtime
+ *   verifies the release before serving it.
+ * - The **puller** (Node 22, arm64): every `PULL_MINUTES` (one minute with `--context demo=true`) the SDK's
+ *   `pullToDatastore` against AirPrompter with the Agent key read from the region's SSM SecureString at cold start,
+ *   sealed to the air-gapped host's public key when the bucket holds one (plaintext otherwise — allowed on the
  *   dev target only, and the SDK refuses it anywhere else); the desk's status and events tables written across
  *   regions by ARN (its own row, and the air-gapped host's status document mirrored into a second row, since a host
  *   with no route out cannot reach a table in us-east-1).
@@ -29,12 +28,12 @@
  * ```
  */
 import * as cdk from "aws-cdk-lib";
-import { aws_dynamodb as dynamodb, aws_events as events, aws_events_targets as targets, aws_iam as iam, aws_lambda as lambda, aws_lambda_event_sources as sources, aws_logs as logs, aws_s3 as s3, aws_sqs as sqs } from "aws-cdk-lib";
+import { aws_events as events, aws_events_targets as targets, aws_iam as iam, aws_lambda as lambda, aws_lambda_event_sources as sources, aws_logs as logs, aws_s3 as s3, aws_sqs as sqs } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { existsSync } from "node:fs";
 import type { ZudocsConfig } from "./config.js";
 import { tableNameOf, type AirPrompterIds } from "./desk-stack.js";
-import { AIRGAP_HOST_ID, EXCHANGE, NUDGE_DLQ_NAME, NUDGE_QUEUE_NAME, PULL_MINUTES, PULL_MINUTES_DEMO, PULLER_FUNCTION_NAME, PULLER_HOST_ID, RELEASES_TABLE_NAME, exchangeBucketName } from "./fleet-names.js";
+import { AIRGAP_HOST_ID, EXCHANGE, NUDGE_DLQ_NAME, NUDGE_QUEUE_NAME, PULL_MINUTES, PULL_MINUTES_DEMO, PULLER_FUNCTION_NAME, PULLER_HOST_ID, exchangeBucketName } from "./fleet-names.js";
 
 export interface FleetStackProps extends cdk.StackProps {
   readonly config: ZudocsConfig;
@@ -50,7 +49,6 @@ export function pullMinutesOf(demo: unknown): number {
 
 export class FleetStack extends cdk.Stack {
   readonly bucket: s3.Bucket;
-  readonly table: dynamodb.Table;
   readonly queue: sqs.Queue;
   readonly puller: lambda.Function;
 
@@ -79,17 +77,6 @@ export class FleetStack extends cdk.Stack {
       ],
     });
 
-    // --- The releases table --------------------------------------------------------------------------------------------
-    this.table = new dynamodb.Table(this, "Releases", {
-      tableName: RELEASES_TABLE_NAME,
-      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "generation", type: dynamodb.AttributeType.NUMBER },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      // The AWS-owned key: no KMS request charge on a table written every minute (the desk's tables carry no more).
-      encryption: dynamodb.TableEncryption.DEFAULT,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
     // --- The nudge queue and its dead letters ----------------------------------------------------------------------------
     const timeout = cdk.Duration.seconds(90);
     const dlq = new sqs.Queue(this, "NudgeDlq", { queueName: NUDGE_DLQ_NAME, encryption: sqs.QueueEncryption.SQS_MANAGED, enforceSSL: true, retentionPeriod: cdk.Duration.days(7) });
@@ -109,7 +96,7 @@ export class FleetStack extends cdk.Stack {
     const logGroup = new logs.LogGroup(this, "PullerLogs", { logGroupName: `/aws/lambda/${PULLER_FUNCTION_NAME}`, retention: logs.RetentionDays.ONE_WEEK, removalPolicy: cdk.RemovalPolicy.DESTROY });
     this.puller = new lambda.Function(this, "Puller", {
       functionName: PULLER_FUNCTION_NAME,
-      description: "Zudocs: the fleet's puller — pointer-first pullBundle into the releases table and the exchange bucket; consumes nudges; mirrors the air-gapped host's status",
+      description: "Zudocs: the fleet's puller — pullToDatastore into the exchange bucket; consumes nudges; mirrors the air-gapped host's status",
       runtime: lambda.Runtime.NODEJS_22_X,
       architecture: lambda.Architecture.ARM_64,
       handler: "index.handler",
@@ -117,12 +104,11 @@ export class FleetStack extends cdk.Stack {
       memorySize: 512,
       timeout,
       // No reserved concurrency of one: with an SQS source that throttles the poller and sends nudges to the dead-letter
-      // queue. Two invocations at once (a nudge during a tick) are allowed and settled by the state row's version.
+      // queue. Two invocations at once (a nudge during a tick) are allowed and settled by the state object's ETag.
       logGroup,
       environment: {
         NODE_OPTIONS: "--enable-source-maps",
         EXCHANGE_BUCKET: this.bucket.bucketName,
-        RELEASES_TABLE: this.table.tableName,
         STATUS_TABLE: tableNameOf("status"),
         EVENTS_TABLE: tableNameOf("events"),
         TABLES_REGION: tablesRegion,
@@ -142,12 +128,11 @@ export class FleetStack extends cdk.Stack {
     });
     // The Agent key: one parameter by name, in this region, decrypted by SSM with the AWS-managed key.
     this.puller.addToRolePolicy(new iam.PolicyStatement({ actions: ["ssm:GetParameter"], resources: [parameterArn] }));
-    // The exchange: the puller writes releases and the pointer, and reads exactly the two objects the host writes for it.
-    this.puller.addToRolePolicy(new iam.PolicyStatement({ actions: ["s3:PutObject"], resources: [this.bucket.arnForObjects(`${EXCHANGE.releasesPrefix}*`), this.bucket.arnForObjects(EXCHANGE.latest)] }));
+    // The datastore and the schedule: the SDK's format under airprompter/, and puller/state.json beside it.
+    this.puller.addToRolePolicy(new iam.PolicyStatement({ actions: ["s3:GetObject", "s3:PutObject"], resources: [this.bucket.arnForObjects(`${EXCHANGE.datastorePrefix}*`), this.bucket.arnForObjects(EXCHANGE.pullerState)] }));
+    // The two objects the host writes for the puller.
     this.puller.addToRolePolicy(new iam.PolicyStatement({ actions: ["s3:GetObject"], resources: [this.bucket.arnForObjects(EXCHANGE.publicKey), this.bucket.arnForObjects(EXCHANGE.status)] }));
-    // A listing of exactly those two keys: with it S3 answers 404 (not 403) for the object the host has not written yet.
-    this.puller.addToRolePolicy(new iam.PolicyStatement({ actions: ["s3:ListBucket"], resources: [this.bucket.bucketArn], conditions: { StringEquals: { "s3:prefix": [EXCHANGE.publicKey, EXCHANGE.status] } } }));
-    this.puller.addToRolePolicy(new iam.PolicyStatement({ actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"], resources: [this.table.tableArn] }));
+    this.puller.addToRolePolicy(new iam.PolicyStatement({ actions: ["s3:ListBucket"], resources: [this.bucket.bucketArn], conditions: { StringLike: { "s3:prefix": [`${EXCHANGE.datastorePrefix}*`, "puller/*", EXCHANGE.publicKey, EXCHANGE.status] } } }));
     // The desk's status and events tables, across regions by ARN (`desk-stack.ts` fixes the names).
     const deskTable = (name: "status" | "events"): string => `arn:${this.partition}:dynamodb:${tablesRegion}:${this.account}:table/${tableNameOf(name)}`;
     this.puller.addToRolePolicy(new iam.PolicyStatement({ actions: ["dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [deskTable("status"), deskTable("events")] }));
@@ -160,7 +145,7 @@ export class FleetStack extends cdk.Stack {
     this.puller.addEventSource(new sources.SqsEventSource(this.queue, { batchSize: 1, maxConcurrency: 2 }));
 
     new cdk.CfnOutput(this, "ExchangeBucketName", { value: this.bucket.bucketName });
-    new cdk.CfnOutput(this, "ReleasesTableName", { value: this.table.tableName });
+    new cdk.CfnOutput(this, "DatastorePrefix", { value: EXCHANGE.datastorePrefix });
     new cdk.CfnOutput(this, "NudgeQueueUrl", { value: this.queue.queueUrl });
     new cdk.CfnOutput(this, "NudgeDlqUrl", { value: dlq.queueUrl });
     new cdk.CfnOutput(this, "PullerFunctionName", { value: this.puller.functionName });

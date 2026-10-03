@@ -5,15 +5,15 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { distributionKeyId, generateX25519KeyPair } from "@airprompter/agent-sdk";
 import { readAirgapEnv } from "../src/env.js";
-import { PROBE_TAG, PROBE_TICKET, decideApply, parseDistributionKeyFile, readJsonFile } from "../src/runtime.js";
+import { PROBE_TAG, PROBE_TICKET, parseDistributionKeyFile, readJsonFile } from "../src/runtime.js";
 import { buildStatusDoc, parseStatusDoc, STATUS_APPLIES_KEPT, STATUS_LOG_KEPT } from "../src/status.js";
 import { renderAirgapEnv } from "../render.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const ENV: NodeJS.ProcessEnv = {
-  ZUDOCS_HOST_ID: "ap-southeast-1/airgap", ZUDOCS_REGION: "ap-southeast-1", EXCHANGE_BUCKET: "zudocs-exchange-1", RELEASES_TABLE: "zudocs-agent-releases",
+  ZUDOCS_HOST_ID: "ap-southeast-1/airgap", ZUDOCS_REGION: "ap-southeast-1", EXCHANGE_BUCKET: "zudocs-exchange-1",
   AIRPROMPTER_ORG: "org-1", AIRPROMPTER_AGENT: "agent_x", AIRPROMPTER_ENVIRONMENT: "dev", AIRPROMPTER_HOSTED_ENVIRONMENT: "dev", AIRPROMPTER_ROOT_JWK_PATH: "/etc/airprompter/root.jwk.json", AIRPROMPTER_STATE_DIR: "/var/lib/airprompter",
-  ZUDOCS_DISTRIBUTION_KEY_PATH: "/var/lib/airprompter/keys/airgap.key.json", ZUDOCS_VENDORED_BUNDLE_PATH: "/var/lib/airprompter/vendored.apbundle", ZUDOCS_EXPORT_STATE_PATH: "/var/lib/zudocs/export/last.json", ZUDOCS_PROBE_PATH: "/var/lib/zudocs/probe.json",
+  ZUDOCS_DISTRIBUTION_KEY_PATH: "/var/lib/airprompter/keys/airgap.key.json", ZUDOCS_EXPORT_STATE_PATH: "/var/lib/zudocs/export/last.json", ZUDOCS_PROBE_PATH: "/var/lib/zudocs/probe.json",
 };
 
 test("readAirgapEnv: every name; a key or a base URL in the environment is refused; the cadences have floors and defaults", () => {
@@ -24,7 +24,7 @@ test("readAirgapEnv: every name; a key or a base URL in the environment is refus
   assert.equal(env.distributionKeyPath, "/var/lib/airprompter/keys/airgap.key.json");
   assert.throws(() => readAirgapEnv({ ...ENV, AIRPROMPTER_AGENT_KEY: "apa_x" }), /holds no Agent key/);
   assert.throws(() => readAirgapEnv({ ...ENV, AIRPROMPTER_BASE_URL: "https://api.example" }), /nothing on this host calls home/);
-  assert.throws(() => readAirgapEnv({ ...ENV, RELEASES_TABLE: "" }), /RELEASES_TABLE is missing/);
+  assert.throws(() => readAirgapEnv({ ...ENV, EXCHANGE_BUCKET: "" }), /EXCHANGE_BUCKET is missing/);
   assert.throws(() => readAirgapEnv({ ...ENV, ZUDOCS_APPLY_INTERVAL_SECONDS: "1" }), /at least 5/);
 });
 
@@ -55,26 +55,10 @@ test("the distribution private key file: as keygen writes it, 0600, the id check
   assert.throws(() => parseDistributionKeyFile(JSON.stringify({ kind: "airprompter-distribution-key", keyId: "nope", publicKey, privateKey: jwk.d }), 0o100600), /keyId does not match/);
 });
 
-test("decideApply: nothing without a row; wait while the newest row is sealed to another key or is plaintext; apply only a generation above what was handed over; a failed start holds the same digest for the cooldown", () => {
-  const now = "2026-09-18T20:00:00.000Z";
-  assert.equal(decideApply({ newest: null, keyId: "k1", attempted: 0, startFailure: null, now }).action, "nothing");
-  const wait = decideApply({ newest: { generation: 3, releaseDigest: "d", keyId: "other-key-id", object: "o", pulledAt: "t" }, keyId: "k1", attempted: 0, startFailure: null, now });
-  assert.equal(wait.action, "wait_for_reseal");
-  assert.match(wait.reason, /sealed to key other-ke…; this host's key is k1…/);
-  assert.equal(decideApply({ newest: { generation: 3, releaseDigest: "d", keyId: null, object: "o", pulledAt: "t" }, keyId: "k1", attempted: 0, startFailure: null, now }).action, "wait_for_reseal", "a plaintext bundle is not for this host");
-  assert.equal(decideApply({ newest: { generation: 3, releaseDigest: "d", keyId: "k1", object: "o", pulledAt: "t" }, keyId: "k1", attempted: 3, startFailure: null, now }).action, "nothing");
-  assert.equal(decideApply({ newest: { generation: 3, releaseDigest: "d", keyId: "k1", object: "o", pulledAt: "t" }, keyId: "k1", attempted: 4, startFailure: null, now }).action, "nothing", "never below what was handed over");
-  assert.equal(decideApply({ newest: { generation: 4, releaseDigest: "d", keyId: "k1", object: "o", pulledAt: "t" }, keyId: "k1", attempted: 3, startFailure: null, now }).action, "apply");
-  const failed = { at: "2026-09-18T19:55:00.000Z", generation: 4, releaseDigest: "d", code: "store_corrupt", message: "x" };
-  assert.equal(decideApply({ newest: { generation: 4, releaseDigest: "d", keyId: "k1", object: "o", pulledAt: "t" }, keyId: "k1", attempted: 3, startFailure: failed, now }).action, "nothing", "the same digest inside the cooldown");
-  assert.equal(decideApply({ newest: { generation: 4, releaseDigest: "d", keyId: "k1", object: "o", pulledAt: "t" }, keyId: "k1", attempted: 3, startFailure: failed, now: "2026-09-18T20:10:00.000Z" }).action, "apply", "after the cooldown");
-  assert.equal(decideApply({ newest: { generation: 5, releaseDigest: "e", keyId: "k1", object: "o", pulledAt: "t" }, keyId: "k1", attempted: 3, startFailure: failed, now }).action, "apply", "a newer digest at once");
-});
-
 test("the status document: the SDK's documents verbatim, the newest applies and log lines only, a monotonic seq; parse refuses other shapes; the probe is what the boot wrote", () => {
-  const applies = Array.from({ length: 30 }, (_, i) => ({ at: `2026-09-18T20:${String(i).padStart(2, "0")}:00.000Z`, generation: i, outcome: "activated" as const, reason: null, detail: null, source: "exchange" as const, object: null }));
+  const applies = Array.from({ length: 30 }, (_, i) => ({ at: `2026-09-18T20:${String(i).padStart(2, "0")}:00.000Z`, generation: i, outcome: "activated" as const, reason: null, detail: null, source: "datastore" as const, object: null }));
   const log = Array.from({ length: 40 }, (_, i) => ({ event: `e${i}` }));
-  const doc = buildStatusDoc({ hostId: "ap-southeast-1/airgap", region: "ap-southeast-1", sdk: "agent-sdk-ts/0.2.14", startedAt: "2026-09-18T19:00:00.000Z", now: "2026-09-18T20:30:00.000Z", seq: 7, ec2: null, keyId: "k1", phase: "serving", waitingFor: null, status: null, healthz: null, applies, startFailure: null, renders: { count: 0, lastAt: null, last: null, observation: "refused" }, export: null, probe: null, log });
+  const doc = buildStatusDoc({ hostId: "ap-southeast-1/airgap", region: "ap-southeast-1", sdk: "agent-sdk-ts/0.2.15", startedAt: "2026-09-18T19:00:00.000Z", now: "2026-09-18T20:30:00.000Z", seq: 7, ec2: null, keyId: "k1", phase: "serving", status: null, healthz: null, applies, startFailure: null, renders: { count: 0, lastAt: null, last: null, observation: "refused" }, export: null, probe: null, log });
   assert.equal(doc.applies.length, STATUS_APPLIES_KEPT);
   assert.equal(doc.applies[0]!.generation, 10, "the oldest go");
   assert.equal(doc.log.length, STATUS_LOG_KEPT);

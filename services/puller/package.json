@@ -2,7 +2,7 @@
   "name": "@zudocs/puller",
   "version": "0.1.0",
   "private": true,
-  "description": "The Zudocs fleet puller in ap-southeast-1: one Lambda that holds the region's Agent key, pulls each promoted release pointer-first with the SDK's pullBundle, seals it to the air-gapped host's distribution key, writes the releases table and the exchange bucket, consumes nudges, and mirrors the air-gapped host's status into the desk's tables.",
+  "description": "The Zudocs fleet puller in ap-southeast-1: one Lambda that holds the region's Agent key, writes each sealed release into the exchange bucket with the SDK's pullToDatastore, consumes nudges, and mirrors the air-gapped host's status into the desk's tables.",
   "license": "BSD-3-Clause",
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
     "build": "node build.mjs"
   },
   "dependencies": {
-    "@airprompter/agent-sdk": "0.2.14",
+    "@airprompter/agent-sdk": "0.3.0",
+    "@airprompter/datastore-s3": "0.3.0",
     "@aws-sdk/client-dynamodb": "3.1135.0",
     "@aws-sdk/client-s3": "3.1135.0",
     "@aws-sdk/client-ssm": "3.1135.0",

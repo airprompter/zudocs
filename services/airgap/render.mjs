@@ -1,6 +1,6 @@
 /**
  * What the build renders for the air-gapped host from the committed configuration: `zudocs.env` — the host id, the
- * region, the exchange bucket and the releases table (the fixed names `infra/lib/fleet-names.ts` decides, computed
+ * region and the exchange bucket (the fixed names `infra/lib/fleet-names.ts` decides, computed
  * here from the account in the environment or a placeholder the boot script replaces), the AirPrompter identifiers,
  * the paths and the cadences for the units. Never a key, never a base URL: this host is offline, and a value or a
  * name that looks like either is refused. Pure over its inputs, so the tests pin the shape.
@@ -24,11 +24,9 @@ export function renderAirgapEnv(config, cdkContext, env = process.env) {
     ZUDOCS_HOST_ID: `${region}/airgap`,
     ZUDOCS_REGION: region,
     EXCHANGE_BUCKET: "@EXCHANGE_BUCKET@",
-    RELEASES_TABLE: "zudocs-agent-releases",
     AIRPROMPTER_STATE_DIR: "/var/lib/airprompter",
     AIRPROMPTER_ROOT_JWK_PATH: "/etc/airprompter/root.jwk.json",
     ZUDOCS_DISTRIBUTION_KEY_PATH: "/var/lib/airprompter/keys/airgap.key.json",
-    ZUDOCS_VENDORED_BUNDLE_PATH: "/var/lib/airprompter/vendored.apbundle",
     ZUDOCS_EXPORT_STATE_PATH: "/var/lib/zudocs/export/last.json",
     ZUDOCS_PROBE_PATH: "/var/lib/zudocs/probe.json",
     ZUDOCS_APPLY_INTERVAL_SECONDS: "30",

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
  * The eu-west host, proved from the owner's session: the host's row in the status table says what the plan
- * promised (a daemon host, `file_key` shown, policy `unlock_required` pinned on the host, both workers attached), the
+ * promised (a telemetry daemon host, `file_key` shown, policy `unlock_required` pinned on the worker, both workers serving), the
  * operator's CLI on the host answers through Session Manager's Run Command (`status`, and `doctor` warning about
- * `file_key`), and — with the flags — a queued ticket runs there through the daemon, a staged release is approved
+ * `file_key`), and — with the flags — a queued ticket runs through the worker, a staged release is approved
  * from the desk and activates, an `unlock` or a `rollback` runs from the host's shell, and the wire is cut and
  * comes back. A fresh (or replaced) host serves nothing until its first release is approved, so its workers are not
- * attached and `doctor` reports no active release: the proof says so and expects it, and `--approve` is the way to
+ * serving and `doctor` reports no active release: the proof says so and expects it, and `--approve` is the way to
  * a serving host. Prints ids, counts and verdicts; never a key (the CLI's output is printed as the CLI printed it,
  * and the CLI never prints one). Exit 1 when a claim fails.
  *
@@ -67,7 +67,9 @@ const api = async (method, path, body) => {
   return { status: res.status, json };
 };
 const hostRow = async () => (await api("GET", "/state")).json.hosts?.find((h) => h.hostId === host.HostId) ?? null;
-const describeRow = (row) => `generation ${row.status.generation} · ${row.status.applyState}${row.status.stagedGeneration ? ` · staged #${row.status.stagedGeneration}` : ""} · ${row.status.storageProtection} · policy ${row.status.applyPolicy?.effective} (${row.status.applyPolicy?.source}) · sync ${row.status.lastSyncOutcome} (${row.status.consecutiveSyncFailures} failures) · healthz ${row.healthz.status}${row.healthz.reasons?.length ? ` [${row.healthz.reasons.join(",")}]` : ""} · written ${row.writtenAt}`;
+const describeRow = (row) => row.status
+  ? `generation ${row.status.generation} · ${row.status.applyState}${row.status.stagedGeneration ? ` · staged #${row.status.stagedGeneration}` : ""} · ${row.status.storageProtection} · policy ${row.status.applyPolicy?.effective} (${row.status.applyPolicy?.source}) · sync ${row.status.lastSyncOutcome} (${row.status.consecutiveSyncFailures} failures) · healthz ${row.healthz.status}${row.healthz.reasons?.length ? ` [${row.healthz.reasons.join(",")}]` : ""} · written ${row.writtenAt}`
+  : `worker waiting for its first approved release · healthz ${row.healthz?.status ?? "unknown"} · written ${row.writtenAt}`;
 
 // --- The row -------------------------------------------------------------------------------------------------------
 const row = await hostRow();
@@ -79,16 +81,16 @@ if (!row) {
 console.log(`row: ${describeRow(row)}`);
 console.log(`     sdk ${row.sdk} · node worker ${row.worker ? `${row.worker.sdk} ${row.worker.attached ? "attached" : "detached"} ${row.worker.tickets} tickets` : "missing"} · python ${row.python ? `${row.python.sdk} ${row.python.attached ? "attached" : "detached"} ${row.python.runs} runs` : "missing"} · ec2 ${row.ec2?.instanceId ?? "?"}`);
 (row.kind === "daemon" ? ok : fail)(`the host reports as a daemon host (${row.kind})`);
-(row.status.storageProtection === "file_key" ? ok : fail)(`the store key protection is shown honestly: ${row.status.storageProtection}`);
-(row.status.applyPolicy?.effective === "unlock_required" ? ok : fail)(`the apply policy is unlock_required on the host (${row.status.applyPolicy?.effective}, ${row.status.applyPolicy?.source})`);
+(row.status === null || row.status.storageProtection === "file_key" ? ok : fail)(`the store key protection is shown honestly: ${row.status?.storageProtection ?? "worker still starting"}`);
+(row.status === null || row.status.applyPolicy?.effective === "unlock_required" ? ok : fail)(`the apply policy is unlock_required on the worker (${row.status?.applyPolicy?.effective ?? "worker still starting"})`);
 // A fresh host (or a replaced one) serves nothing until the desk approves its first release: the SDKs are not attached
 // yet and doctor reports no active release. Those checks wait for a serving host; `--approve` is the way there.
-const serving = Number(row.status.generation) > 0;
+const serving = Number(row.status?.generation ?? 0) > 0;
 if (serving) {
-  (row.worker?.attached && row.worker.source === "daemon" ? ok : fail)("the Node worker is attached to the daemon");
-  (row.python?.attached ? ok : fail)(`the Python worker is attached to the same daemon (${row.python?.sdk ?? "not reporting"})`);
+  (row.worker?.attached && row.worker.source === "store" ? ok : fail)("the Node worker loads its own release from the store");
+  (row.python?.attached && row.python.source === "store" ? ok : fail)(`the Python worker loads its own release from the store (${row.python?.sdk ?? "not reporting"})`);
 } else {
-  console.log(`  · the host serves nothing yet (generation 0${row.status.stagedGeneration ? `, staged #${row.status.stagedGeneration}` : ""}): the workers attach after the first approval — run with --approve`);
+  console.log(`  · the host serves nothing yet: the workers start after the first approval — run with --approve`);
   (row.worker && !row.worker.attached ? ok : fail)(`the Node worker reports itself waiting (${row.worker?.reasons?.join(",") ?? "no worker part"})`);
 }
 (row.ec2?.instanceId === host.InstanceId ? ok : fail)(`the row names the stack's instance (${row.ec2?.instanceId})`);
@@ -116,10 +118,11 @@ const show = (label, result) => {
 };
 
 const status = await onHost("zudocs-cli status --json");
-show("airprompter status --json (on the host, via the daemon)", status);
+show("airprompter status --json (worker store and telemetry daemon)", status);
 let statusDoc = null;
 try { statusDoc = JSON.parse(status.stdout); } catch { /* shown above */ }
-(statusDoc && Number(statusDoc.generation ?? statusDoc.active?.generation) === Number(row.status.generation) ? ok : fail)(`airprompter status on the host agrees with the row (generation ${statusDoc?.generation ?? statusDoc?.active?.generation ?? "?"} vs ${row.status.generation})`);
+(status.status === "Success" && statusDoc && (!serving || Number(statusDoc.generation) === Number(row.status.generation)) ? ok : fail)(`airprompter status reads the worker store (generation ${statusDoc?.generation ?? "?"})`);
+(statusDoc?.daemon?.live === true && statusDoc.daemon.daemon?.version === "0.3.0" ? ok : fail)(`the CLI sees the 0.3.0 telemetry daemon live (${statusDoc?.daemon?.daemon?.version ?? "not reported"})`);
 
 const doctor = await onHost("zudocs-cli doctor --json", 120);
 show("airprompter doctor --json (on the host)", doctor);
@@ -128,7 +131,7 @@ try { doctorDoc = JSON.parse(doctor.stdout); } catch { /* shown above */ }
 const checks = doctorDoc?.checks ?? [];
 const keyCheck = checks.find((c) => c.name === "key_protection");
 (keyCheck?.level === "warn" && /file_key/.test(keyCheck.detail) ? ok : fail)(`doctor warns about the key protection: ${keyCheck ? `${keyCheck.level} — ${keyCheck.detail}` : "no key_protection check in the output"}`);
-const expectedFails = serving ? [] : ["active_release", "daemon"];
+const expectedFails = serving ? [] : ["active_release"];
 const unexpected = checks.filter((c) => c.level === "fail" && !expectedFails.includes(c.name));
 // The checks a host always has (lease and last_upload appear only once a release is active and a segment was acked).
 const named = ["source", "root", "store", "key_protection", "policy_pin", "spool", "daemon"].filter((n) => !checks.some((c) => c.name === n));
@@ -138,7 +141,7 @@ const named = ["source", "root", "store", "key_protection", "policy_pin", "spool
 if (flag("--approve")) {
   const { approvals } = (await api("GET", "/approvals")).json;
   const pending = approvals.filter((a) => a.hostId === host.HostId && a.decision === "pending");
-  if (pending.length === 0) fail("nothing is staged for this host — promote a release first (the daemon stages it within 30 s)");
+  if (pending.length === 0) fail("nothing is staged for this host — promote a release first (the worker stages it within 30 s)");
   for (const a of pending) {
     const decided = await api("POST", `/approvals/${a.approvalId}/approve`);
     console.log(`approve ${a.approvalId}: ${decided.status} ${decided.json.message ?? ""}`);
@@ -158,13 +161,13 @@ if (flag("--approve")) {
       after = await hostRow();
     }
     (after && after.status.generation === a.generation && after.status.applyState === "active" ? ok : fail)(`the host card flipped: ${after ? describeRow(after) : "no row"}`);
-    let attached = after?.worker?.attached ? after : null;
-    for (let i = 0; i < 12 && !attached; i += 1) {
+    let active = after?.worker?.attached ? after : null;
+    for (let i = 0; i < 12 && !active; i += 1) {
       await sleep(5000);
       const current = await hostRow();
-      if (current?.worker?.attached) attached = current;
+      if (current?.worker?.attached) active = current;
     }
-    (attached ? ok : fail)(`the Node worker attached once the host served (${attached?.worker?.sdk ?? "not within a minute"})`);
+    (active ? ok : fail)(`the Node worker serves once the release was approved (${active?.worker?.sdk ?? "not within a minute"})`);
     const events = (await api("GET", "/events")).json.events.filter((e) => e.approvalId === a.approvalId);
     console.log(`  timeline for ${a.approvalId}: ${events.map((e) => `${e.at.slice(11, 19)} ${e.host} ${e.kind}`).join(" · ")}`);
   }
@@ -172,6 +175,7 @@ if (flag("--approve")) {
 
 if (value("--enqueue")) {
   const ticketId = value("--enqueue");
+  const sentBefore = Number(statusDoc?.daemon?.upload?.sentSegments ?? 0);
   const since = new Date().toISOString();
   const queued = await api("POST", "/presenter/enqueue", { ticketId, host: host.HostId });
   console.log(`enqueue ${ticketId} → ${queued.status} ${queued.json.message ?? JSON.stringify(queued.json)}`);
@@ -187,6 +191,17 @@ if (value("--enqueue")) {
     const run = (await api("GET", `/tickets/${ticketId}`)).json.runs.find((r) => r.runId === event.runId);
     for (const step of run?.steps ?? []) console.log(`  ${step.step}: ${step.tag} ${step.versionId} · release #${step.generation} · ${step.model} · ${step.observation ? `${step.observation.status} ${step.observation.latencyMs} ms · tokens ${JSON.stringify(step.observation.tokens ?? {})} · usage ${step.observation.usageSource}` : "no observation"} · checks ${step.checks.map((c) => `${c.name}:${c.verdict}`).join(",") || "none"}${step.judge ? ` · judge ${step.judge.score}` : ""}${step.error ? ` · ERROR ${step.error.name}: ${step.error.message}` : ""}`);
     (run?.host === host.HostId && run.ok ? ok : fail)(`the record is the host's and every step answered (host ${run?.host}, ok ${run?.ok})`);
+    let uploaded = null;
+    for (let i = 0; i < 12 && !uploaded; i += 1) {
+      await sleep(15_000);
+      const checked = await onHost("zudocs-cli status --json");
+      if (checked.status !== "Success") continue;
+      try {
+        const doc = JSON.parse(checked.stdout);
+        if (Number(doc.daemon?.upload?.sentSegments ?? 0) > sentBefore) uploaded = doc.daemon.upload;
+      } catch { /* the next poll can read the daemon's status */ }
+    }
+    (uploaded ? ok : fail)(`the telemetry daemon acknowledged a segment from this run (sent ${sentBefore} → ${uploaded?.sentSegments ?? "?"})`);
   }
 }
 

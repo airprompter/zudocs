@@ -7,7 +7,7 @@
  * file feedback, read the host's status row and the timeline, and see the tee's metrics in CloudWatch. With
  * `--expect-cap N` it instead proves the daily cap refuses visibly (HTTP 429, `daily_cap`, the count) — deploy
  * with `--context dailyRunCap=N` first, then redeploy without it. Prints ids, counts and verdicts, the reply's
- * first lines (what a prospect sees), and never a token or a password. Exit 1 when a claim fails.
+ * first lines (what the desk shows), and never a token or a password. Exit 1 when a claim fails.
  *
  * @example
  * ```sh

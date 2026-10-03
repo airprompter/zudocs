@@ -2,7 +2,7 @@
  * Approvals: a release AirPrompter staged on a host under `unlock_required`, waiting for the owner. Each pending
  * row says which host, which release, when it was staged and the console's note when the host could read one; the
  * Approve button records the decision once (the API answers with the row as it stands on a repeat) and the host's
- * worker activates through its daemon — the row moves to "activated" with its instant, and the host card flips.
+ * worker activates it through its Agent SDK — the row moves to "activated" with its instant, and the host card flips.
  * Settled rows stay in view for the session so a prospect sees the whole story: staged → approved → live. A
  * release that carries an experiment shows its ramp plan (read by the us-east host from the same signed manifest):
  * one approval here unlocks every step of the plan — the host walks it on its own clock, no check-in.
@@ -33,10 +33,10 @@ const DECISION_LABEL: Record<Approval["decision"], string> = { pending: "awaitin
 export function Approvals({ approvals, busy, onApprove }: { approvals: Approval[]; busy: string | null; onApprove: (approvalId: string) => void }) {
   const pending = approvals.filter((a) => a.decision === "pending");
   const recent = approvals.filter((a) => a.decision !== "pending").slice(0, 3);
-  if (approvals.length === 0) return null;
   return (
     <section className="approvals" title={TOOLTIPS.approval}>
       <div className="pane-title"><h2>Approvals</h2><span className="muted">{pending.length ? `${pending.length} staged` : "nothing waiting"}</span></div>
+      {approvals.length === 0 ? <p className="muted fine approvals-empty">nothing waiting</p> : null}
       {pending.map((a) => (
         <article key={a.approvalId} className="approval approval-pending">
           <div className="approval-head">

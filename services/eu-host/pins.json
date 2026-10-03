@@ -1,14 +1,14 @@
 {
-  "$comment": "What the eu-west host installs, pinned here so a change is a synth and a review, never a surprise at boot. The CLI is verified against the digest before it is executable; the Python SDK is not on PyPI yet, so its five distributions install by the commit the sdk-python tag names; the AMI is pinned per region because a resolved-at-deploy image replaces the instance on every AL2023 refresh (a replacement rebuilds the store from one sync).",
+  "$comment": "What the eu-west host installs, pinned here so a change is a synth and a review, never a surprise at boot. The CLI is verified against its digest before it is executable. Python SDK 0.3.0 is on PyPI, but this host installs its five distributions at the pinned release commit. The AMI is pinned per region so an AL2023 refresh does not replace the instance unexpectedly.",
   "cli": {
-    "tag": "cli/v0.1.0",
+    "tag": "cli/v0.3.0",
     "asset": "airprompter-linux-arm64",
-    "sha256": "f12f552b357d42f593546308be9c86aace546b1081815d1225535740da50174c",
-    "url": "https://github.com/airprompter/airprompter-agent-sdk/releases/download/cli/v0.1.0/airprompter-linux-arm64"
+    "sha256": "25eaf2e1c97338996c96d15410307b211797eec1af8eb8f249c727cb6b204523",
+    "url": "https://github.com/airprompter/airprompter-agent-sdk/releases/download/cli/v0.3.0/airprompter-linux-arm64"
   },
   "pythonSdk": {
-    "tag": "sdk-python/v0.2.14",
-    "commit": "009ea8b6e3501fc25eb88e23e2ae217384b15a0f",
+    "tag": "sdk-python/v0.3.0",
+    "commit": "5c289765f38bab7384dd611968f178567c534a6c",
     "repo": "https://github.com/airprompter/airprompter-agent-sdk",
     "packages": ["core", "sync", "telemetry", "runtime", "agent"]
   },

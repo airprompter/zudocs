@@ -26,26 +26,27 @@ nav a:hover, nav a:focus-visible { color: var(--accent); }
 .cta, .button { background: var(--accent); color: var(--accent-ink) !important; padding: 9px 16px; border-radius: 6px; font-weight: 600; text-decoration: none; }
 .cta:hover, .button:hover { filter: brightness(1.08); }
 main { max-width: 1040px; margin: 0 auto; padding: 0 32px; }
-.hero { padding: 88px 0 56px; max-width: 720px; }
+.hero { padding: 76px 0 44px; max-width: 760px; }
 .eyebrow { text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px; font-weight: 600; color: var(--accent); margin: 0 0 10px; }
 h1 { font-size: 46px; line-height: 1.1; margin: 0 0 18px; letter-spacing: -0.02em; text-wrap: balance; }
 .lede { font-size: 19px; color: var(--muted); margin: 0 0 26px; }
 .actions { display: flex; align-items: center; gap: 18px; margin: 0; }
+.hero-note { margin: 14px 0 0; color: var(--muted); font-size: 13px; }
 .quiet { text-decoration: none; }
 .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 28px; padding: 32px 0; border-top: 1px solid var(--rule); }
 .three h2 { font-size: 18px; margin: 0 0 6px; }
 .three p { margin: 0; color: var(--muted); }
-.how { padding: 40px 0; border-top: 1px solid var(--rule); max-width: 760px; }
-.how h2, .pricing h2 { font-size: 26px; margin: 0 0 12px; letter-spacing: -0.01em; }
-.how p { margin: 0 0 12px; }
-.pricing { padding: 40px 0 72px; border-top: 1px solid var(--rule); }
-.plans { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-.plan { border: 1px solid var(--rule); border-radius: 8px; padding: 20px; background: #fff; }
-.plan.featured { border-color: var(--accent); background: var(--accent-soft); }
-.plan h3 { margin: 0 0 4px; font-size: 16px; }
-.price { font-size: 30px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.02em; }
-.price span { font-size: 14px; font-weight: 500; color: var(--muted); }
-.plan p:last-child { margin: 0; color: var(--muted); }
+.how { padding: 48px 0 72px; border-top: 1px solid var(--rule); }
+.how-heading { display: flex; align-items: end; justify-content: space-between; gap: 32px; margin-bottom: 22px; }
+.how-heading h2 { font-size: 27px; line-height: 1.2; letter-spacing: -0.02em; margin: 0; }
+.how-heading > p { max-width: 340px; margin: 0; color: var(--muted); }
+.integration-flow { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.integration-flow li { position: relative; min-width: 0; min-height: 186px; padding: 18px; border: 1px solid var(--rule); border-radius: 10px; background: #fff; }
+.integration-flow li + li::before { content: "→"; position: absolute; left: -20px; top: 22px; z-index: 1; color: var(--accent); background: var(--paper); font-weight: 700; padding: 0 3px; }
+.flow-number { display: block; color: var(--accent); font: 700 12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace; margin-bottom: 20px; }
+.integration-flow h3 { font-size: 16px; line-height: 1.3; margin: 0 0 7px; }
+.integration-flow p { font-size: 14px; line-height: 1.45; color: var(--muted); margin: 0; }
+.how-note { margin: 16px 0 0; font-size: 14px; color: var(--muted); }
 footer { border-top: 1px solid var(--rule); padding: 24px 32px; color: var(--muted); font-size: 14px; }
 footer p { max-width: 760px; margin: 0; }
 @media (max-width: 720px) {
@@ -53,5 +54,10 @@ footer p { max-width: 760px; margin: 0; }
   nav { flex-wrap: wrap; gap: 14px; }
   .hero { padding: 48px 0 32px; }
   h1 { font-size: 34px; }
-  .three, .plans { grid-template-columns: 1fr; }
+  .three, .integration-flow { grid-template-columns: 1fr; }
+  .how-heading { display: block; }
+  .how-heading > p { margin-top: 10px; }
+  .integration-flow li { min-height: 0; }
+  .integration-flow li + li::before { content: "↓"; left: 18px; top: -16px; }
+  .flow-number { margin-bottom: 8px; }
 }

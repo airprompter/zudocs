@@ -1,102 +1,88 @@
 /**
- * The puller's two tables. The releases table (ap-southeast-1): one row per generation under `release#<scope>` and
- * the puller's own state under `puller#<scope>` at generation 0 — a release row and the state that goes with it are
- * written in one transaction, so a saved manifest ETag never outruns the row it was returned beside, and every
- * state write is conditioned on the version that was read: two invocations at once (a nudge during a tick) cannot
- * both win, and the loser learns it (`RaceLost`) instead of writing over the winner. The desk's status and events
- * tables (us-east-1): the same row shapes `services/desk-api/src/store.ts` writes, over a client for that region —
- * `updateStatus` merges fields into a host's row, `appendEvent` writes a timeline row that expires with the others.
+ * The puller's two stores. Its own state is one object in the exchange bucket (`puller/state.json`): the backoff,
+ * the nudge ids, and what it mirrored last — written with S3's conditional put (`If-None-Match: *` the first time,
+ * `If-Match` after), so two invocations at once cannot both win and the loser learns it (`RaceLost`). The release
+ * is not in this object; `pullToDatastore` writes that in the SDK's format. The desk's status and events tables
+ * (us-east-1) keep the row shapes `services/desk-api/src/store.ts` writes.
  *
  * @example
  * ```ts
- * const releases = createReleasesTable(docClient, "zudocs-agent-releases", "agent_x/dev");
- * const { state, version } = await releases.readState();
- * const newest = await releases.newest();                          // { generation: 3, keyId: "…", object: "releases/3-…apbundle", … } | null
- * await releases.writeRelease(row, state, version);                 // one transaction: the row (unless it exists with another digest) and the state
+ * const state = createPullerState(s3, bucket);
+ * const { state: remembered, version } = await state.read();
+ * await state.write(remembered, version);   // throws RaceLost when another invocation wrote first
  * const desk = createDeskTables(usEastClient, { status: "zudocs-desk-status", events: "zudocs-desk-events" });
  * await desk.appendEvent({ at, kind: "bundle_pulled", host: "ap-southeast-1/puller", generation: 3 });
  * ```
  */
 import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import type { S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { EVENT_RETENTION_DAYS, dayOf } from "../../desk-api/src/store.js";
-import { EMPTY_STATE, type PullerState, type ReleaseRow } from "./plan.js";
+import { EMPTY_STATE, type PullerState } from "./plan.js";
 
 type Send = (command: unknown) => Promise<any>;
 
-/** Another invocation wrote the state row first: this one stops without writing anything more. */
+/** Another invocation wrote the state object first: this one stops without writing anything more. */
 export class RaceLost extends Error {
-  constructor(readonly expectedVersion: number) {
-    super(`the puller's state row moved past version ${expectedVersion}: another invocation won`);
+  constructor(readonly expectedVersion: string | null) {
+    super(`the puller's state moved past ${expectedVersion ?? "absent"}: another invocation won`);
     this.name = "RaceLost";
   }
 }
 
-export interface ReleasesTable {
-  readonly scope: string;
-  readState(): Promise<{ state: PullerState; version: number }>;
-  /** Write the state, conditioned on `expectedVersion`; the new version is returned. Throws `RaceLost`. */
-  writeState(state: PullerState, expectedVersion: number): Promise<number>;
-  newest(): Promise<ReleaseRow | null>;
-  /**
-   * The row and the state together, conditioned on the state's version. `written: false` when the generation exists
-   * with a different digest (kept as it was; the state is then written on its own). Throws `RaceLost`.
-   */
-  writeRelease(row: Omit<ReleaseRow, "pk">, state: PullerState, expectedVersion: number): Promise<{ written: boolean; version: number }>;
+/** The exchange object that holds the puller's schedule. Not a release, and not inside the SDK's `airprompter/` prefix. */
+export const PULLER_STATE_KEY = "puller/state.json";
+
+export interface PullerStateStore {
+  read(): Promise<{ state: PullerState; version: string | null }>;
+  /** Write the state, conditioned on `expectedVersion` (`null` when the object is absent). The new ETag is returned. Throws `RaceLost`. */
+  write(state: PullerState, expectedVersion: string | null): Promise<string>;
 }
 
-export const releasePk = (scope: string): string => `release#${scope}`;
-export const statePk = (scope: string): string => `puller#${scope}`;
-const isConditionFailed = (error: unknown): boolean => (error as { name?: string })?.name === "ConditionalCheckFailedException";
+const isMissing = (error: unknown): boolean => {
+  const name = (error as { name?: string; Code?: string }).name ?? (error as { Code?: string }).Code;
+  const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+  return name === "NoSuchKey" || name === "NotFound" || status === 404;
+};
 
-export function createReleasesTable(client: Pick<DynamoDBDocumentClient, "send">, tableName: string, scope: string): ReleasesTable {
+const isLostRace = (error: unknown): boolean => {
+  const name = (error as { name?: string; Code?: string }).name ?? (error as { Code?: string }).Code;
+  const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+  return name === "PreconditionFailed" || name === "ConditionalRequestConflict" || status === 412 || status === 409;
+};
+
+const remembered = (saved: Partial<PullerState> | undefined): PullerState =>
+  saved ? { ...EMPTY_STATE, ...saved, reads: { ...EMPTY_STATE.reads, ...(saved.reads ?? {}) }, airgap: { ...EMPTY_STATE.airgap, ...(saved.airgap ?? {}) }, nudgeIds: saved.nudgeIds ?? [] } : { ...EMPTY_STATE, nudgeIds: [] };
+
+export function createPullerState(client: Pick<S3Client, "send">, bucket: string, key = PULLER_STATE_KEY): PullerStateStore {
   const send = client.send.bind(client) as Send;
-  const stateItem = (state: PullerState, version: number) => ({ pk: statePk(scope), generation: 0, state, version, updatedAt: new Date().toISOString() });
-  // The condition: the row is absent (version 0 expected) or carries exactly the version that was read.
-  const stateCondition = (expectedVersion: number) => expectedVersion === 0 ? { ConditionExpression: "attribute_not_exists(pk) OR version = :v", ExpressionAttributeValues: { ":v": 0 } } : { ConditionExpression: "version = :v", ExpressionAttributeValues: { ":v": expectedVersion } };
   return {
-    scope,
-    async readState() {
-      const out = await send(new GetCommand({ TableName: tableName, Key: { pk: statePk(scope), generation: 0 }, ConsistentRead: true }));
-      const saved = out.Item?.state as Partial<PullerState> | undefined;
-      const version = Number(out.Item?.version ?? 0);
-      return { state: saved ? { ...EMPTY_STATE, ...saved, reads: { ...EMPTY_STATE.reads, ...(saved.reads ?? {}) }, airgap: { ...EMPTY_STATE.airgap, ...(saved.airgap ?? {}) } } : { ...EMPTY_STATE }, version };
-    },
-    async writeState(state, expectedVersion) {
+    async read() {
       try {
-        await send(new PutCommand({ TableName: tableName, Item: stateItem(state, expectedVersion + 1), ...stateCondition(expectedVersion) }));
-        return expectedVersion + 1;
+        const out = await send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        const text = out.Body ? await out.Body.transformToString("utf8") : "";
+        const parsed = text ? (JSON.parse(text) as { state?: Partial<PullerState> }) : {};
+        if (!out.ETag) throw new Error(`S3 answered ${key} without an ETag; conditional writes need one`);
+        return { state: remembered(parsed.state), version: out.ETag };
       } catch (error) {
-        if (isConditionFailed(error)) throw new RaceLost(expectedVersion);
+        if (isMissing(error)) return { state: remembered(undefined), version: null };
         throw error;
       }
     },
-    async newest() {
-      const out = await send(new QueryCommand({ TableName: tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": releasePk(scope) }, ScanIndexForward: false, Limit: 1, ConsistentRead: true }));
-      return (out.Items?.[0] as ReleaseRow | undefined) ?? null;
-    },
-    async writeRelease(row, state, expectedVersion) {
-      const condition = stateCondition(expectedVersion);
+    async write(state, expectedVersion) {
       try {
-        await send(new TransactWriteCommand({
-          TransactItems: [
-            // The same generation twice is the same digest on an honest control plane: a re-seal replaces the row; a different digest keeps the row and says so.
-            { Put: { TableName: tableName, Item: { pk: releasePk(scope), ...row }, ConditionExpression: "attribute_not_exists(pk) OR releaseDigest = :d", ExpressionAttributeValues: { ":d": row.releaseDigest } } },
-            { Put: { TableName: tableName, Item: stateItem(state, expectedVersion + 1), ConditionExpression: condition.ConditionExpression, ExpressionAttributeValues: condition.ExpressionAttributeValues } },
-          ],
+        const out = await send(new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: JSON.stringify({ state }),
+          ContentType: "application/json; charset=utf-8",
+          ...(expectedVersion ? { IfMatch: expectedVersion } : { IfNoneMatch: "*" }),
         }));
-        return { written: true, version: expectedVersion + 1 };
+        if (!out.ETag) throw new Error(`S3 wrote ${key} without an ETag`);
+        return out.ETag;
       } catch (error) {
-        const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
-        if ((error as { name?: string }).name === "TransactionCanceledException" && reasons) {
-          if (reasons[1]?.Code === "ConditionalCheckFailed") throw new RaceLost(expectedVersion);
-          if (reasons[0]?.Code === "ConditionalCheckFailed") {
-            const version = await this.writeState(state, expectedVersion);
-            return { written: false, version };
-          }
-          // Another transaction touched the same items at the same instant: the same answer as a lost condition.
-          if (reasons.some((r) => r?.Code === "TransactionConflict")) throw new RaceLost(expectedVersion);
-        }
+        if (isLostRace(error)) throw new RaceLost(expectedVersion);
         throw error;
       }
     },

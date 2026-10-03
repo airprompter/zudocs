@@ -1,6 +1,6 @@
 /**
  * The air-gapped runtime's configuration, from `/etc/airprompter/zudocs.env` (systemd's EnvironmentFile; rendered by
- * the build from the committed identifiers — the exchange bucket, the releases table, the AirPrompter ids, the
+ * the build from the committed identifiers — the exchange bucket (the S3 datastore), the AirPrompter ids, the
  * paths, the cadences). No key of any kind is in it: this host has no Agent key at all (it is offline), and its
  * distribution private key is a file `airprompter keygen` wrote, named here by PATH. A base URL is refused too —
  * nothing on this host is configured to call home, and a rendered file that names one is a mistake worth stopping.
@@ -16,7 +16,6 @@ export interface AirgapEnv {
   readonly hostId: string;
   readonly region: string;
   readonly exchangeBucket: string;
-  readonly releasesTable: string;
   readonly airprompter: {
     readonly organizationId: string;
     readonly agentId: string;
@@ -26,7 +25,6 @@ export interface AirgapEnv {
   };
   readonly stateDir: string;
   readonly distributionKeyPath: string;
-  readonly vendoredBundlePath: string;
   /** The export timer's last result (`host/bin/zudocs-airgap-export` writes it) and the boot probe's result. */
   readonly exportStatePath: string;
   readonly probePath: string;
@@ -61,7 +59,6 @@ export function readAirgapEnv(env: NodeJS.ProcessEnv = process.env): AirgapEnv {
     hostId: need(env, "ZUDOCS_HOST_ID"),
     region: need(env, "ZUDOCS_REGION"),
     exchangeBucket: need(env, "EXCHANGE_BUCKET"),
-    releasesTable: need(env, "RELEASES_TABLE"),
     airprompter: Object.freeze({
       organizationId: need(env, "AIRPROMPTER_ORG"),
       agentId: need(env, "AIRPROMPTER_AGENT"),
@@ -71,7 +68,6 @@ export function readAirgapEnv(env: NodeJS.ProcessEnv = process.env): AirgapEnv {
     }),
     stateDir: need(env, "AIRPROMPTER_STATE_DIR"),
     distributionKeyPath: need(env, "ZUDOCS_DISTRIBUTION_KEY_PATH"),
-    vendoredBundlePath: need(env, "ZUDOCS_VENDORED_BUNDLE_PATH"),
     exportStatePath: need(env, "ZUDOCS_EXPORT_STATE_PATH"),
     probePath: need(env, "ZUDOCS_PROBE_PATH"),
     applyIntervalSeconds: seconds(env, "ZUDOCS_APPLY_INTERVAL_SECONDS", 30, 5),

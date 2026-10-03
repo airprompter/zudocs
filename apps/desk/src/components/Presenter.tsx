@@ -36,29 +36,50 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
   const asleep = euPower !== null && euPower.phase !== "awake";
   const mode = state?.demoMode ?? null;
   const policy = state?.host.status?.applyPolicy as { effective?: string; source?: string } | undefined;
+  // Phase 9: the direct doors this deployment has keys for — each with its switch and what it has spent of its line.
+  const doors = (["openai", "anthropic"] as const).filter((p) => state?.providers?.[p]?.configured);
   return (
     <section className="presenter">
       <div className="pane-title"><h2>Presenter</h2><span className="muted" title={TOOLTIPS.cap}>{cap ? `${cap.used.toLocaleString()} / ${cap.cap.toLocaleString()} runs today` : "—"}</span></div>
+      <h3 className="presenter-group">This account’s function</h3>
       <div className="button-row">
         <button type="button" className="button secondary" disabled={disabled} onClick={() => onAction("replay", { n: 5 })}>Replay 5</button>
         <button type="button" className="button secondary" disabled={disabled} onClick={() => onAction("replay", { n: 12 })}>Replay 12</button>
         <button type="button" className="button secondary" disabled={disabled} onClick={() => onAction("replay", { n: 30 })}>Replay 30</button>
-        {others.map((hostId) => (
-          <button key={hostId} type="button" className="button secondary" disabled={disabled || !selectedTicketId} onClick={() => selectedTicketId && onAction("enqueue", { ticketId: selectedTicketId, host: hostId })}>Run {selectedTicketId ?? "…"} on {hostId.split("/")[0]}</button>
-        ))}
       </div>
       <div className="button-row">
         <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("heartbeat")}>Heartbeat now</button>
         <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("upload")}>Upload now</button>
         <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("sync")}>Sync now</button>
-        <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Re-seed the inbox? Tickets keep their ids; run headlines are cleared.")) onAction("seed"); }}>Re-seed</button>
       </div>
-      {nudge ? (
-        <div className="button-row" title={TOOLTIPS.nudge}>
-          <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("nudge")}>Nudge the fleet</button>
-          <span className="muted fine">placeholder for change notification: the puller reads the origin now</span>
+      {doors.length ? (
+        <div className="button-row" title={TOOLTIPS.providerDoor}>
+          <span className="muted fine">provider doors:</span>
+          {doors.map((p) => {
+            const row = state!.providers![p];
+            const open = row.door?.open ?? false;
+            return (
+              <span key={p} className="door">
+                <span className="muted fine">{row.label} {open ? "open" : `closed${row.door?.reason ? ` (${row.door.reason})` : ""}`} · {row.used ?? 0}/{row.cap ?? "—"} today:</span>
+                <button type="button" className={`chip-button${open ? " done" : ""}`} disabled={disabled || open} onClick={() => onAction("provider_door", { provider: p, state: "on" })}>open</button>
+                <button type="button" className="chip-button" disabled={disabled || !open} onClick={() => { if (confirm(`Close the ${row.label} door? Runs that name it answer 503 at once; the release's own model is unaffected.`)) onAction("provider_door", { provider: p, state: "off" }); }}>close</button>
+              </span>
+            );
+          })}
         </div>
       ) : null}
+      <div className="button-row" title={TOOLTIPS.policyLocal}>
+        <span className="muted fine">this host: policy {policy?.effective ?? "—"} ({policy?.source ?? "—"})</span>
+        <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("policy", { value: "auto" })}>set auto</button>
+        <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("policy", { value: "unlock_required" })}>set unlock_required</button>
+        <button type="button" className="chip-button" disabled={disabled} title={TOOLTIPS.golden} onClick={() => onAction("golden")}>Golden set now</button>
+      </div>
+      <h3 className="presenter-group">The eu-west host</h3>
+      <div className="button-row">
+        {others.map((hostId) => (
+          <button key={hostId} type="button" className="button secondary" disabled={disabled || !selectedTicketId} onClick={() => selectedTicketId && onAction("enqueue", { ticketId: selectedTicketId, host: hostId })}>Run {selectedTicketId ?? "…"} on {hostId.split("/")[0]}</button>
+        ))}
+      </div>
       {wire ? (
         <div className="button-row" title={TOOLTIPS.wire}>
           <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Cut the eu-west host's wire? AirPrompter and Bedrock go dark for it; the desk's tables stay; a rule restores it in 15 minutes.")) onAction("cut_wire"); }}>Cut the wire (eu-west)</button>
@@ -100,13 +121,13 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
           <pre className="output cli">{cliOutput.stdout.trim().slice(0, 4000) || "(no output)"}</pre>
         </div>
       ) : null}
-      <div className="button-row" title={TOOLTIPS.policyLocal}>
-        <span className="muted fine">this host: policy {policy?.effective ?? "—"} ({policy?.source ?? "—"})</span>
-        <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("policy", { value: "auto" })}>set auto</button>
-        <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("policy", { value: "unlock_required" })}>set unlock_required</button>
-        <button type="button" className="chip-button" disabled={disabled} title={TOOLTIPS.golden} onClick={() => onAction("golden")}>Golden set now</button>
+      <h3 className="presenter-group">Records</h3>
+      <div className="button-row">
+        <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Re-seed the inbox? Tickets keep their ids; run headlines are cleared.")) onAction("seed"); }}>Re-seed</button>
         <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Clear every run, feedback row, approval, timeline event and the day counters, and re-seed the inbox? This is the reset script's last step.")) onAction("reset"); }}>Reset records</button>
+        {nudge ? <button type="button" className="chip-button" disabled={disabled} title={TOOLTIPS.nudge} onClick={() => onAction("nudge")}>Nudge the fleet</button> : null}
       </div>
+      {nudge ? <p className="muted fine">placeholder for change notification: the puller reads the origin now</p> : null}
       <p className="muted fine">AirPrompter {environment} · {agentId}{state ? ` · this container ${state.host.instanceId.slice(0, 12)} (${state.host.invocations} inv)` : ""}</p>
     </section>
   );

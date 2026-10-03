@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
  * The laptop smoke: prove the seeded `./prompts` directory serves the way the desk will consume it, with no model
- * and no AirPrompter. It starts `airprompter dev ./prompts --daemon` (the CLI on `AIRPROMPTER_CLI`, else
- * `.bin/airprompter`, else `airprompter` on PATH), attaches the public SDK to the daemon's socket the way a host
- * process does, and for every slot: names what the call site still has to pass (`needs`), renders it —
+ * and no AirPrompter. It starts `airprompter dev ./prompts` (the CLI on `AIRPROMPTER_CLI`, else
+ * `.bin/airprompter`, else `airprompter` on PATH) and starts the public SDK in resident mode against that
+ * registry, the way a host process loads its own release, and for every slot: names what the call site still has to pass (`needs`), renders it —
  * `customer_tier` from a tiny in-script customer table registered as a variable source, `tone` from its declared
  * default, the ticket fenced as end-user text — and runs the slot's declared output checks against a canned answer.
  * Each claim is proved without showing the render: two customers with sentinel tiers render texts that are the same
@@ -11,8 +11,8 @@
  * whole. It prints generation, version, model, arm, counts and verdicts — no prompt text, on any path.
  *
  * What the dev registry cannot carry is said, not hidden: the CLI's front matter has no `checks:` line, so the
- * daemon serves the release without them and `ap.checks()` finds none — the checks are read from the seeded file
- * and evaluated with the same public evaluator the runtime uses. Exit 1 when a render, a check or the daemon fails.
+ * registry serves the release without them and `ap.checks()` finds none — the checks are read from the seeded file
+ * and evaluated with the same public evaluator the runtime uses. Exit 1 when a render, a check or the registry fails.
  *
  * @example
  * ```sh
@@ -59,8 +59,8 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-// ---- 1. the registry: airprompter dev --daemon on the seeded directory
-const dev = spawn(cli, ["dev", promptsDir, "--daemon", "--port", "0", "--state-dir", stateDir, "--poll-seconds", "1", "--json"], { stdio: ["ignore", "pipe", "pipe"] });
+// ---- 1. the registry: airprompter dev on the seeded directory (0.3.0 removed --daemon)
+const dev = spawn(cli, ["dev", promptsDir, "--port", "0", "--state-dir", stateDir, "--poll-seconds", "1", "--json"], { stdio: ["ignore", "pipe", "pipe"] });
 const devLog = [];
 dev.stderr.on("data", (chunk) => devLog.push(...String(chunk).split("\n").filter(Boolean)));
 let ap = null;
@@ -85,30 +85,31 @@ try {
     dev.on("exit", (code) => reject(new Error(`airprompter dev exited with ${code}: ${devLog.slice(-3).join(" | ")}`)));
     setTimeout(() => reject(new Error(`airprompter dev did not answer in 20 s: ${devLog.slice(-3).join(" | ")}`)), 20_000).unref();
   });
-  console.log(`registry ${registry.baseUrl} · generation ${registry.generation} · policy ${registry.applyPolicy} · daemon ${registry.daemonSocket ? "listening" : "absent"}`);
+  console.log(`registry ${registry.baseUrl} · generation ${registry.generation} · policy ${registry.applyPolicy}`);
   console.log(`  slots: ${registry.slots.join("; ")}`);
-  if (!registry.daemonSocket) throw new Error("no daemon socket in the dev output (was --daemon honoured?)");
 
-  // ---- 2. the SDK attached to the daemon, with the application's own variable source
+  // ---- 2. the SDK loads the release itself, with the application's own variable source
   ap = await AirPrompterAgent.start({
     ...scope,
+    apiKey: "apa_dev_local",
+    baseUrl: registry.baseUrl,
     stateDir,
     root: { pinned: JSON.parse(readFileSync(registry.root, "utf8")), hostedEnvironment: "dev" },
-    sync: { mode: "daemon", daemonSocketPath: registry.daemonSocket },
+    sync: { mode: "resident", pollSeconds: 1, edgePointerUrl: registry.edgePointerUrl, rootUrl: registry.rootUrl },
     telemetry: { upload: false },
     models: config.models,
     variables: {
       customer_tier: { resolve: async ({ subject }) => customers.get(subject)?.tier, trust: "operator", timeoutMs: 500 },
     },
   });
-  // A restarted registry is a new generation (the counter persists so a client never sees a fresh N); the daemon
-  // applies it on its first poll and hands it to attached SDKs as a `generation` event — give that one poll or two.
+  // A restarted registry is a new generation (the counter persists so a client never sees a fresh N). Give the
+  // resident poll a moment to land it.
   const attachedAt = ap.generation;
   for (let waited = 0; ap.generation < registry.generation && waited < 10_000; waited += 250) await new Promise((r) => setTimeout(r, 250));
   const status = ap.status();
-  console.log(`sdk attached · source ${status.source} · generation ${ap.generation}${attachedAt !== ap.generation ? ` (attached at ${attachedAt}, the daemon handed over ${ap.generation})` : ""} · apply ${status.applyState} · sources ${JSON.stringify(status.variables.sources)} · unsourced ${JSON.stringify(status.variables.unsourced)}`);
+  console.log(`sdk started · source ${status.source} · generation ${ap.generation}${attachedAt !== ap.generation ? ` (started at ${attachedAt}, synced ${ap.generation})` : ""} · apply ${status.applyState} · sources ${JSON.stringify(status.variables.sources)} · unsourced ${JSON.stringify(status.variables.unsourced)}`);
   if (ap.generation !== registry.generation) fail(`the SDK holds generation ${ap.generation}, the registry serves ${registry.generation}`);
-  if (!status.daemon?.attached) fail("the SDK is not attached to the daemon (it fell back to its own store)");
+  if (status.source !== "store") fail(`the SDK source is ${status.source}`);
 
   // ---- 3. every slot: needs, render, fill, fence, checks
   for (const path of files) {
@@ -137,8 +138,8 @@ try {
         continue;
       }
       ok(`rendered ${rendered.versionId} on ${rendered.model} (arm ${rendered.arm}, generation ${ap.generation}, ${rendered.text.length} chars)`);
-      if (rendered.versionId !== parsed.meta.version) fail(`the daemon serves version ${rendered.versionId}, the file says ${parsed.meta.version}`);
-      if (rendered.model !== parsed.meta.model) fail(`the daemon serves model ${rendered.model}, the file says ${parsed.meta.model}`);
+      if (rendered.versionId !== parsed.meta.version) fail(`the release serves version ${rendered.versionId}, the file says ${parsed.meta.version}`);
+      if (rendered.model !== parsed.meta.model) fail(`the release serves model ${rendered.model}, the file says ${parsed.meta.model}`);
       if (rendered.text.includes("{{")) fail("a literal {{placeholder}} survived the render");
       for (const variable of declared) {
         if (variable.trust === "end_user") {
@@ -188,7 +189,7 @@ try {
     }
   }
 
-  // ---- 5. the CLI asks the daemon
+  // ---- 5. the CLI reads this process's store
   const cliStatus = spawnSync(cli, ["status", "--agent", scope.agentId, "--environment", scope.target, "--state-dir", stateDir, "--json"], { encoding: "utf8" });
   const statusLine = (cliStatus.stdout ?? "").trim().split("\n").at(-1) ?? "";
   let doc = null;
@@ -198,8 +199,8 @@ try {
     fail(`airprompter status did not answer as JSON (exit ${cliStatus.status}): ${(cliStatus.stderr ?? "").trim().slice(0, 200)}`);
   }
   if (doc) {
-    console.log(`\nairprompter status: generation ${doc.generation} · active slot ${doc.activeSlot} (${doc.active?.slots ?? 0} slots, verified ${doc.active?.verified}) · policy ${doc.applyPolicyPin?.value} · ${doc.storageProtection} · daemon ${doc.daemon?.pid ? `${doc.daemon.daemon} pid ${doc.daemon.pid}` : "not answering"}`);
-    if (!doc.daemon?.pid) fail("airprompter status was not answered by the daemon");
+    console.log(`\nairprompter status: generation ${doc.generation} · active slot ${doc.activeSlot} (${doc.active?.slots ?? 0} slots, verified ${doc.active?.verified}) · policy ${doc.applyPolicyPin?.value} · ${doc.storageProtection}`);
+    if (doc.generation == null) fail("airprompter status did not report a generation");
   }
 } catch (error) {
   fail(String(error.message));

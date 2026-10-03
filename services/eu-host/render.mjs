@@ -79,5 +79,5 @@ export function renderRequirements(pins) {
     const dist = name === "agent" ? "airprompter-agent[litellm]" : name === "runtime" ? "airprompter-agent-runtime[litellm]" : `airprompter-agent-${name}`;
     return `${dist} @ ${at}#subdirectory=sdk-python/packages/${name}`;
   });
-  return `# Rendered from services/eu-host/pins.json: the public Python SDK at ${pins.pythonSdk.tag} (${pins.pythonSdk.commit.slice(0, 12)}) — PyPI does not carry it yet.\n${lines.join("\n")}\nboto3>=1.34\n`;
+  return `# Rendered from services/eu-host/pins.json: the public Python SDK at ${pins.pythonSdk.tag} (${pins.pythonSdk.commit.slice(0, 12)}). PyPI carries the release; this host installs the pinned commit.\n${lines.join("\n")}\nboto3>=1.34\n`;
 }

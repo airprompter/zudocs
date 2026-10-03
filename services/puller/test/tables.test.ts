@@ -1,13 +1,20 @@
+/**
+ * The puller's state object and the desk tables it still writes.
+ *
+ * @example
+ * ```sh
+ * npm test --workspace services/puller
+ * ```
+ */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { createExchange } from "../src/exchange.js";
-import { EMPTY_STATE, type PullerState } from "../src/plan.js";
-import { createDeskTables, createReleasesTable, RaceLost } from "../src/tables.js";
+import { EMPTY_STATE } from "../src/plan.js";
+import { PULLER_STATE_KEY, RaceLost, createDeskTables, createPullerState } from "../src/tables.js";
 
-const row = { generation: 3, releaseDigest: "sha256:3", pulledAt: "t", keyId: null, object: "releases/3-3-plain.apbundle", bytes: 1, notAfter: "n", via: "tick" as const };
-
-/** A document client that records commands and answers what the test queued. */
+/** A client that records commands and answers what the test queued. */
 function fakeClient(answers: Array<unknown | Error> = []) {
   const sent: unknown[] = [];
   return {
@@ -21,58 +28,32 @@ function fakeClient(answers: Array<unknown | Error> = []) {
   };
 }
 
-test("the releases table: the state row is read consistently; a write is conditioned on the version read and bumps it; a lost condition is RaceLost", async () => {
-  const client = fakeClient([{ Item: { state: { nudges: 2 }, version: 4 } }, {}, Object.assign(new Error("cond"), { name: "ConditionalCheckFailedException" })]);
-  const table = createReleasesTable(client, "zudocs-agent-releases", "agent_x/dev");
-  const read = await table.readState();
-  assert.equal(read.version, 4);
+test("the puller's state object: a missing object is the empty state; a write is conditioned on the ETag; a lost condition is RaceLost", async () => {
+  const missing = Object.assign(new Error("nope"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
+  const body = (text: string, etag: string) => ({ Body: { transformToString: async () => text }, ETag: etag });
+  const client = fakeClient([
+    missing,
+    { ETag: '"1"' },
+    body(JSON.stringify({ state: { nudges: 2 } }), '"1"'),
+    { ETag: '"2"' },
+    Object.assign(new Error("cond"), { name: "PreconditionFailed", $metadata: { httpStatusCode: 412 } }),
+  ]);
+  const store = createPullerState(client, "bucket");
+  const fresh = await store.read();
+  assert.equal(fresh.version, null);
+  assert.equal(fresh.state.nudges, 0);
+  assert.equal(await store.write(fresh.state, null), '"1"');
+  const first = client.sent[1] as PutObjectCommand;
+  assert.equal(first.input.Key, PULLER_STATE_KEY);
+  assert.equal(first.input.IfNoneMatch, "*");
+  const read = await store.read();
+  assert.equal(read.version, '"1"');
   assert.equal(read.state.nudges, 2);
-  assert.deepEqual(read.state.airgap, EMPTY_STATE.airgap, "missing parts are filled from the empty state");
-  const get = client.sent[0] as GetCommand;
-  assert.equal(get.input.ConsistentRead, true);
-  assert.deepEqual(get.input.Key, { pk: "puller#agent_x/dev", generation: 0 });
-  assert.equal(await table.writeState(read.state, 4), 5);
-  const put = client.sent[1] as PutCommand;
-  assert.equal(put.input.ConditionExpression, "version = :v");
-  assert.deepEqual(put.input.ExpressionAttributeValues, { ":v": 4 });
-  assert.equal((put.input.Item as { version: number }).version, 5);
-  await assert.rejects(() => table.writeState(read.state, 4), (error: unknown) => error instanceof RaceLost);
-  const fresh = fakeClient([{}]);
-  await createReleasesTable(fresh, "t", "s").writeState({ ...EMPTY_STATE }, 0);
-  assert.equal((fresh.sent[0] as PutCommand).input.ConditionExpression, "attribute_not_exists(pk) OR version = :v", "a first write tolerates an absent row");
-  assert.deepEqual((fresh.sent[0] as PutCommand).input.ExpressionAttributeValues, { ":v": 0 }, "and names the value the expression uses");
-});
-
-test("the releases table: the newest row is one consistent query, newest first; a release and the state go in one transaction whose cancellation reasons are read", async () => {
-  const client = fakeClient([{ Items: [{ pk: "release#agent_x/dev", ...row }] }, {}]);
-  const table = createReleasesTable(client, "zudocs-agent-releases", "agent_x/dev");
-  const newest = await table.newest();
-  assert.equal(newest?.generation, 3);
-  const query = client.sent[0] as QueryCommand;
-  assert.equal(query.input.ScanIndexForward, false);
-  assert.equal(query.input.Limit, 1);
-  assert.equal(query.input.ConsistentRead, true);
-  const state: PullerState = { ...EMPTY_STATE, nudges: 1 };
-  assert.deepEqual(await table.writeRelease(row, state, 4), { written: true, version: 5 });
-  const tx = client.sent[1] as TransactWriteCommand;
-  const items = tx.input.TransactItems!;
-  assert.equal(items.length, 2);
-  assert.equal(items[0]!.Put!.ConditionExpression, "attribute_not_exists(pk) OR releaseDigest = :d");
-  assert.deepEqual(items[0]!.Put!.ExpressionAttributeValues, { ":d": "sha256:3" });
-  assert.equal(items[1]!.Put!.ConditionExpression, "version = :v");
-  assert.deepEqual(items[1]!.Put!.ExpressionAttributeValues, { ":v": 4 });
-  assert.equal((items[1]!.Put!.Item as { version: number }).version, 5);
-  // The row's condition failed (another digest): the state is written alone, and `written` is false.
-  const conflict = fakeClient([Object.assign(new Error("tx"), { name: "TransactionCanceledException", CancellationReasons: [{ Code: "ConditionalCheckFailed" }, { Code: "None" }] }), {}]);
-  assert.deepEqual(await createReleasesTable(conflict, "t", "s").writeRelease(row, state, 4), { written: false, version: 5 });
-  assert.ok(conflict.sent[1] instanceof PutCommand, "the state was written on its own");
-  // The state's condition failed: the other invocation won.
-  const race = fakeClient([Object.assign(new Error("tx"), { name: "TransactionCanceledException", CancellationReasons: [{ Code: "None" }, { Code: "ConditionalCheckFailed" }] })]);
-  await assert.rejects(() => createReleasesTable(race, "t", "s").writeRelease(row, state, 4), (error: unknown) => error instanceof RaceLost);
-  const conflictTx = fakeClient([Object.assign(new Error("tx"), { name: "TransactionCanceledException", CancellationReasons: [{ Code: "TransactionConflict" }, { Code: "None" }] })]);
-  await assert.rejects(() => createReleasesTable(conflictTx, "t", "s").writeRelease(row, state, 4), (error: unknown) => error instanceof RaceLost, "a transaction conflict on the same items is a lost race");
-  const other = fakeClient([Object.assign(new Error("boom"), { name: "InternalServerError" })]);
-  await assert.rejects(() => createReleasesTable(other, "t", "s").writeRelease(row, state, 4), /boom/, "anything else is an error");
+  assert.deepEqual(read.state.airgap, EMPTY_STATE.airgap);
+  assert.equal(await store.write(read.state, '"1"'), '"2"');
+  const put = client.sent[3] as PutObjectCommand;
+  assert.equal(put.input.IfMatch, '"1"');
+  await assert.rejects(() => store.write(read.state, '"1"'), (error: unknown) => error instanceof RaceLost);
 });
 
 test("the desk's tables: updateStatus merges fields with SET; appendEvent writes the day, the sort key and the expiry the desk's store writes", async () => {
@@ -91,24 +72,17 @@ test("the desk's tables: updateStatus merges fields with SET; appendEvent writes
   assert.equal(item.kind, "bundle_pulled");
 });
 
-test("the exchange: a missing object (404) is absent; a refused read (403) is reported as denied — never taken for absent; a malformed key is a reason; a real error is thrown; writes carry their metadata", async () => {
+test("the exchange: a missing object (404) is absent; a refused read (403) is reported as denied — never taken for absent; a malformed key is a reason; a real error is thrown", async () => {
   const body = (text: string) => ({ Body: { transformToString: async () => text } });
   const notFound = Object.assign(new Error("nope"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
   const denied = Object.assign(new Error("denied"), { name: "AccessDenied", $metadata: { httpStatusCode: 403 } });
-  const client = fakeClient([notFound, denied, body("{}"), body(JSON.stringify({ kind: "airprompter-airgap-status", v: 1, hostId: "h", writtenAt: "w", startedAt: "s", applies: [] })), Object.assign(new Error("throttled"), { name: "SlowDown", $metadata: { httpStatusCode: 503 } }), denied, {}, {}]);
+  const client = fakeClient([notFound, denied, body("{}"), body(JSON.stringify({ kind: "airprompter-airgap-status", v: 1, hostId: "h", writtenAt: "w", startedAt: "s", applies: [] })), Object.assign(new Error("throttled"), { name: "SlowDown", $metadata: { httpStatusCode: 503 } }), denied]);
   const exchange = createExchange(client, "b");
   assert.deepEqual(await exchange.readPublicKey(), { key: null, reason: "absent" });
-  assert.deepEqual(await exchange.readPublicKey(), { key: null, reason: "denied:AccessDenied" }, "a refused read is a misconfiguration to report, not an absent key");
+  assert.deepEqual(await exchange.readPublicKey(), { key: null, reason: "denied:AccessDenied" });
   assert.equal((await exchange.readPublicKey()).reason, "not a distribution public key file (kind airprompter-distribution-public-key)");
   assert.equal((await exchange.readStatusDoc()).doc?.hostId, "h");
   await assert.rejects(() => exchange.readStatusDoc(), /throttled/);
-  assert.deepEqual(await exchange.readStatusDoc(), { doc: null, denied: "AccessDenied" }, "a refused status read is reported, not thrown");
-  await exchange.writeBundle("releases/3-3-plain.apbundle", "{}", { generation: "3" });
-  await exchange.writeLatest({ generation: 3, releaseDigest: "d", keyId: null, object: "o", pulledAt: "t", notAfter: "n" });
-  const put = client.sent[6] as { input: { Key: string; Metadata: Record<string, string>; ContentType: string } };
-  assert.equal(put.input.Key, "releases/3-3-plain.apbundle");
-  assert.deepEqual(put.input.Metadata, { generation: "3" });
-  const latest = client.sent[7] as { input: { Key: string; CacheControl: string } };
-  assert.equal(latest.input.Key, "latest.json");
-  assert.equal(latest.input.CacheControl, "no-store");
+  assert.deepEqual(await exchange.readStatusDoc(), { doc: null, denied: "AccessDenied" });
+  assert.ok(client.sent[0] instanceof GetObjectCommand);
 });

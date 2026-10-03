@@ -7,11 +7,11 @@
  *
  * @example
  * ```ts
- * const doc = buildStatusDoc({ hostId, region, sdk, startedAt, now, ec2, keyId, phase, waitingFor, status: ap?.status() ?? null, healthz: ap?.healthz() ?? null, applies, renders, exportInfo, probe, log });
+ * const doc = buildStatusDoc({ hostId, region, sdk, startedAt, now, ec2, keyId, phase, status: ap?.status() ?? null, healthz: ap?.healthz() ?? null, applies, renders, exportInfo, probe, log });
  * await s3.send(new PutObjectCommand({ Bucket, Key: "status/airgap.json", Body: JSON.stringify(doc) }));
  * ```
  */
-import type { AgentStatus, BundleOutcome, Healthz } from "@airprompter/agent-sdk";
+import type { AgentStatus, Healthz, HydrateOutcome } from "@airprompter/agent-sdk";
 
 export const AIRGAP_STATUS_KIND = "airprompter-airgap-status" as const;
 /** How many apply outcomes and log lines the document carries (the newest). */
@@ -23,11 +23,11 @@ export type AirgapPhase = "awaiting_bundle" | "serving";
 export interface ApplyRecord {
   at: string;
   generation: number | null;
-  outcome: BundleOutcome["outcome"];
+  outcome: HydrateOutcome["outcome"];
   reason: string | null;
   detail: string | null;
-  /** `vendored`: the bundle the host started on; `exchange`: handed to `applyBundle()` from the bucket. */
-  source: "vendored" | "exchange";
+  /** The release came from the datastore the puller writes. */
+  source: "datastore";
   object: string | null;
 }
 
@@ -57,8 +57,8 @@ export interface ProbeInfo {
 /** Why the SDK could not start on a bundle, kept until it does (the ring buffer of log lines is too short to be the record). */
 export interface StartFailure {
   at: string;
-  generation: number;
-  releaseDigest: string;
+  generation: number | null;
+  releaseDigest: string | null;
   code: string | null;
   message: string;
 }
@@ -77,8 +77,6 @@ export interface AirgapStatusDoc {
   /** The id of the distribution key born on this host (its public half is in the exchange); null before keygen. */
   keyId: string | null;
   phase: AirgapPhase;
-  /** While waiting: the newest row the table holds and which key it is sealed to, so the card can say why. */
-  waitingFor: { newest: { generation: number; keyId: string | null } | null } | null;
   status: AgentStatus | null;
   healthz: Healthz | null;
   applies: ApplyRecord[];

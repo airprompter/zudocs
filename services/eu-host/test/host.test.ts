@@ -1,8 +1,8 @@
 /**
  * The host's files: the rendered env carries identifiers and never a key (a key-shaped value or name is refused),
  * the requirements pin the SDK by the commit the tag names, the boot script and the helpers parse under `bash -n`
- * and carry exactly the placeholders the stack renders, the units name one fixed node path and the two env files
- * (the key file on the daemon alone), the status row is the daemon's word, and the worker's helpers pick tickets
+ * and carry exactly the placeholders the stack renders, the units name one fixed node path and the env files
+ * (workers receive the key file by injection), the status row is this process's status, and the worker's helpers pick tickets
  * and derive feedback from the checks only.
  *
  * @example
@@ -30,7 +30,7 @@ const host = join(here, "..", "host");
 const read = (path: string) => readFileSync(join(host, path), "utf8");
 const CONFIG = { baseUrl: "https://api-dev.airprompter.com", hostedEnvironment: "dev", rootUrl: "https://edge.example/roots/dev/root.json", edgePointerUrl: "https://edge.example/g/tok/generation.json", organizationId: "org-1", agentId: "agent_x", environment: "dev" };
 const CONTEXT = { regions: { site: "us-east-1", sharedHost: "eu-west-1", fleet: "ap-southeast-1" } };
-const PINS = { cli: { tag: "cli/v0.1.0", asset: "a", sha256: "f".repeat(64), url: "https://github.com/airprompter/airprompter-agent-sdk/releases/download/cli/v0.1.0/airprompter-linux-arm64" }, pythonSdk: { tag: "sdk-python/v0.2.14", commit: "0".repeat(40), repo: "https://github.com/airprompter/airprompter-agent-sdk", packages: ["core", "sync", "telemetry", "runtime", "agent"] } };
+const PINS = { cli: { tag: "cli/v0.3.0", asset: "a", sha256: "f".repeat(64), url: "https://github.com/airprompter/airprompter-agent-sdk/releases/download/cli/v0.3.0/airprompter-linux-arm64" }, pythonSdk: { tag: "sdk-python/v0.3.0", commit: "0".repeat(40), repo: "https://github.com/airprompter/airprompter-agent-sdk", packages: ["core", "sync", "telemetry", "runtime", "agent"] } };
 
 test("zudocs.env: identifiers, table names, regions and cadences; the host id is the region's; never a key-shaped name or value", () => {
   const text = renderHostEnv(CONFIG, CONTEXT, {});
@@ -55,7 +55,9 @@ test("zudocs.env: identifiers, table names, regions and cadences; the host id is
   assert.equal(lines.ZUDOCS_PY_DEMO_TICKET_INTERVAL_SECONDS, "300");
   assert.equal(readHostEnv({ ...lines, ZUDOCS_DEMO_MODE_PARAMETER: "" }).demoModeParameter, "/zudocs/dev/demo-mode", "the default follows the environment");
   assert.throws(() => readHostEnv({ ...lines, ZUDOCS_DEMO_MODE_PARAMETER: "on" }), /starts with \//);
-  assert.throws(() => readHostEnv({ ...lines, AIRPROMPTER_AGENT_KEY: "apa_x" }), /only the daemon holds the key/);
+  assert.equal(readHostEnv({ ...lines, AIRPROMPTER_AGENT_KEY: "apa_x" }).airprompter.apiKey, "apa_x", "systemd injects the key; the rendered file never holds it");
+  assert.equal(env.airprompter.apiKey, null);
+  assert.equal(env.airprompter.baseUrl, CONFIG.baseUrl);
   assert.throws(() => readHostEnv({ ...lines, ZUDOCS_TICKET_INTERVAL_SECONDS: "5" }), /at least 30/);
 });
 
@@ -73,12 +75,11 @@ import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("pyworker", sys.argv[1])
 # The module imports the SDK and LiteLLM at the top; stub what is not installed here so the pure function loads.
 import types
-for name in ["boto3", "litellm", "airprompter_agent", "airprompter_agent.integrations", "airprompter_agent.integrations.litellm", "airprompter_agent_core", "airprompter_agent_sync", "airprompter_agent_sync.sync", "airprompter_agent_sync.sync.daemon", "airprompter_agent_telemetry", "airprompter_agent_telemetry.spool", "airprompter_agent_telemetry.spool.writer"]:
+for name in ["boto3", "litellm", "airprompter_agent", "airprompter_agent.integrations", "airprompter_agent.integrations.litellm", "airprompter_agent_core", "airprompter_agent_telemetry", "airprompter_agent_telemetry.spool", "airprompter_agent_telemetry.spool.writer"]:
     m = types.ModuleType(name); sys.modules[name] = m
 sys.modules["airprompter_agent"].AirPrompterAgent = object; sys.modules["airprompter_agent"].SDK_NAME = "x"
 lit = sys.modules["airprompter_agent.integrations.litellm"]; lit.AirPrompterLiteLLMCallback = type("C", (), {}); lit.litellm_inference = lambda *a, **k: None; lit.litellm_metadata = lambda *a, **k: None
 sys.modules["airprompter_agent_core"].SDK_VERSION = "0"
-d = sys.modules["airprompter_agent_sync.sync.daemon"]; d.DaemonClient = object; d.daemon_socket_path = lambda **k: ""
 sys.modules["airprompter_agent_telemetry.spool.writer"].Observation = object
 mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 now = float(sys.argv[2])
@@ -124,7 +125,7 @@ test("the boot script and the helpers parse; the script carries exactly the plac
   assert.ok(!/echo.*\$value|printf.*%s.*\$value.*>&/.test(keyHelper.replace(/printf 'AIRPROMPTER_AGENT_KEY=%s\\n' "\$value" > "\$tmp"/, "")), "the value is written to the file only");
 });
 
-test("the units: the daemon alone reads the key file; every unit names the shared env file, the fixed node path or the venv, the log directory, and no inbound port", () => {
+test("the units: the daemon is telemetry only; workers are injected the key file; every unit names the shared env file, the fixed node path or the venv, the log directory, and no inbound port", () => {
   const daemon = read("units/airprompterd.service");
   const worker = read("units/zudocs-worker.service");
   const py = read("units/zudocs-pyworker.service");
@@ -136,12 +137,13 @@ test("the units: the daemon alone reads the key file; every unit names the share
   assert.ok(read("units/zudocs-import.timer").includes("OnUnitActiveSec=5min"));
   assert.ok(daemon.includes("ExecStartPre=+/usr/local/sbin/zudocs-agent-key"), "the key file is refreshed as root before every start");
   assert.ok(worker.includes('Environment="ZUDOCS_WORKER_NAME=eu-west worker"'), "systemd's quoting: the whole assignment in quotes");
-  assert.ok(daemon.includes("--apply-policy unlock_required"), "the host's policy pin");
-  assert.ok(daemon.includes("--hosted-environment ${AIRPROMPTER_HOSTED_ENVIRONMENT}"), "the pinned root is the hosted deployment's");
+  assert.ok(daemon.includes("--org ${AIRPROMPTER_ORG}") && daemon.includes("--json"), "the 0.3.0 telemetry daemon");
+  assert.ok(daemon.includes("--base-url ${AIRPROMPTER_BASE_URL}") && daemon.includes("--upload-interval-seconds 60"), "the daemon uploads to this deployment on the demo cadence");
+  assert.ok(!daemon.includes("--apply-policy") && !daemon.includes("--hosted-environment") && !daemon.includes("--socket"), "the daemon does not load a release");
   for (const unit of [worker, py]) {
-    assert.ok(!unit.includes("airprompterd.env"), "a worker never sees the key file");
+    assert.ok(unit.includes("EnvironmentFile=-/etc/airprompter/airprompterd.env"), "systemd injects the key; the user cannot read the file");
     assert.ok(unit.includes("EnvironmentFile=/etc/airprompter/zudocs.env"));
-    assert.ok(unit.includes("User=airprompter"), "the same user as the daemon: the 0600 socket and the shared spool");
+    assert.ok(unit.includes("User=airprompter"), "the same user as the daemon: the shared store and spool");
     assert.ok(unit.includes("After=network-online.target airprompterd.service"));
   }
   assert.ok(worker.includes("ExecStart=/usr/local/bin/node /opt/zudocs/worker.mjs"));
@@ -153,28 +155,25 @@ test("the units: the daemon alone reads the key file; every unit names the share
   assert.ok(agent.logs.logs_collected.files.collect_list.some((f: { file_path: string }) => f.file_path === "/var/log/zudocs/import.log"), "the import log ships too");
 });
 
-test("the status row is the daemon's word under the card's names, with what the socket lacks left null and the worker's part beside it", () => {
-  const daemon = { daemon: "airprompter-cli/0.1.0", startedAt: "2026-09-18T15:00:00.000Z", instanceId: "i-daemon", generation: 2, stagedGeneration: 3, applyState: "awaiting_unlock", lastRefusal: null, storageProtection: "file_key", leaseExpiresAt: "2026-09-18T16:00:00.000Z", leaseExpired: false, lastContactAt: "2026-09-18T15:10:00.000Z", lastSyncAt: "2026-09-18T15:10:00.000Z", lastSyncOutcome: "staged", consecutiveFailures: 0, spool: { depthSegments: 1, depthBytes: 512 }, upload: null, applyPolicy: { effective: "unlock_required" as const, source: "local" as const, manifestSaid: "auto" as const }, socketPath: "/var/lib/airprompter/…/daemon.sock", clients: 2 };
-  const healthz = { ok: true, status: "ok" as const, reasons: [], generation: 2, stagedGeneration: 3, applyState: "awaiting_unlock" as const, source: "store" as const, leaseExpiresAt: null, leaseExpired: false, onLeaseExpiry: null, lastSyncAt: null, lastSyncOutcome: null, consecutiveSyncFailures: 0, forcedDowngrade: false, daemon: null, spool: { depthSegments: 1, depthBytes: 512, budgetBytes: 104857600 }, lastUploadAt: null, backoffUntil: null };
-  const worker = { instanceId: "i-worker", variables: { sources: ["customer_tier"], unsourced: [] }, unlockRequests: [], source: "daemon", daemon: { attached: true, socketPath: "x" } } as unknown as Parameters<typeof statusFields>[0]["worker"];
-  const fields = statusFields({ hostId: "eu-west-1/ec2", region: "eu-west-1", daemon, healthz, worker, workerHealthz: { ...healthz, status: "ok", reasons: [] }, sdk: "agent-sdk-ts/0.2.14", tickets: 4, startedAt: "2026-09-18T15:01:00.000Z", now: "2026-09-18T15:20:00.000Z", ec2: { instanceId: "i-0abc", availabilityZone: "eu-west-1a" } });
+test("the status row is this process's status and healthz", () => {
+  const agent = { instanceId: "i-worker", generation: 2, stagedGeneration: 3, storageProtection: "file_key", source: "store", consecutiveSyncFailures: 0, variables: { sources: ["customer_tier"], unsourced: [] } } as unknown as Parameters<typeof statusFields>[0]["status"];
+  const healthz = { ok: true, status: "ok" as const, reasons: [], generation: 2, telemetry: { uploadedBy: "daemon" as const, daemon: "live" as const } } as unknown as Parameters<typeof statusFields>[0]["healthz"];
+  const fields = statusFields({ hostId: "eu-west-1/ec2", region: "eu-west-1", status: agent, healthz, sdk: "@airprompter/agent-sdk/0.3.0", tickets: 4, startedAt: "2026-09-18T15:01:00.000Z", now: "2026-09-18T15:20:00.000Z", ec2: { instanceId: "i-0abc", availabilityZone: "eu-west-1a" } });
   const status = fields.status as Record<string, unknown>;
   assert.equal(fields.kind, "daemon");
-  assert.equal(fields.sdk, "agent-sdk-ts/0.2.14 via airprompter-cli/0.1.0");
+  assert.equal(fields.sdk, "@airprompter/agent-sdk/0.3.0");
   assert.equal(status.storageProtection, "file_key", "shown, never hidden");
   assert.equal(status.stagedGeneration, 3);
-  assert.equal(status.consecutiveSyncFailures, 0);
-  assert.equal(status.heartbeat, null, "not on the socket: not invented");
   assert.deepEqual(status.variables, { sources: ["customer_tier"], unsourced: [] });
-  assert.deepEqual(fields.container, { instanceId: "i-daemon", coldStart: false, startedAt: "2026-09-18T15:00:00.000Z", invocations: 4 });
-  assert.equal((fields.worker as { instanceId: string }).instanceId, "i-worker");
+  assert.deepEqual(fields.container, { instanceId: "i-worker", coldStart: false, startedAt: "2026-09-18T15:01:00.000Z", invocations: 4 });
+  assert.equal((fields.worker as { attached: boolean; source: string }).attached, true);
+  assert.equal((fields.worker as { source: string }).source, "store");
   assert.deepEqual(fields.ec2, { instanceId: "i-0abc", availabilityZone: "eu-west-1a" });
+  assert.equal((fields.healthz as { telemetry: { daemon: string } }).telemetry.daemon, "live");
   assert.ok(!("hostId" in fields), "the key is not a field to set");
-  const detached = statusFields({ hostId: "eu-west-1/ec2", region: "eu-west-1", daemon: { ...daemon, generation: 0, stagedGeneration: 1, applyState: "awaiting_unlock" }, healthz, worker: null, workerHealthz: null, sdk: "agent-sdk-ts/0.2.14", tickets: 0, startedAt: "x", now: "y" });
-  assert.deepEqual((detached.worker as { attached: boolean; reasons: string[] }).attached, false);
-  assert.deepEqual((detached.worker as { reasons: string[] }).reasons, ["awaiting_first_approval"], "a fresh host: the SDK attaches after the desk's first approval");
-  assert.deepEqual((detached.status as { variables: unknown }).variables, { sources: [], unsourced: [] }, "no names invented while nothing is attached");
-  assert.equal((detached.status as { stagedGeneration: number }).stagedGeneration, 1, "the daemon's staged generation is the row's, attached or not");
+  const waiting = statusFields({ hostId: "eu-west-1/ec2", region: "eu-west-1", status: null, healthz: null, sdk: "@airprompter/agent-sdk/0.3.0", tickets: 0, startedAt: "x", now: "y" });
+  assert.equal((waiting.worker as { attached: boolean }).attached, false);
+  assert.deepEqual((waiting.healthz as { reasons: string[] }).reasons, ["sdk_not_started"]);
 });
 
 test("the Python worker's model map is the catalogue's (Converse ids and list prices), so a re-pin cannot drift between the two workers", () => {
@@ -191,7 +190,7 @@ test("the Python worker's model map is the catalogue's (Converse ids and list pr
   for (const [name, entry] of Object.entries(CATALOGUE)) if (entry.path === "converse") assert.deepEqual(prices[name], [entry.usdPerMillion.input, entry.usdPerMillion.output], `${name} price`);
 });
 
-test("the root document the boot hands the daemon is verified against the pinned key for the hosted environment: a signed dev root passes; prod's scope, a tampered body or a private pinned key are refused", () => {
+test("the root document the boot verifies is checked against the pinned key for the hosted environment: a signed dev root passes; prod's scope, a tampered body or a private pinned key are refused", () => {
   const pair = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const priv = pair.privateKey.export({ format: "jwk" }) as { kty: string; crv: string; x: string; y: string; d: string };
   const pinned = { kty: "EC", crv: "P-256", x: priv.x, y: priv.y };
@@ -208,7 +207,8 @@ test("the root document the boot hands the daemon is verified against the pinned
   const script = read("user-data.sh");
   assert.ok(script.includes("worker.mjs verify-root /tmp/root.json /etc/airprompter/root.jwk.json"), "the boot verifies the fetched document before installing it");
   assert.ok(script.indexOf("verify-root") < script.indexOf("install -m 0644 /tmp/root.json /etc/airprompter/root.json"), "verified first, installed second");
-  assert.ok(read("units/airprompterd.service").includes("--root /etc/airprompter/root.json"), "the daemon trusts the verified document");
+  assert.ok(!read("units/airprompterd.service").includes("--root"), "the telemetry daemon does not load a release");
+  assert.ok(read("../src/worker.ts").includes("env.airprompter.rootJwkPath"), "the worker pins the key the boot verified the document against");
 });
 
 test("the worker's helpers: the inbox round-robin by id survives a re-seed, the queue takes existing tickets only, feedback comes from the checks alone", async () => {

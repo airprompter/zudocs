@@ -1,6 +1,6 @@
 # The desk: the us-east-1 host and the app
 
-Phase 3 is the first production host and the screen a prospect watches. One Lambda runs the public Agent SDK; one
+Phase 3 is the first production host and the desk app. One Lambda runs the public Agent SDK; one
 React app shows what it did. This page is the tour of what is where, what each number on the run panel is, and
 the honest notes — what the SDK cannot do on this host yet, and how the desk says so instead of pretending.
 
@@ -15,13 +15,14 @@ the honest notes — what the SDK cannot do on this host yet, and how the desk s
 | Models | `models: ["openai.gpt-5-6-luna", "amazon.nova-micro", "anthropic.claude-haiku-4-5"]` reported on every heartbeat, in AirPrompter's spelling; a release pinned to anything else is refused before it activates | `src/modelCatalogue.ts` |
 | Luna | Bedrock's OpenAI-compatible `bedrock-mantle` endpoint — the one with a live GPT-5.6 quota in a fresh account — through an `openai` client under `ap.wrap()`; the transport signs with SigV4 from the role and rewrites `model` to Bedrock's id (`openai.gpt-5.6-luna`); the wrapper applies the version's settings (output cap, reasoning effort) and files the observation under the release's name | `src/bedrock.ts` |
 | Nova Micro, Haiku | Converse through the Vercel AI SDK's Bedrock provider under `ap.aiSdkMiddleware()`; the provider model is aliased to the release's name so settings and observations land on it | `src/bedrock.ts` |
+| Provider switch | Phase 9: `POST /tickets/{id}/run` with `{ "provider": "openai" \| "anthropic" }` sends the reply step to that API with the customer's own key — an ordinary `openai` / `@anthropic-ai/sdk` client under `ap.wrap()`, the render's text in the request, the observation filed under the model the call named (`gpt-5.6-luna`, `claude-opus-5`; `OPENAI_MODEL` / `ANTHROPIC_MODEL`), the release's settings applied here in the provider's names and the record saying which the model does not take. Triage stays on the host's own path. The keys are SSM SecureStrings by NAME (`OPENAI_KEY_PARAMETER`, `ANTHROPIC_KEY_PARAMETER`), read on first use, held in memory; a provider the stack names no parameter for answers 501 `provider_not_configured`. `GET /state` carries `providers` (configured, model — never a key). AirPrompter's own door is the hosted route below | `src/providers.ts`, `src/run.ts`, `src/handler.ts` |
 | Variables | `customer_tier` from the customers table, registered once as a source (`trust: operator`, 1.5 s timeout); `tone: "formal"` passed only for an enterprise customer; the ticket fenced as end-user text | `src/runtime.ts`, `src/run.ts` |
 | Judge | `ap.judge(runRef, output, "prompt", invoke)` — the reply prompt's own `## Success criteria`, scored on Nova Micro; only the score leaves the host | `src/run.ts` |
 | Feedback | thumbs / accepted / edited → `ap.feedback(runRef, signals)`; the SDK's verdict (declared signals only) is the API's answer | `src/handler.ts` |
 | Telemetry | The SDK's normal upload to AirPrompter, and the tee: the same segment's rows as CloudWatch EMF lines on stdout, only after AirPrompter accepted the segment; dimensions capped to `tag`, `versionId`, `arm`, `status` | `src/tee.ts` |
 | Cap | 2,000 runs per UTC day (an atomic DynamoDB counter, refused at the line); HTTP 429 `daily_cap` with the count — nothing is simulated | `src/store.ts`, `src/handler.ts` |
 | Status and timeline | Every run and presenter action writes `status()` + `healthz()` to the status table (one row per host); `onChange` and every action append to the events table (partitioned by UTC day). The eu-west host writes the same tables across regions (`docs/EU-WEST.md`) | `src/runtime.ts`, `src/store.ts` |
-| Approvals | The eu-west host's staged releases: the host opens the row, `POST /approvals/{id}/approve` flips it `pending → approved` exactly once under the signer's e-mail (a repeat answers `already: true` with the row as it stands; a row the host has moved past — a newer generation staged on the same store, or the host's later status row naming another staged generation — answers `409 approval_stale` and records nothing), the host activates through its daemon and settles it | `src/store.ts`, `src/handler.ts` |
+| Approvals | The eu-west host's staged releases: the host opens the row, `POST /approvals/{id}/approve` flips it `pending → approved` exactly once under the signer's e-mail (a repeat answers `already: true` with the row as it stands; a row the host has moved past — a newer generation staged on the same store, or the host's later status row naming another staged generation — answers `409 approval_stale` and records nothing), then the worker activates it through its Agent SDK and settles the row | `src/store.ts`, `src/handler.ts` |
 
 Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack registers):
 `GET /tickets`, `GET /tickets/{id}`, `POST /tickets/{id}/run`, `POST /tickets/{id}/escalate`,
@@ -44,6 +45,11 @@ Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack
   writer, so it is the SDK's number, not the app's stopwatch); **cost** is that usage at list price.
 - **judge** — `JudgeResult.score` and the task pass/fail counts.
 - **feedback row** — what `ap.feedback` accepted.
+- **via the Claude API / OpenAI API** (phase 9, a run that named a provider) — `StepRecord.provider`: the model the
+  call named, the release's settings the desk applied in the provider's names, the ones the model takes none of.
+  The **compare table** above the runs (once two doors have answered) is one row per route, the latest run each,
+  every cell the record's own number: the hosted row's price is the route's price book and it carries no per-check
+  verdicts, and the table says so (`compareRows` in `TicketView.tsx`).
 
 ### Phase 6 on the desk
 
@@ -113,15 +119,26 @@ Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack
 
 ## The app (`apps/desk`)
 
-Sign-in is the hosted UI over PKCE with the `desk` client (no library; `src/auth.ts`). The columns: the inbox;
-the ticket with Run / Escalate and every run's cards (a run the eu-west worker made lands here too, marked with its
-host); the approvals (a release staged on a host, with its Approve button, and the last decisions with their
-instants), the fleet (host cards from the status table — the daemon host shows its store key in amber, its policy
-pin, its lease as a countdown, its sync failures and both attached workers), the presenter panel (replay N on this
-host, "run this ticket on eu-west now", heartbeat / upload / sync now, re-seed, cut / restore the wire), and the
-timeline (the events table, polled; every host's activation with its instant).
-Vocabulary is the customer's — *prompt version*, *release #N* — and *generation*, *manifest*, *slot*, *arm* live in
-tooltips. Everything shown is the API's record.
+Sign-in is the hosted UI over PKCE with the `desk` client (no library; `src/auth.ts`). After it, the owner lands
+on `/` — the support inbox. The pages are client routes (CloudFront already serves `index.html` for an unknown path):
+
+- `/` Inbox — Zudocs Support, the product: a customer list and one conversation. The customer's
+  message and the drafted reply are the page. One line under the reply names the support agent,
+  the prompt version, and — when a test is on — which reply this customer got. A line under the
+  header names the release and when AirPrompter last updated it. The A|B mix is the closed row
+  under the letter; opening it shows the scorecard. *How this reply got here* says whether this
+  letter and the desk are on the same AirPrompter release, which reply this customer got, and
+  whether the checks passed. The filled-in prompt is one more disclosure inside that.
+  Signed out, the welcome and Sign in; nothing calls the API. *how this reply is written* is
+  inside that disclosure and opens `runStep`. Route compare, replay and the presenter live on Operator.
+- `/daemon` Europe — the same inbox; the action is enqueue. Approvals live here.
+  *why this host waits* opens `policy: "unlock_required"`.
+- `/fleet` Hosts — the status rows. A quiet *how this host starts* opens the source slice.
+- `/operate` — release bar, presenter, host cards, and the timeline. Europe, Hosts and Operator are quiet links.
+
+A run whose `host` is the other page names that host and links across. Vocabulary is the customer's — *prompt
+version*, *release #N* — and *generation*, *manifest*, *slot*, *arm* live in tooltips. Everything measured is the
+API's record. The sheet copies the source slice; it does not abbreviate it.
 
 ## Sign-in users
 

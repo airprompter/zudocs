@@ -30,6 +30,8 @@ import { AirPrompterAgent, SDK_NAME, SDK_VERSION, customKeyProvider } from "@air
 import { createCallers, createGoldenCaller, type Callers } from "./bedrock.js";
 import { readEnv, type DeskEnv } from "./env.js";
 import { createHostedClient, type HostedClient } from "./hosted.js";
+import { createDirectCallers, type DirectCaller, type DirectProvider } from "./providers.js";
+import { createProviderSwitchPorts, type ProviderSwitchPorts } from "./providerGuard.js";
 import { runHostCli, type HostCliCommand, type HostCliResult } from "./hostCli.js";
 import { createDemoModePorts, invokePower, type DemoModePorts, type PowerAction, type PowerAnswer } from "./hostPower.js";
 import { MODELS } from "./modelCatalogue.js";
@@ -45,6 +47,8 @@ export interface RunHost {
   readonly ap: AirPrompterAgent;
   readonly store: Store;
   readonly callers: Callers;
+  /** The direct providers (phase 9), one caller per configured key; absent on a host that offers none (the eu-west worker). */
+  readonly direct?: Readonly<Record<DirectProvider, DirectCaller | null>>;
   /** Run `fn` and collect the observations the SDK files while it runs — on a failure too; never throws. */
   observed<T>(fn: () => Promise<T>): Promise<Observed<T>>;
 }
@@ -62,6 +66,8 @@ export interface Host extends RunHost {
   nudge(body: Record<string, unknown>): Promise<{ messageId: string | null }>;
   /** The hosted staging client (null when the deployment names no run key parameter or run URL). */
   readonly hosted: HostedClient | null;
+  /** Phase 9: the direct providers' kill switch (null when the deployment names no parameter — every door then reads closed). */
+  readonly providerSwitch: ProviderSwitchPorts | null;
   /** One allowlisted `zudocs-cli` command on the eu-west host through Run Command (`hostCli.ts`); a fake in tests. */
   hostCli(command: HostCliCommand, timeoutSeconds?: number): Promise<HostCliResult>;
   /** The eu-west power function (`hostPower.ts`): sleep, wake, tick; a fake in tests. */
@@ -166,6 +172,7 @@ async function startHost(): Promise<Host> {
   });
   tapObservations(ap);
   const callers = createCallers(ap, env.region);
+  const direct = createDirectCallers(ap, env.providers, env.region);
   const hosted = env.hosted.runKeyParameter && env.hosted.runUrl ? createHostedClient({ env: { hosted: env.hosted, hostId: env.hostId, region: env.region, agentId: env.airprompter.agentId }, store }) : null;
   const host: Host = {
     env,
@@ -173,6 +180,8 @@ async function startHost(): Promise<Host> {
     store,
     callers,
     hosted,
+    direct,
+    providerSwitch: env.providersParameter ? createProviderSwitchPorts(env.region, env.providersParameter) : null,
     hostCli: (command, timeoutSeconds) => runHostCli({ region: env.euHost.region, nameTag: env.euHost.nameTag }, command, timeoutSeconds),
     power: (action, by) => invokePower(env.powerFunctionArn, { action, by }),
     demoMode: env.demoModeParameter ? createDemoModePorts(env.euHost.region, env.demoModeParameter) : null,

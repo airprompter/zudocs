@@ -79,6 +79,7 @@ function fakeStore(): Store & { events: TimelineEvent[]; status: StatusRow[] } {
     putStatus: async (row: StatusRow) => void self.status.push(row), updateStatus: async () => undefined, listStatus: async () => self.status,
     appendEvent: async (e: TimelineEvent) => void self.events.push(e), listEvents: async () => self.events,
     takeRunSlot: async () => ({ ok: true, used: ++self.used }), readRunSlots: async () => self.used,
+    takeProviderSlot: async () => ({ ok: true as const, used: 1 }), readProviderSlots: async () => ({}),
     seed: async () => ({ customers: 1, tickets: 1 }), enqueueTicket: async () => 1, dequeueTicket: async () => null,
     openApproval: async () => ({ created: true }), getApproval: async () => null, listApprovals: async () => [], approve: async () => ({ ok: false, row: null }), settleApproval: async () => null,
     listRuns: async () => [], listAllFeedback: async () => [], reset: async () => ({ runs: 0, feedback: 0, approvals: 0, events: 0, counters: 0, customers: 1, tickets: 1 }),
@@ -91,11 +92,11 @@ function fakeHost(options: { power?: boolean; demoMode?: boolean; refusal?: stri
   const calls: string[] = [];
   const status = () => ({ generation: 7, stagedGeneration: null, applyState: "active", variables: { sources: [], unsourced: [] }, heartbeat: { lastAt: null, nextAt: null, intervalSeconds: 60, lastRefusal: null }, storageProtection: "kms", source: "store", applyPolicy: { effective: "auto", source: "local", manifestSaid: "auto" }, lastSyncOutcome: "unchanged", disabled: { agent: false, slots: [], arms: [] }, lastRefusal: null, ramps: [] });
   const ap: any = { instanceId: "i-fake", generation: 7, status, healthz: () => ({ ok: true, status: "ok", reasons: [] }), invoke: async (fn: () => Promise<unknown>) => fn(), prompt: () => ({ variables: () => [] }), feedback: () => true, onChange: () => () => {} };
-  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "arn:aws:lambda:eu-west-1:1:function:zudocs-wire", nudgeQueueUrl: "", powerFunctionArn: options.power === false ? "" : "arn:aws:lambda:eu-west-1:1:function:zudocs-power", demoModeParameter: options.demoMode === false ? "" : "/zudocs/dev/demo-mode", hosted: { runKeyParameter: "", runUrl: "", target: "staging" }, euHost: { region: "eu-west-1", nameTag: "zudocs-eu-host" }, airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "zudocs-desk-api", heartbeatSeconds: 60 } as Host["env"];
+  const env = { tables: {} as any, kmsKeyId: "k", agentKeyParameter: "/p", wireFunctionArn: "arn:aws:lambda:eu-west-1:1:function:zudocs-wire", nudgeQueueUrl: "", powerFunctionArn: options.power === false ? "" : "arn:aws:lambda:eu-west-1:1:function:zudocs-power", demoModeParameter: options.demoMode === false ? "" : "/zudocs/dev/demo-mode", hosted: { runKeyParameter: "", runUrl: "", target: "staging" }, providers: { openai: { keyParameter: "", model: "gpt-5.6-luna" }, anthropic: { keyParameter: "", model: "claude-opus-5" } }, euHost: { region: "eu-west-1", nameTag: "zudocs-eu-host" }, airprompter: { baseUrl: "https://api-dev.airprompter.com", organizationId: "o", agentId: "a", environment: "dev", hostedEnvironment: "dev", rootUrl: "u", rootJwk: "{}" }, dailyRunCap: 2, stateEpoch: "1", stateDir: "/tmp/airprompter/1", hostId: "us-east-1/lambda", region: "us-east-1", emfNamespace: "Zudocs/Desk", functionName: "zudocs-desk-api", heartbeatSeconds: 60 } as Host["env"];
   if (options.euRow) store.status.push({ hostId: "eu-west-1/ec2", region: "eu-west-1", kind: "daemon", sdk: "x", writtenAt: iso(-60_000), status: {}, healthz: { ok: true, status: "ok", reasons: [] }, container: { instanceId: "d", coldStart: false, startedAt: "", invocations: 0 }, ...options.euRow } as StatusRow);
   let written: string | null = null;
   const host: Host & { store: ReturnType<typeof fakeStore>; calls: string[]; written: () => string | null } = {
-    env, ap, store, calls, written: () => written, callers: { judgeModel: "amazon.nova-micro", complete: async () => ({ text: "", response: {} }), judge: async () => "", golden: async () => ({ text: "", outputTokens: null }) }, hosted: null,
+    env, ap, store, calls, written: () => written, callers: { judgeModel: "amazon.nova-micro", complete: async () => ({ text: "", response: {} }), judge: async () => "", golden: async () => ({ text: "", outputTokens: null }) }, hosted: null, providerSwitch: null,
     hostCli: async (command) => { calls.push(`host_cli:${command}`); return { command, line: "", status: "Success", instanceId: "i-eu", document: {}, stdout: "{}", stderr: "", durationMs: 1 }; },
     startedAt: "2026-09-18T10:00:00Z", sdk: "agent-sdk-ts/test", invocations: 0, coldStart: true,
     observed: async (fn) => ({ result: await fn(), error: undefined, observations: [] }),
@@ -173,7 +174,7 @@ test("handler: demo_mode writes the switch on (four hours) or off through the po
   assert.equal(row.parameter, "/zudocs/dev/demo-mode");
   const state = parse(await handler(event("GET", "/state")));
   assert.equal(state.body.demoMode.mode, "on", "the state route reads the switch");
-  assert.deepEqual(state.body.features, { wire: true, nudge: false, hosted: false, hostCli: true, power: true, demoMode: true });
+  assert.deepEqual(state.body.features, { wire: true, nudge: false, hosted: false, openai: false, anthropic: false, hostCli: true, power: true, demoMode: true });
   const off = parse(await handler(event("POST", "/presenter/demo_mode", { value: "off" })));
   assert.equal(off.body.mode, "off");
   assert.match(off.body.message, /a ticket an hour/);

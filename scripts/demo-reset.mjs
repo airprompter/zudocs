@@ -95,7 +95,7 @@ say("3. policies");
   if (east?.effective === "auto") found(`us-east: auto (${east.source})`);
   else if (dryRun) found(`us-east: would set auto (now ${east?.effective} ${east?.source})`);
   else { const r = await desk.api("POST", "/presenter/policy", { value: "auto" }); did(`us-east: ${r.json.message ?? JSON.stringify(r.json).slice(0, 200)}`); }
-  found("eu-west: the daemon runs --apply-policy unlock_required (its unit's flag); no drill changes it, nothing to put back");
+  found("eu-west: the worker pins unlock_required; no drill changes it, nothing to put back");
 }
 
 // --- 3b. a replay in flight keeps writing runs for up to five minutes: let it finish before the tables are cleared ------
@@ -232,7 +232,7 @@ say("8. the fleet");
 if (!dryRun) {
   const target = promoted[promoted.length - 1];
   // The epoch bump replaced every container: the first request to a cold one runs the boot sync and the golden set
-  // and can pass the API's 30-second cap (a 503 once, DEMO.md › Honest notes) — wait for a container that answers.
+  // and can pass the API's 30-second cap (a 503 once) — wait for a container that answers.
   const answering = () => desk.waitFor("the desk to answer after the epoch bump", async () => { const s = await desk.state(); return s?.host?.instanceId ? s : null; }, { timeoutMs: 180_000, everyMs: 5_000 });
   await answering();
   const sync = await desk.api("POST", "/presenter/sync");

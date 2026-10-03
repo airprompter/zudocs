@@ -1,9 +1,9 @@
 /**
  * The airgap stack pins: a VPC with **no internet gateway, no NAT, no default route** — one private subnet whose
- * route table carries only the two gateway endpoints (S3: the exchange and the asset bucket; DynamoDB: the releases
- * table); an Instance Connect Endpoint whose group is the only thing allowed to reach the host, on 22; a t4g.micro on
- * the pinned image with IMDSv2, no public address, no key pair; a role that can read the exchange's releases and
- * tools, write exactly the public key object, the status document and the exports, query the table, read the
+ * route table carries only the S3 gateway endpoint (the exchange and the asset bucket); an Instance Connect Endpoint
+ * whose group is the only thing allowed to reach the host, on 22; a t4g.micro on the pinned image with IMDSv2, no
+ * public address, no key pair; a role that can read the datastore and tools, write exactly the public key object,
+ * the status document and the exports, read the
  * bundle — and nothing that talks to the world (no SSM, no logs, no Bedrock); user data rendered with the pinned
  * digests and no key; the stack outside CI's deploy list.
  *
@@ -23,11 +23,11 @@ import { readPins } from "../lib/shared-host-names.js";
 import { renderUserData } from "../lib/shared-host-stack.js";
 import { AIRGAP_PINS, actionsOf, statementsOf, synthAll, type Resources } from "./fixtures.js";
 
-test("the stack is in ap-southeast-1 after the fleet stack; the VPC has no internet gateway, no NAT, no route out; two gateway endpoints with policies naming the exchange, the asset bucket and the table", () => {
+test("the stack is in ap-southeast-1 after the fleet stack; the VPC has no internet gateway, no NAT, no route out; one S3 gateway endpoint naming the exchange and the asset bucket", () => {
   const { airgap, stacks } = synthAll();
   assert.equal(STACK_IDS.airgap, "ZudocsAirgap");
   assert.equal(stacks.airgap.region, "ap-southeast-1");
-  assert.ok(stacks.airgap.dependencies.includes(stacks.fleet), "the bucket and the table exist first");
+  assert.ok(stacks.airgap.dependencies.includes(stacks.fleet), "the bucket exists first");
   assert.equal(Object.keys(airgap.findResources("AWS::EC2::InternetGateway")).length, 0, "no internet gateway");
   assert.equal(Object.keys(airgap.findResources("AWS::EC2::NatGateway")).length, 0, "no NAT");
   assert.equal(Object.keys(airgap.findResources("AWS::EC2::Route")).length, 0, "no route at all: the endpoints add their prefix lists themselves");
@@ -35,15 +35,13 @@ test("the stack is in ap-southeast-1 after the fleet stack; the VPC has no inter
   assert.equal(Object.keys(airgap.findResources("AWS::EC2::Subnet")).length, 1);
   airgap.hasResourceProperties("AWS::EC2::Subnet", { MapPublicIpOnLaunch: false });
   const endpoints = Object.values(airgap.findResources("AWS::EC2::VPCEndpoint") as Resources);
-  assert.equal(endpoints.length, 2);
-  for (const e of endpoints) assert.equal(e.Properties.VpcEndpointType, "Gateway", "gateway endpoints only (interface endpoints cost money and are not needed)");
-  const s3 = endpoints.find((e) => e.Properties.ServiceName === "com.amazonaws.ap-southeast-1.s3")!;
-  const s3Policy = JSON.stringify(s3.Properties.PolicyDocument);
+  assert.equal(endpoints.length, 1);
+  assert.equal(endpoints[0]!.Properties.VpcEndpointType, "Gateway", "a gateway endpoint only (interface endpoints cost money and are not needed)");
+  assert.equal(endpoints[0]!.Properties.ServiceName, "com.amazonaws.ap-southeast-1.s3");
+  const s3Policy = JSON.stringify(endpoints[0]!.Properties.PolicyDocument);
   assert.ok(s3Policy.includes("arn:aws:s3:::zudocs-exchange-111122223333") && s3Policy.includes("cdk-hnb659fds-assets-111122223333-ap-southeast-1"), "the exchange and the deployment's asset bucket");
   assert.ok(!s3Policy.includes('"arn:aws:s3:::*"'), "not every bucket");
-  const dynamo = endpoints.find((e) => e.Properties.ServiceName === "com.amazonaws.ap-southeast-1.dynamodb")!;
-  assert.ok(JSON.stringify(dynamo.Properties.PolicyDocument).includes("table/zudocs-agent-releases"));
-  assert.deepEqual(JSON.parse(JSON.stringify(dynamo.Properties.PolicyDocument)).Statement[0].Action, "dynamodb:Query", "the host only queries");
+  assert.ok(!s3Policy.includes("dynamodb"), "no table on this host");
 });
 
 test("the shell: an Instance Connect Endpoint; the host's group admits 22 from the endpoint's group only and nothing else inbound; the endpoint's group reaches the host on 22 only", () => {
@@ -77,7 +75,7 @@ test("the instance: t4g.micro on the pinned image, IMDSv2, no public address, 8 
   assert.equal(Object.keys(airgap.findResources("AWS::EC2::KeyPair")).length, 0, "no key pair: Instance Connect pushes a key per session");
   const [instanceId] = Object.keys(airgap.findResources("AWS::EC2::Instance"));
   const dependsOn = (airgap.toJSON().Resources as Record<string, { DependsOn?: string[] }>)[instanceId!]!.DependsOn ?? [];
-  assert.ok(dependsOn.includes("S3Endpoint") && dependsOn.includes("DynamoEndpoint") && dependsOn.includes("PrivateRouteAssociation"), `the instance waits for the endpoints (${dependsOn.join(", ")})`);
+  assert.ok(dependsOn.includes("S3Endpoint") && dependsOn.includes("PrivateRouteAssociation") && !dependsOn.some((id) => id.includes("Dynamo")), `the instance waits for the S3 endpoint and the route (${dependsOn.join(", ")})`);
   const userData = Buffer.from(JSON.stringify(instance!.Properties.UserData)).toString("utf8");
   assert.ok(!/__[A-Z0-9_]+__/.test(userData), "every placeholder rendered");
   assert.ok(!/AIRPROMPTER_AGENT_KEY=|apa_|dnf |curl -fsSL/.test(userData), "no key, no package install, no download from the world");
@@ -87,7 +85,7 @@ test("the instance: t4g.micro on the pinned image, IMDSv2, no public address, 8 
   assert.ok(userData.includes("sed 's#@EXCHANGE_BUCKET@#zudocs-exchange-111122223333#'"));
 });
 
-test("the instance role: the exchange's exact keys (read releases/tools, write the public key, the status and the exports — never a private key's path), the table's query, the bundle; no SSM, no logs, no Bedrock, no wildcard", () => {
+test("the instance role: the datastore and tools, the public key, the status and the exports — never a private key's path — and the bundle; no SSM, no logs, no Bedrock, no wildcard", () => {
   const { airgap } = synthAll();
   airgap.hasResourceProperties("AWS::IAM::Role", { RoleName: AIRGAP_ROLE_NAME });
   const [role] = Object.values(airgap.findResources("AWS::IAM::Role", { Properties: { RoleName: AIRGAP_ROLE_NAME } }) as Resources);
@@ -97,19 +95,20 @@ test("the instance role: the exchange's exact keys (read releases/tools, write t
   assert.ok(!actions.some((a) => a.startsWith("ssm") || a.startsWith("logs:") || a.startsWith("bedrock") || a.startsWith("ec2messages") || a === "*"), `nothing that talks to the world: ${actions.join(", ")}`);
   const read = statements.find((st) => st.Sid === "ExchangeRead")!;
   assert.deepEqual(actionsOf(read), ["s3:GetObject"]);
-  assert.deepEqual([...(read.Resource as string[])].sort(), ["arn:aws:s3:::zudocs-exchange-111122223333/latest.json", "arn:aws:s3:::zudocs-exchange-111122223333/releases/*", "arn:aws:s3:::zudocs-exchange-111122223333/tools/*"]);
+  assert.deepEqual([...(read.Resource as string[])].sort(), ["arn:aws:s3:::zudocs-exchange-111122223333/airprompter/*", "arn:aws:s3:::zudocs-exchange-111122223333/tools/*"]);
+  const list = statements.find((st) => st.Sid === "DatastoreList")!;
+  assert.deepEqual(actionsOf(list), ["s3:ListBucket"]);
+  assert.deepEqual(list.Condition, { StringLike: { "s3:prefix": ["airprompter/*"] } });
   const write = statements.find((st) => st.Sid === "ExchangeWrite")!;
   assert.deepEqual(actionsOf(write), ["s3:PutObject"]);
   assert.deepEqual([...(write.Resource as string[])].sort(), [`arn:aws:s3:::zudocs-exchange-111122223333/${EXCHANGE.publicKey}`, `arn:aws:s3:::zudocs-exchange-111122223333/${EXCHANGE.status}`, "arn:aws:s3:::zudocs-exchange-111122223333/telemetry/*"].sort());
   assert.ok(!JSON.stringify(write.Resource).includes("key.json"), "the private half's name is not a writable path");
   assert.ok(!JSON.stringify(write.Resource).includes("keys/*"), "no glob over keys/");
-  const table = statements.find((st) => st.Sid === "ReleasesRead")!;
-  assert.deepEqual(actionsOf(table), ["dynamodb:Query"]);
-  assert.equal(table.Resource, "arn:aws:dynamodb:ap-southeast-1:111122223333:table/zudocs-agent-releases");
+  assert.ok(!statements.some((st) => actionsOf(st).some((a) => a.startsWith("dynamodb:"))), "no table");
   const asset = statements.find((st) => st.Sid === "BundleRead")!;
   assert.deepEqual(actionsOf(asset), ["s3:GetObject"]);
   assert.match(String(asset.Resource), /^arn:aws:s3:::cdk-hnb659fds-assets-111122223333-ap-southeast-1\/[0-9a-f]{64}\.zip$/, "exactly the bundle object, no listing");
-  assert.ok(!statements.some((st) => actionsOf(st).some((a) => a === "s3:List*" || a === "s3:GetBucket*")), "no listing of the asset bucket");
+  assert.ok(!JSON.stringify(list.Resource).includes("cdk-hnb659fds-assets"), "the list is the exchange bucket, not the asset bucket");
 });
 
 test("user data rendering with the committed template and pins; the outputs the owner's script reads", () => {

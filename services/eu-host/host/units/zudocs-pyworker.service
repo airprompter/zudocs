@@ -1,20 +1,21 @@
-# The Zudocs Python worker on the eu-west host: airprompter-agent (the public Python SDK, pinned by commit until
-# PyPI carries it) attached to the same airprompterd, LiteLLM to Bedrock with the instance role, one ticket every
-# twenty minutes — the second SDK on one daemon, one store, one key. No key in its environment.
+# The Zudocs Python worker on the eu-west host: airprompter-agent (the public Python SDK, pinned by the
+# sdk-python/v0.3.0 commit) loads its own release beside the Node worker. Both open the same store. The Agent
+# key is injected from airprompterd.env. LiteLLM calls Bedrock with the instance role.
 #
 #   $ systemctl status zudocs-pyworker
 #   $ tail -f /var/log/zudocs/pyworker.log
 
 [Unit]
-Description=Zudocs eu-west Python worker (airprompter-agent + LiteLLM, daemon mode)
+Description=Zudocs eu-west Python worker (airprompter-agent + LiteLLM, resident)
 After=network-online.target airprompterd.service
-Wants=network-online.target airprompterd.service
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=airprompter
 Group=airprompter
 EnvironmentFile=/etc/airprompter/zudocs.env
+EnvironmentFile=-/etc/airprompter/airprompterd.env
 Environment=PYTHONUNBUFFERED=1
 Environment="ZUDOCS_WORKER_NAME=eu-west python worker"
 ExecStart=/opt/zudocs/venv/bin/python /opt/zudocs/pyworker.py
@@ -33,7 +34,7 @@ ReadWritePaths=/var/lib/airprompter /var/log/zudocs
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictAddressFamilies=AF_INET AF_INET6
 RestrictNamespaces=true
 LockPersonality=true
 SystemCallArchitectures=native

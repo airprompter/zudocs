@@ -16,8 +16,8 @@ import { clock, modelLabel } from "../format";
 
 function describe(e: TimelineEvent): string {
   switch (e.kind) {
-    case "host_started": return `${e.source === "daemon" ? "worker attached to the daemon" : "container started"} · release #${e.generation}${e.stagedGeneration ? ` (staged #${e.stagedGeneration})` : ""} · ${e.storageProtection} · policy ${e.applyPolicy}`;
-    case "worker_started": return `${e.language ?? "worker"} worker attached · ${e.sdk} · release #${e.generation}`;
+    case "host_started": return `${e.source === "store" ? "this host loaded the release" : e.source === "daemon" ? "worker started on the Europe host" : "container started"} · release #${e.generation}${e.stagedGeneration ? ` (staged #${e.stagedGeneration})` : ""} · ${e.storageProtection} · policy ${e.applyPolicy}`;
+    case "worker_started": return `${e.language ?? "worker"} worker started · ${e.sdk} · release #${e.generation}`;
     case "worker_stopped": return `${e.language ?? "worker"} worker stopped${e.tickets !== undefined ? ` after ${e.tickets} tickets` : e.runs !== undefined ? ` after ${e.runs} runs` : ""}`;
     case "release_changed": return `release #${e.generation} ${e.applyState}${e.stagedGeneration ? ` · staged #${e.stagedGeneration}` : ""}${e.seenBy ? ` (seen by ${e.seenBy})` : ""}`;
     case "release_staged": return `release #${e.generation} staged — awaiting approval (policy ${e.policy})${e.note ? ` · console: ${e.note}` : ""}`;
@@ -40,13 +40,13 @@ function describe(e: TimelineEvent): string {
     case "host_cli": return `zudocs-cli ${e.command} on ${e.forHost}: ${e.status} — ${e.summary}${e.durationMs ? ` (${Math.round(Number(e.durationMs) / 1000)} s)` : ""}`;
     case "policy_set": return `policy ${e.before} → ${e.after} (${e.source}) by ${e.by}`;
     case "golden_run": return `golden sets on release #${e.generation}: ${(e.reports as Array<{ tag: string; passed: number; cases: number; met: boolean }>).map((r) => `${r.tag} ${r.passed}/${r.cases}${r.met ? "" : " BELOW the floor"}`).join("; ")}`;
-    case "bundle_pulled": return `release #${e.generation} pulled into the exchange${e.sealed ? ` · sealed to key ${String(e.keyId).slice(0, 8)}…` : " · plaintext (dev)"} · ${e.trigger === "nudge" ? "on a nudge" : e.trigger === "reseal" ? "re-sealed to the host's new key" : "on the schedule"}${e.previous ? ` (was #${e.previous})` : ""}`;
+    case "bundle_pulled": return `release #${e.generation} pulled into the datastore${e.sealed ? ` · sealed to key ${String(e.keyId).slice(0, 8)}…` : " · plaintext (dev)"} · ${e.trigger === "nudge" ? "on a nudge" : "on the schedule"}${e.previous ? ` (was #${e.previous})` : ""}`;
     case "pull_failed": return `pull ${e.outcome}: ${e.reason}${e.detail ? ` — ${e.detail}` : ""}`;
     case "pull_conflict": return `generation #${e.generation} answered with another digest; the exchange keeps its row`;
     case "nudged": return `nudged by ${e.by}: the puller reads the origin now`;
     case "airgap_started": return `air-gapped runtime started${e.instanceId ? ` on ${e.instanceId}` : ""}${e.keyId ? ` · key ${String(e.keyId).slice(0, 8)}…` : ""} · ${e.phase}`;
     case "distribution_key_born": return `distribution key ${String(e.keyId).slice(0, 8)}… born on the host; the public half ${e.published ? "is in the exchange" : "is not in the exchange yet"}`;
-    case "airgap_applied": return `air-gapped host: release #${e.generation ?? "—"} ${e.outcome}${e.reason ? ` (${e.reason})` : ""} · from ${e.source === "vendored" ? "the vendored bundle" : "the exchange"}`;
+    case "airgap_applied": return `air-gapped host: release #${e.generation ?? "—"} ${e.outcome}${e.reason ? ` (${e.reason})` : ""} · from the datastore`;
     case "telemetry_exported": return `telemetry exported: ${e.segments} segment${e.segments === 1 ? "" : "s"} (${e.instances} instance${e.instances === 1 ? "" : "s"}) → the exchange`;
     case "telemetry_imported": return `telemetry ${e.outcome}: ${e.uploaded ?? 0}/${e.segments ?? 0} segment${e.segments === 1 ? "" : "s"} for ${Array.isArray(e.instances) ? (e.instances as string[]).length : 0} offline instance${Array.isArray(e.instances) && (e.instances as string[]).length === 1 ? "" : "s"} → AirPrompter${e.retryAfterSeconds ? ` · retry in ${e.retryAfterSeconds}s` : ""}`;
     default: return e.kind;

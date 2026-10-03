@@ -52,7 +52,7 @@ test("the instance: t4g.micro, the pinned AL2023 arm64 image, IMDSv2 required, 8
   assert.equal(instance!.Properties.ImageId, "ami-0535b4996339a5410", "the pinned image, not a deploy-time lookup");
   const userData = Buffer.from(JSON.stringify(instance!.Properties.UserData)).toString("utf8");
   assert.ok(userData.includes("f".repeat(64)), "the pinned CLI digest is in the script");
-  assert.ok(userData.includes("releases/download/cli/v0.1.0/airprompter-linux-arm64"));
+  assert.ok(userData.includes("releases/download/cli/v0.3.0/airprompter-linux-arm64"));
   assert.ok(!/__[A-Z0-9_]+__/.test(userData), "every placeholder rendered");
   assert.ok(!/AIRPROMPTER_AGENT_KEY=|apa_/.test(userData), "no key in user data");
   assert.ok(userData.includes("zudocs-agent-key"), "the key file is written from SSM by the helper");

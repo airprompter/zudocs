@@ -26,20 +26,23 @@ export const TOOLTIPS = {
   storage: "How the slot store's data key is protected on this host. kms: wrapped by a KMS key. file_key: a 0600 file — reported, never hidden.",
   cap: "Runs per UTC day this host allows. At the line the API refuses with HTTP 429; nothing is simulated.",
   approval: "This host's policy is unlock_required: AirPrompter stages a release and only your approval (or an operator's unlock on the host) makes it live. The console can request an unlock; it can never grant one.",
-  daemon: "airprompterd: one sync loop and one store per host, served to every attached SDK over a local socket; the workers hold no key.",
+  daemon: "On the Europe host, each worker loads its own signed release with the Agent SDK. airprompterd ships their telemetry; it does not serve releases.",
   ignoredByContract: "The hosted route accepts these OpenAI parameters and ignores them by contract: the sealed version owns its settings. The response carries no settings, so this is the contract's word, not an observation.",
   lease: "How long this host may keep serving without hearing from AirPrompter. After it lapses the host degrades (keeps serving, says so) — the wire-cut drill shows it.",
   wire: "Cut: the host's outbound rules are replaced so only the desk's tables stay reachable — AirPrompter and Bedrock go dark and the card shows it. A rule restores the wire 15 minutes after a cut whatever happens.",
-  puller: "The fleet pattern: one function holds the Agent key for the region and pulls each promoted release pointer-first (an idle interval is one CDN read, no API call) into a table and an exchange bucket. Runtimes behind it hold no key.",
+  puller: "The fleet pattern: one function holds the Agent key for the region and writes each sealed release into the exchange bucket with the SDK's pullToDatastore. An idle interval is one CDN read and no API call. Runtimes behind it hold no key and hydrate from that bucket.",
   nudge: "The change-notification placeholder: one message on a queue the company owns. The puller reads the origin now instead of waiting for its schedule. A nudge can only say \"look\" — pull-and-verify stays the only source of truth.",
-  airgap: "A host with no route out: no internet gateway, no NAT. It reads the exchange bucket and the releases table through gateway endpoints, applies each bundle the puller sealed to its key, and cannot call a model — every render it files is a refusal, never an invented answer. Its telemetry leaves by export and arrives by import on eu-west.",
+  airgap: "A host with no route out: no internet gateway, no NAT. It hydrates from the exchange bucket through an S3 gateway endpoint, opens each bundle with the key born on the host, and cannot call a model — every render it files is a refusal, never an invented answer. Its telemetry leaves by export and arrives by import on eu-west.",
   distributionKey: "The X25519 keypair airprompter keygen generated on the host at first boot. Only the public half left it (to the exchange); the puller seals every bundle to it; the private half opens them and never leaves.",
+  routes: "The same prompt, four doors: the release's model in your own AWS account (Bedrock), the OpenAI API or the Claude API with a key of your own, or AirPrompter's hosted route where AirPrompter fronts the model. The prompt text, the variables, the checks and the judge are the same every way; what changes is where the model call goes — and what it costs, how long it takes, and how it rates.",
+  provider: "A direct API with your own key: an ordinary OpenAI or Anthropic client under the SDK's wrap(); the call names the provider's model, so the observation is filed under that model and the release's settings are applied here in the provider's names — a reasoning model takes no temperature, and the chip says so.",
+  providerDoor: "The kill switch and the daily line: a direct provider's key is billed outside AWS, where the account's budget deny policy cannot reach it — so the host refuses for itself. A closed door answers 503 before anything is called; a provider past its own daily line answers 429. The release's own model in your account is never gated by either.",
   hosted: "Hosted staging: the same prompts run on AirPrompter's own execution with a run key bound to one environment — no store, no model key of ours. The stream is replayed as it arrived; the compatible endpoint shows the caller's temperature marked ignored by contract beside the version's sealed settings (the response carries no settings; the mark is the contract's word).",
   hostCli: "The operator's CLI on the eu-west host, through Session Manager's Run Command, targeted by the instance's Name tag: a fixed list of zudocs-cli commands; the CLI's own document lands on the timeline. Nothing typed here reaches a shell.",
-  frozen: "A signed disable directive on the manifest: a host that syncs stops rendering the moment the manifest verifies. On the daemon host the workers render from the active release, so the frozen generation takes effect there when it is approved (SDK #51). Only the console lifts it.",
+  frozen: "A signed disable directive stops rendering when a host verifies and applies it. On the Europe host, each worker applies its own release under the local approval policy. Only the console lifts a freeze.",
   golden: "The golden set: cases with expected outputs, run against the pinned model on this host before a staged release activates (under auto too). Below the floor, the release stays staged.",
   policyLocal: "This host's own apply policy, set by an operator through the SDK. auto loosens a pin the console tightened; unlock_required tightens it by hand. The console's setting is advisory once a host is pinned.",
-  power: "The eu-west host is a t4g.micro the desk stops and starts at EC2: asleep, only its 8 GiB volume bills (no Elastic IP is allocated; the address changes on start and nothing depends on it). A schedule puts it to sleep every night; nothing starts it but you. On start the daemon re-reads its Agent key from SSM and the workers re-attach — about three minutes to a fresh row.",
+  power: "The eu-west host is a t4g.micro the desk stops and starts at EC2: asleep, only its 8 GiB volume bills. A schedule puts it to sleep every night. On start, the daemon re-reads its Agent key from SSM and each worker loads its release — about three minutes to a fresh row.",
   demoMode: "The eu-west workers' cadence: idle, a ticket an hour (Node) and every two hours (Python) — cents a day. Demo mode drops that to every two and five minutes for at most four hours, then lapses on its own; the workers read the switch every minute, and the nightly sleep skips the host while it is on.",
 } as const;
 
@@ -62,7 +65,26 @@ export const MODEL_LABELS: Record<string, string> = {
   "amazon.nova-2-lite": "Nova 2 Lite",
   "amazon.nova-micro": "Nova Micro",
   "anthropic.claude-haiku-4-5": "Haiku 4.5",
+  // The direct APIs' own ids (phase 9): what the call named, what the observation is filed under.
+  "gpt-5.6-luna": "GPT-5.6 Luna",
+  "gpt-5.6-terra": "GPT-5.6 Terra",
+  "gpt-5.6-sol": "GPT-5.6 Sol",
+  "claude-opus-5": "Claude Opus 5",
+  "claude-sonnet-5": "Claude Sonnet 5",
+  "claude-haiku-4-5": "Claude Haiku 4.5",
 };
+
+/** The four doors a reply can go through, in the order the desk shows them. */
+export const ROUTES = ["bedrock", "openai", "anthropic", "airprompter"] as const;
+export const ROUTE_LABELS: Record<(typeof ROUTES)[number], string> = {
+  bedrock: "Your cloud (Bedrock)",
+  openai: "OpenAI API",
+  anthropic: "Claude API",
+  airprompter: "AirPrompter API",
+};
+export function routeLabel(route: string | null | undefined): string {
+  return ROUTE_LABELS[(route ?? "bedrock") as (typeof ROUTES)[number]] ?? String(route);
+}
 
 export function modelLabel(model: string | null): string {
   if (!model) return "—";
@@ -70,8 +92,48 @@ export function modelLabel(model: string | null): string {
 }
 
 export function armLabel(arm: string | null): string {
-  if (!arm || arm === "none") return "no experiment";
-  return `arm ${arm}`;
+  if (!arm || arm === "none") return "no test on this ticket";
+  if (arm === "control") return "current reply";
+  if (arm === "candidate") return "new reply";
+  return arm;
+}
+
+/** The sentence under a reply: the support agent, the prompt version, and which side of a test this customer got. */
+export function replyByline(tag: string, versionId: string | null, generation: number | null, arm: string | null): string {
+  const side = arm && arm !== "none" ? ` · this customer got the ${armLabel(arm)}` : "";
+  return `Support agent · ${versionBadge(tag, versionId, generation)}${side}`;
+}
+
+/** The closed A|B row. A live mix names the split; an idle release says so instead of hiding the row. */
+export function abTitle(ramps: Array<{ arms: string[]; weightBps: number[] }> | null | undefined, hasHistory: boolean): string {
+  if (ramps == null) return "A|B";
+  if (ramps.length === 0) return hasHistory ? "A|B · earlier results, none on this release" : "A|B · no test on this release";
+  const ramp = ramps[0]!;
+  const index = Math.max(0, ramp.arms.indexOf("candidate"));
+  const next = Math.round((ramp.weightBps[index] ?? 0) / 100);
+  const more = ramps.length > 1 ? ` · ${ramps.length - 1} more` : "";
+  return `A|B · ${100 - next}% current reply · ${next}% new reply${more}`;
+}
+
+/** Whether this reply and the desk are on the same AirPrompter release. */
+export function syncLead(replyGeneration: number | null, deskGeneration: number | null): string {
+  if (replyGeneration == null) return "This reply has no release on its record.";
+  if (deskGeneration == null || replyGeneration === deskGeneration) return `This reply was written from release #${replyGeneration}, the release this desk is running.`;
+  return `This reply was written from release #${replyGeneration}. This desk is now running release #${deskGeneration}.`;
+}
+
+/** What an A|B assignment means for the customer in front of the room. */
+export function testLine(arm: string | null): string {
+  if (!arm || arm === "none") return "No test is on this release, so every customer gets this reply.";
+  return `This customer got the ${armLabel(arm)}. The same customer gets that reply on every desk.`;
+}
+
+export function checkLine(checks: Array<{ verdict: string }>): string | null {
+  if (checks.length === 0) return null;
+  const passed = checks.filter((check) => check.verdict === "pass").length;
+  const failed = checks.length - passed;
+  if (failed === 0) return `All ${passed} checks on this reply passed.`;
+  return `${passed} passed, ${failed} failed.`;
 }
 
 export function latency(ms: number | null | undefined): string {

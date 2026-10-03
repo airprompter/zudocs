@@ -193,7 +193,7 @@ button:disabled { cursor: default; opacity: 0.55; }
 .badge.arm { color: var(--muted); }
 .badge.arm-live { background: var(--amber-soft); color: var(--amber); font-weight: 600; }
 .output { background: var(--paper); border-radius: 6px; padding: 12px 14px; font-size: 14px; line-height: 1.55; }
-.output.reply { font-size: 16px; line-height: 1.65; background: var(--card); border: 1px solid var(--rule-soft); }
+.output.reply { font-size: 16px; line-height: 1.65; background: var(--card); border: 1px solid var(--rule-soft); white-space: pre-wrap; }
 .triage { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .triage-summary { color: var(--muted); }
 .checks { display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; }

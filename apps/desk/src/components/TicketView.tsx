@@ -229,8 +229,8 @@ function RunPanel({ run, busy, elsewhere, desk, enqueueNote, onBehind, onFeedbac
   const checks = checkLine(letter?.checks ?? []);
   return (
     <section className={`run letter${run.ok ? "" : " run-failed"}`}>
-      {reply ? (reply.error ? <p className="problem">{reply.error.name}: {reply.error.message}</p> : <pre className="output reply">{reply.output ?? ""}</pre>) : null}
-      {!reply && summary ? (summary.error ? <p className="problem">{summary.error.name}: {summary.error.message}</p> : <pre className="output reply">{summary.output ?? ""}</pre>) : null}
+      {reply ? (reply.error ? <p className="problem">{reply.error.name}: {reply.error.message}</p> : <ReplyText text={reply.output ?? ""} />) : null}
+      {!reply && summary ? (summary.error ? <p className="problem">{summary.error.name}: {summary.error.message}</p> : <ReplyText text={summary.output ?? ""} />) : null}
       {handoff ? (handoff.error ? <p className="problem">{handoff.error.name}: {handoff.error.message}</p> : <pre className="output">{handoff.output ?? ""}</pre>) : null}
       {letter && !letter.error ? <p className="byline" title={TOOLTIPS.version}>{replyByline(letter.tag, letter.versionId, letter.generation, letter.arm)}</p> : null}
       <Fold title="How this reply got here">
@@ -257,6 +257,12 @@ function RunPanel({ run, busy, elsewhere, desk, enqueueNote, onBehind, onFeedbac
       </Fold>
     </section>
   );
+}
+
+function ReplyText({ text }: { text: string }) {
+  return <div className="output reply">{text.split(/(\*\*[^*\n]+\*\*)/g).map((part, index) =>
+    /^\*\*[^*\n]+\*\*$/.test(part) ? <strong key={index}>{part.slice(2, -2)}</strong> : part,
+  )}</div>;
 }
 
 function FeedbackRow({ run, step, busy, onFeedback }: { run: Run; step: string; busy: string | null; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {

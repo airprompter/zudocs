@@ -1,6 +1,7 @@
 # The Zudocs Python worker on the eu-west host: airprompter-agent (the public Python SDK, pinned by the
-# sdk-python/v0.3.0 commit) loads its own release beside the Node worker. Both open the same store. The Agent
-# key is injected from airprompterd.env. LiteLLM calls Bedrock with the instance role.
+# sdk-python/v0.3.0 commit) loads its own release into a separate store. It writes telemetry to the daemon's
+# shared spool and follows the Node worker's approved generation. The Agent key is injected from
+# airprompterd.env. LiteLLM calls Bedrock with the instance role.
 #
 #   $ systemctl status zudocs-pyworker
 #   $ tail -f /var/log/zudocs/pyworker.log

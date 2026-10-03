@@ -97,13 +97,10 @@ async function main(): Promise<void> {
   const sdk = `${SDK_NAME}/${SDK_VERSION}`;
   const ec2 = await readEc2Identity();
 
-  // --- The SDK: this process syncs and serves. The first release under unlock_required is staged inside start() --
+  // --- The SDK: this process syncs and serves. Under unlock_required, start() returns with generation 0 and a staged release. --
   let ap: AirPrompterAgent | null = null;
   let host: RunHost | null = null;
   let attaching = false;
-  /** The staged release start() is holding, before it has returned. Later releases are ap.unlock(). */
-  let bootStaged: { generation: number; activate: () => void } | null = null;
-  let releaseBoot: (() => void) | null = null;
   const attach = async (): Promise<void> => {
     if (ap || attaching) return;
     attaching = true;
@@ -117,17 +114,7 @@ async function main(): Promise<void> {
         stateDir: env.stateDir,
         root: { pinned: rootJwk as never, hostedEnvironment: env.airprompter.hostedEnvironment },
         sync: { mode: "resident", pollSeconds: 30, edgePointerUrl: env.airprompter.edgePointerUrl, rootUrl: env.airprompter.rootUrl },
-        apply: {
-          policy: "unlock_required",
-          onStaged: (staged) => {
-            bootStaged = { generation: staged.generation, activate: staged.activate };
-            if (ap) return;
-            // start() throws while nothing is active, so the first staged release waits here for the desk.
-            return new Promise<void>((resolve) => {
-              releaseBoot = resolve;
-            });
-          },
-        },
+        apply: { policy: "unlock_required" },
         telemetry: { upload: false },
         models: [...MODELS],
         variables: {
@@ -141,7 +128,6 @@ async function main(): Promise<void> {
       });
       ap = agent;
       host = { env: { hostId: env.hostId }, ap: agent, store, callers: createCallers(agent, env.bedrockRegion), observed: collectObservations };
-      bootStaged = null;
       log({ event: "sdk_started", instanceId: agent.instanceId, generation: agent.generation, source: agent.status().source, applyPolicy: agent.status().applyPolicy.effective });
       await store.appendEvent({ at: new Date().toISOString(), kind: "host_started", host: env.hostId, generation: agent.generation, stagedGeneration: agent.status().stagedGeneration, storageProtection: agent.status().storageProtection, source: agent.status().source, applyPolicy: agent.status().applyPolicy.effective, sdk, instanceId: agent.instanceId, ec2: ec2?.instanceId ?? null }).catch((error) => log({ event: "event_write_failed", reason: (error as Error).message }));
     } catch (error) {
@@ -195,24 +181,13 @@ async function main(): Promise<void> {
     hostId: env.hostId,
     storeId: storeIdNow,
     store,
-    // Null until start() has a release or is holding a staged one: the watcher then touches nothing.
+    // Null until start() has returned. Its initial status can be generation 0 with a staged release.
     status: () => {
-      if (ap) {
-        const s = ap.status();
-        return { generation: s.generation, stagedGeneration: s.stagedGeneration, unlockRequests: s.unlockRequests };
-      }
-      return bootStaged ? { generation: 0, stagedGeneration: bootStaged.generation, unlockRequests: [] } : null;
+      if (!ap) return null;
+      const s = ap.status();
+      return { generation: s.generation, stagedGeneration: s.stagedGeneration, unlockRequests: s.unlockRequests };
     },
-    unlock: async () => {
-      if (ap) return ap.unlock();
-      if (!bootStaged) return null;
-      const generation = bootStaged.generation;
-      bootStaged.activate();
-      releaseBoot?.();
-      releaseBoot = null;
-      bootStaged = null;
-      return { generation };
-    },
+    unlock: async () => ap?.unlock() ?? null,
     isRefusal: (error) => isStoreError(error),
     now: () => new Date().toISOString(),
     log,
@@ -275,7 +250,7 @@ async function main(): Promise<void> {
     // until the desk approves; a later one is ap.unlock(). The row flips with the decision, not at the next status timer.
     setInterval(() => void (async () => {
       await attach();
-      if (settled === -1 && (ap || bootStaged)) {
+      if (settled === -1 && ap) {
         settled = await watcher.reconcile().catch(() => -1);
         if (settled >= 0) log({ event: "reconciled", settledApprovals: settled });
       }
@@ -296,7 +271,6 @@ async function main(): Promise<void> {
     // An unlock in flight settles its row before the process goes; the store keeps the release either way.
     await watcher.inFlight?.catch(() => undefined);
     await store.appendEvent({ at: new Date().toISOString(), kind: "worker_stopped", host: env.hostId, signal, tickets }).catch(() => undefined);
-    releaseBoot?.();
     if (ap) await ap.stop();
     process.exit(0);
   };

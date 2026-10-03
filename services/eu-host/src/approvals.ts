@@ -1,7 +1,7 @@
 /**
  * The approvals watcher: the host's side of "you activate, not us". This process stages a release under
- * `unlock_required`. On a fresh store the first release is held inside `start()` until `unlock` calls the hook's
- * `activate()`; after that, `unlock` is `ap.unlock()`. Each tick it compares the staged generation with what it last saw:
+ * `unlock_required`. On a fresh store `start()` returns at generation 0 with the release staged. Each approval
+ * calls `ap.unlock()`. Each tick compares the staged generation with what it last saw:
  *
  * - a newly staged generation opens one approval row (`pending`) and writes a `release_staged` event;
  * - a row the owner `approved` on the desk makes the watcher call `unlock` and settle the row `activated` (or
@@ -14,7 +14,7 @@
  *   approvals) is opened again for the generation this process still holds staged: what needs a decision is what the
  *   store says, not what the watcher remembers, so the row is never left "waiting" on a record nobody can click.
  *
- * The row's id is the host, the generation *and the store* (`instanceId` once `start()` has returned): a replaced
+ * The row's id is the host, the generation *and the store* (`instanceId` from `start()`): a replaced
  * instance stages the same generation again on a fresh store and gets a fresh row, while a restarted watcher on the
  * same store resumes its row. `open` creates a row at most once, the desk's approve flips it at most once. Pure over
  * its ports, so a test drives it with a fake store and a scripted status.
@@ -34,8 +34,7 @@ export interface WatcherPorts {
   storeId: () => string;
   store: Pick<Store, "openApproval" | "getApproval" | "settleApproval" | "listApprovals" | "appendEvent">;
   /**
-   * The staged and active generations — or null when this process has not started and is not holding a staged
-   * release: then nothing is known and nothing is touched.
+   * The staged and active generations — or null before this process has started.
    */
   status: () => { generation: number; stagedGeneration: number | null; unlockRequests: ApprovalRow["unlockRequest"][] } | null;
   /**

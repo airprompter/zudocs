@@ -159,7 +159,7 @@ test("hosted: an unreadable run key parameter is a start refusal that names the 
 
 test("host CLI: the allowlist is closed, the JSON line is the last stdout line, polling ends on a terminal status", async () => {
   assert.equal(isHostCliCommand("policy show"), true);
-  assert.equal(isHostCliCommand("policy set auto"), false, "inert on a daemon started with --apply-policy: not a drill");
+  assert.equal(isHostCliCommand("policy set auto"), false, "the worker pins unlock_required locally: not a drill");
   assert.equal(isHostCliCommand("policy show; rm -rf /"), false);
   assert.equal(isHostCliCommand("constructor"), false, "prototype names are not commands");
   assert.equal(isHostCliCommand("apply"), false, "apply --force is a laptop drill, never a one-click");

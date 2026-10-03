@@ -1,18 +1,14 @@
 /**
- * The eu-west ticket worker: one Node process on the shared host beside `airprompterd`. It holds no key and opens
- * no store; the daemon syncs, verifies, stages under `unlock_required` and serves the release over its socket. What
- * this process does, in the order a fresh host needs:
+ * The eu-west ticket worker: one Node process on the shared host beside `airprompterd`. The daemon ships telemetry
+ * and nothing else. This process loads its own release (its store, then its own sync) with the Agent key systemd
+ * injects, and pins `unlock_required` so a staged release waits for the desk. What it does:
  *
- * - **the daemon's socket first**: a plain `DaemonClient` (the SDK's public export) is the worker's window on the
- *   host — the daemon's own `status` and `healthz` documents, and its `unlock` op. Nothing else starts until the
- *   socket answers; a host whose daemon is down is a host that is not serving, and systemd retries (exit 3).
- * - **approvals** over that client (`ApprovalWatcher`): a release the daemon staged → a row the desk shows → the
- *   owner approves → `unlock` through the daemon → every attached SDK switches. This runs *before* any SDK attaches,
- *   because on a fresh store the first release lands staged and the SDK cannot attach until something is active.
- * - **status**: every 30 s the daemon's documents, merged into the host's row (with the worker's part beside them);
- *   every health transition is a timeline row.
- * - **the SDK**, attached in `sync: "daemon"` mode once the daemon serves a generation, and re-attached if it is
- *   lost; then **tickets**: every `ZUDOCS_TICKET_INTERVAL_SECONDS` (an hour idle; `ZUDOCS_DEMO_TICKET_INTERVAL_SECONDS`,
+ * - **the SDK**, started in resident mode. A start that finds nothing verified is retried; the process keeps running.
+ * - **approvals** (`ApprovalWatcher`): a staged release → a row the desk shows → the owner approves → `ap.unlock()`
+ *   on this process's store.
+ * - **status**: every 30 s this process's `status()` and `healthz()`, merged into the host's row; every health
+ *   transition is a timeline row.
+ * - **tickets**: every `ZUDOCS_TICKET_INTERVAL_SECONDS` (an hour idle; `ZUDOCS_DEMO_TICKET_INTERVAL_SECONDS`,
  *   two minutes, while the demo-mode parameter the worker reads every minute says on — `demoMode.ts`) one inbox
  *   ticket (the presenter's queue first, within ten seconds) through the same `runTicket` the us-east host uses —
  *   `support.triage` then `support.reply` on the release's models through Bedrock in us-east-1, the judge, the
@@ -32,7 +28,7 @@ import { fileURLToPath } from "node:url";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { AirPrompterAgent, DaemonClient, SDK_NAME, SDK_VERSION, daemonSocketPath, isDaemonError, type Healthz } from "@airprompter/agent-sdk";
+import { AirPrompterAgent, SDK_NAME, SDK_VERSION, isAgentStartError, isStoreError } from "@airprompter/agent-sdk";
 import { createCallers } from "../../desk-api/src/bedrock.js";
 import { MODELS } from "../../desk-api/src/modelCatalogue.js";
 import { collectObservations, tapObservations } from "../../desk-api/src/observe.js";
@@ -42,14 +38,11 @@ import { createStore, dayOf, type Store, type Ticket } from "../../desk-api/src/
 import { ApprovalWatcher } from "./approvals.js";
 import { TicketCadence, parseDemoMode, readDemoModeParameter, type DemoModeDoc } from "./demoMode.js";
 import { readHostEnv, type HostEnv } from "./hostEnv.js";
-import { readDaemonHealthz } from "./daemonHealthz.js";
-import { statusFields, type DaemonStatusDoc } from "./statusRow.js";
+import { statusFields } from "./statusRow.js";
 import { verifyRootCommand } from "./verifyRoot.js";
 
 const WORKER_VERSION = "0.1.0";
 const log = (event: Record<string, unknown>) => process.stdout.write(JSON.stringify({ at: new Date().toISOString(), source: "zudocs-worker", ...event }) + "\n");
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /** The instance id and zone from IMDSv2 (a token first; the host requires it); null off EC2 or when it does not answer. */
 export async function readEc2Identity(fetchImpl: typeof fetch = fetch): Promise<{ instanceId: string; availabilityZone: string } | null> {
   try {
@@ -93,147 +86,67 @@ export function feedbackFromChecks(step: Pick<StepRecord, "checks" | "runRef" | 
   return { runRef: step.runRef, signals: { accepted: step.checks.every((c) => c.verdict === "pass") } };
 }
 
-/** The daemon's `unlock` answer as the watcher wants it: `{ generation }`, or null when nothing was staged. */
-export function unlockResultOf(answer: Record<string, unknown>): { generation: number } | null {
-  return typeof answer.generation === "number" ? { generation: answer.generation } : null;
-}
-
-/**
- * The daemon on its socket: one long-lived client, reconnected when it closes (the daemon restarts on every key
- * refresh). `connect()` answers null while the socket is absent; a failed `hello` (a scope mismatch, another owner)
- * throws and is not retried here.
- */
-class Daemon {
-  private client: DaemonClient | null = null;
-  private connecting: Promise<DaemonClient | null> | null = null;
-  constructor(private readonly socketPath: string, private readonly scope: { agentId: string; target: "dev" | "staging" | "prod" }) {}
-  /** One connection: two callers in the same moment share one connect, so a restart never leaves an orphaned socket. */
-  get(): Promise<DaemonClient | null> {
-    if (this.client) return Promise.resolve(this.client);
-    if (this.connecting) return this.connecting;
-    this.connecting = DaemonClient.connect({ socketPath: this.socketPath, agentId: this.scope.agentId, target: this.scope.target, sdk: `zudocs-worker/${WORKER_VERSION}` })
-      .then((client) => {
-        if (!client) return null;
-        client.onClose(() => {
-          if (this.client === client) this.client = null;
-        });
-        this.client = client;
-        return client;
-      })
-      .finally(() => {
-        this.connecting = null;
-      });
-    return this.connecting;
-  }
-  get hello(): DaemonClient["hello"] | null {
-    return this.client?.hello ?? null;
-  }
-  async request(op: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-    const client = await this.get();
-    if (!client) throw Object.assign(new Error(`the daemon is not on ${this.socketPath}`), { code: "absent" });
-    return client.request(op, params);
-  }
-  close(): void {
-    this.client?.close();
-    this.client = null;
-  }
-}
-
 async function main(): Promise<void> {
   const env: HostEnv = readHostEnv();
   const startedAt = new Date().toISOString();
   const rootJwk = JSON.parse(readFileSync(env.airprompter.rootJwkPath, "utf8")) as Record<string, unknown>;
   if (rootJwk.d !== undefined) throw new Error(`${env.airprompter.rootJwkPath} carries a private member`);
+  if (!env.airprompter.apiKey) throw new Error("host env: AIRPROMPTER_AGENT_KEY is not set; this process syncs its own release");
   const store = createStore(DynamoDBDocumentClient.from(new DynamoDBClient({ region: env.tablesRegion }), { marshallOptions: { removeUndefinedValues: true } }), env.tables);
-  const socketPath = daemonSocketPath({ stateDir: env.stateDir, agentId: env.airprompter.agentId, target: env.airprompter.environment });
-  const daemon = new Daemon(socketPath, { agentId: env.airprompter.agentId, target: env.airprompter.environment });
-
-  // The socket first: up to two minutes for the daemon to come up (its unit starts before this one), then exit 3.
-  let client: DaemonClient | null = null;
-  for (let waited = 0; !client && waited < 120_000; waited += 3000) {
-    client = await daemon.get();
-    if (!client) await sleep(3000);
-  }
-  if (!client) {
-    log({ event: "daemon_absent", socketPath });
-    process.exit(3);
-  }
-  /** The store the daemon serves from, as of the current connection: a wiped store under a restarted daemon is a new id. */
-  const bootHello = client.hello;
-  const storeIdNow = (): string => daemon.hello?.storeId ?? daemon.hello?.instanceId ?? bootHello.storeId ?? bootHello.instanceId;
-  const storeId = storeIdNow();
+  const storeIdNow = (): string => ap?.instanceId ?? "pending";
   const sdk = `${SDK_NAME}/${SDK_VERSION}`;
   const ec2 = await readEc2Identity();
-  let latest: DaemonStatusDoc | null = null;
-  const refresh = async (): Promise<DaemonStatusDoc | null> => {
-    try {
-      latest = (await daemon.request("status")) as unknown as DaemonStatusDoc;
-    } catch (error) {
-      log({ event: "daemon_status_unavailable", reason: (error as Error).message.slice(0, 200) });
-      latest = null;
-    }
-    return latest;
-  };
-  // Not through the SDK's client: the daemon's healthz reply carries the document's own `ok`, and `ok: false` (a host
-  // with nothing verified) reads as a refused request there (daemonHealthz.ts; filed upstream).
-  const daemonHealthz = (): Promise<(Healthz & Record<string, unknown>) | null> => readDaemonHealthz(socketPath);
-  const first = await refresh();
-  log({ event: "daemon_found", socketPath, daemon: client.hello.daemon, storeId, generation: first?.generation ?? null, stagedGeneration: first?.stagedGeneration ?? null, storageProtection: first?.storageProtection ?? null, applyPolicy: first?.applyPolicy ?? null });
 
-  // --- The SDK: attached once the daemon serves a generation; re-attached when it is lost ----------------------------
+  // --- The SDK: this process syncs and serves. The first release under unlock_required is staged inside start() --
   let ap: AirPrompterAgent | null = null;
   let host: RunHost | null = null;
-  /** The store the SDK attached on: a wiped store under the daemon means the SDK is serving a release the host no longer has. */
-  let attachedStoreId: string | null = null;
   let attaching = false;
-  /** The SDK is let go when the daemon serves nothing (a wiped store, generation 0) or a different store than it attached on. */
-  const detachIfStale = async (): Promise<void> => {
-    const d = latest as DaemonStatusDoc | null;
-    if (!ap || !d) return;
-    const current = storeIdNow();
-    if (d.generation > 0 && current === attachedStoreId) return;
-    log({ event: "sdk_detached", reason: d.generation > 0 ? "store_replaced" : "no_verified_release", storeId: current, attachedOn: attachedStoreId });
-    const stale = ap;
-    ap = null;
-    host = null;
-    attachedStoreId = null;
-    await stale.stop().catch((error) => log({ event: "sdk_stop_failed", reason: (error as Error).message.slice(0, 200) }));
-  };
+  /** The staged release start() is holding, before it has returned. Later releases are ap.unlock(). */
+  let bootStaged: { generation: number; activate: () => void } | null = null;
+  let releaseBoot: (() => void) | null = null;
   const attach = async (): Promise<void> => {
-    if (ap || attaching || !latest || latest.generation <= 0) return;
+    if (ap || attaching) return;
     attaching = true;
     try {
       const agent = await AirPrompterAgent.start({
         organizationId: env.airprompter.organizationId,
         agentId: env.airprompter.agentId,
         target: env.airprompter.environment,
+        apiKey: env.airprompter.apiKey!,
+        baseUrl: env.airprompter.baseUrl,
         stateDir: env.stateDir,
         root: { pinned: rootJwk as never, hostedEnvironment: env.airprompter.hostedEnvironment },
-        sync: { mode: "daemon", daemonSocketPath: socketPath },
+        sync: { mode: "resident", pollSeconds: 30, edgePointerUrl: env.airprompter.edgePointerUrl, rootUrl: env.airprompter.rootUrl },
+        apply: {
+          policy: "unlock_required",
+          onStaged: (staged) => {
+            bootStaged = { generation: staged.generation, activate: staged.activate };
+            if (ap) return;
+            // start() throws while nothing is active, so the first staged release waits here for the desk.
+            return new Promise<void>((resolve) => {
+              releaseBoot = resolve;
+            });
+          },
+        },
+        telemetry: { upload: false },
         models: [...MODELS],
         variables: {
           customer_tier: { resolve: async ({ subject }) => (subject ? (await store.getCustomer(subject))?.tier : undefined), trust: "operator", timeoutMs: 1500 },
         },
         logger: (event) => log({ source: "airprompter-sdk", ...event }),
       });
-      if (agent.status().source !== "daemon") {
-        // The socket vanished between the check and the start: never a second, keyless, in-process sync.
-        log({ event: "attach_fell_back", source: agent.status().source });
-        await agent.stop();
-        return;
-      }
       tapObservations(agent);
       agent.onChange((change) => {
         void store.appendEvent({ at: new Date().toISOString(), kind: "release_changed", host: env.hostId, generation: change.generation, stagedGeneration: change.stagedGeneration, applyState: agent.status().applyState }).then(() => writeStatus()).catch((error) => log({ event: "event_write_failed", reason: (error as Error).message }));
       });
       ap = agent;
       host = { env: { hostId: env.hostId }, ap: agent, store, callers: createCallers(agent, env.bedrockRegion), observed: collectObservations };
-      attachedStoreId = storeIdNow();
-      log({ event: "sdk_attached", instanceId: agent.instanceId, generation: agent.generation, storeId: attachedStoreId });
-      const d = latest as DaemonStatusDoc | null;
-      await store.appendEvent({ at: new Date().toISOString(), kind: "host_started", host: env.hostId, generation: agent.generation, stagedGeneration: agent.status().stagedGeneration, storageProtection: d?.storageProtection ?? "daemon", source: "daemon", applyPolicy: d?.applyPolicy?.effective ?? agent.status().applyPolicy.effective, sdk: `${sdk} via ${daemon.hello?.daemon ?? client!.hello.daemon}`, instanceId: agent.instanceId, daemonInstanceId: d?.instanceId ?? null, ec2: ec2?.instanceId ?? null }).catch((error) => log({ event: "event_write_failed", reason: (error as Error).message }));
+      bootStaged = null;
+      log({ event: "sdk_started", instanceId: agent.instanceId, generation: agent.generation, source: agent.status().source, applyPolicy: agent.status().applyPolicy.effective });
+      await store.appendEvent({ at: new Date().toISOString(), kind: "host_started", host: env.hostId, generation: agent.generation, stagedGeneration: agent.status().stagedGeneration, storageProtection: agent.status().storageProtection, source: agent.status().source, applyPolicy: agent.status().applyPolicy.effective, sdk, instanceId: agent.instanceId, ec2: ec2?.instanceId ?? null }).catch((error) => log({ event: "event_write_failed", reason: (error as Error).message }));
     } catch (error) {
-      log({ event: "attach_failed", reason: (error as Error).message.slice(0, 300) });
+      const waiting = isAgentStartError(error) && error.code === "no_verified_release";
+      log({ event: waiting ? "sdk_waiting" : "sdk_start_failed", reason: (error as Error).message.slice(0, 300) });
     } finally {
       attaching = false;
     }
@@ -266,18 +179,10 @@ async function main(): Promise<void> {
   let tickets = 0;
   let lastHealth: string | null = null;
   const writeStatus = async (): Promise<void> => {
-    const d = await refresh();
-    const h = d ? await daemonHealthz() : null;
-    // The host's health, as the daemon judges it — or its silence: a transition is a timeline row (the wire-cut beat reads here).
-    const verdict: { status: string; reasons: string[]; generation: number | null; consecutiveSyncFailures: number | null; leaseExpiresAt: string | null } = h ?? { status: "failing", reasons: ["daemon_unreachable"], generation: null, consecutiveSyncFailures: null, leaseExpiresAt: null };
-    if (!d || !h) {
-      // The daemon is restarting (or answered status but not healthz): the last status block stands, the health says
-      // why, and the worker's part says whether it is attached.
-      verdict.reasons = [d ? "daemon_healthz_unavailable" : "daemon_unreachable"];
-      await store.updateStatus(env.hostId, { region: env.region, kind: "daemon", sdk, writtenAt: new Date().toISOString(), healthz: { ok: false, status: "failing", reasons: verdict.reasons }, worker: { instanceId: ap?.instanceId ?? null, sdk, startedAt, tickets, source: ap ? "daemon" : null, attached: ap?.status().daemon?.attached ?? false, healthz: ap?.healthz().status ?? "unknown", reasons: ap?.healthz().reasons ?? [] }, ec2, cadence: cadenceFields() });
-    } else {
-      await store.updateStatus(env.hostId, { ...statusFields({ hostId: env.hostId, region: env.region, daemon: d, healthz: h, worker: ap?.status() ?? null, workerHealthz: ap?.healthz() ?? null, sdk, tickets, startedAt, now: new Date().toISOString(), ec2 }), cadence: cadenceFields() });
-    }
+    const status = ap?.status() ?? null;
+    const healthz = ap?.healthz() ?? null;
+    const verdict = healthz ?? { status: "failing" as const, reasons: ["sdk_not_started"], generation: null, consecutiveSyncFailures: null, leaseExpiresAt: null };
+    await store.updateStatus(env.hostId, { ...statusFields({ hostId: env.hostId, region: env.region, status, healthz, sdk, tickets, startedAt, now: new Date().toISOString(), ec2 }), cadence: cadenceFields() });
     const health = `${verdict.status}:${verdict.reasons.join(",")}`;
     if (lastHealth !== null && health !== lastHealth) {
       await store.appendEvent({ at: new Date().toISOString(), kind: "health_changed", host: env.hostId, status: verdict.status, reasons: verdict.reasons, generation: verdict.generation, consecutiveSyncFailures: verdict.consecutiveSyncFailures, leaseExpiresAt: verdict.leaseExpiresAt });
@@ -285,15 +190,30 @@ async function main(): Promise<void> {
     lastHealth = health;
   };
 
-  // --- Approvals, over the daemon's socket ------------------------------------------------------------------------
+  // --- Approvals: this process staged the release; the desk's approval unlocks it --------------------------------
   const watcher = new ApprovalWatcher({
     hostId: env.hostId,
     storeId: storeIdNow,
     store,
-    // Null while the daemon does not answer: the watcher then touches nothing.
-    status: () => { const d = latest as DaemonStatusDoc | null; return d ? { generation: d.generation, stagedGeneration: d.stagedGeneration, unlockRequests: ap?.status().unlockRequests ?? [] } : null; },
-    unlock: async () => unlockResultOf(await daemon.request("unlock")),
-    isRefusal: (error) => isDaemonError(error) && error.code === "refused",
+    // Null until start() has a release or is holding a staged one: the watcher then touches nothing.
+    status: () => {
+      if (ap) {
+        const s = ap.status();
+        return { generation: s.generation, stagedGeneration: s.stagedGeneration, unlockRequests: s.unlockRequests };
+      }
+      return bootStaged ? { generation: 0, stagedGeneration: bootStaged.generation, unlockRequests: [] } : null;
+    },
+    unlock: async () => {
+      if (ap) return ap.unlock();
+      if (!bootStaged) return null;
+      const generation = bootStaged.generation;
+      bootStaged.activate();
+      releaseBoot?.();
+      releaseBoot = null;
+      bootStaged = null;
+      return { generation };
+    },
+    isRefusal: (error) => isStoreError(error),
     now: () => new Date().toISOString(),
     log,
   });
@@ -307,9 +227,7 @@ async function main(): Promise<void> {
   }
   await readDemoMode();
   await writeStatus().catch((error) => log({ event: "status_write_failed", reason: (error as Error).message }));
-  await attach();
-  const now = latest as DaemonStatusDoc | null;
-  log({ event: "serving", hostId: env.hostId, generation: now?.generation ?? null, stagedGeneration: now?.stagedGeneration ?? null, attached: ap !== null, settledApprovals: settled, ec2: ec2?.instanceId ?? null, demoMode: demoMode.mode, ticketIntervalSeconds: cadence.intervalSeconds });
+  log({ event: "serving", hostId: env.hostId, settledApprovals: settled, ec2: ec2?.instanceId ?? null, demoMode: demoMode.mode, ticketIntervalSeconds: cadence.intervalSeconds });
 
   // --- Tickets -----------------------------------------------------------------------------------------------------------
   const cursor = { last: null as string | null };
@@ -318,12 +236,10 @@ async function main(): Promise<void> {
     if (running) return;
     running = true;
     try {
-      const d = latest as DaemonStatusDoc | null;
-      if (!ap || !host || ap.generation === 0 || !d || d.generation <= 0) {
-        // Nothing verified to serve (a fresh host under unlock_required waiting for the desk's approval, or a daemon
-        // that stopped serving): say so, run nothing — and take nothing off the presenter's queue, so a queued ticket
-        // runs once the host serves.
-        if (from === "timer") log({ event: "ticket_skipped", reason: ap ? "no_verified_release" : "sdk_not_attached", from });
+      if (!ap || !host || ap.generation === 0) {
+        // Nothing verified to serve (a fresh host under unlock_required waiting for the desk's approval): say so,
+        // run nothing — and take nothing off the presenter's queue, so a queued ticket runs once the host serves.
+        if (from === "timer") log({ event: "ticket_skipped", reason: ap ? "no_verified_release" : "sdk_not_started", from });
         return;
       }
       const ticket = from === "queue" ? await nextQueuedTicket(store, env.hostId) : await nextInboxTicket(store, cursor);
@@ -353,20 +269,17 @@ async function main(): Promise<void> {
     }
   };
 
+  void attach();
   const timers = [
-    // The daemon's word every five seconds, then the watcher on it, then the SDK once there is something to attach
-    // to — and right after an activation, the row, so the card flips with the decision rather than at the next timer.
+    // Start (or retry) this process's own sync, then the watcher. The first staged release is held inside start()
+    // until the desk approves; a later one is ap.unlock(). The row flips with the decision, not at the next status timer.
     setInterval(() => void (async () => {
-      await refresh();
-      if (settled === -1 && latest) {
-        // The first reconcile ran with no daemon: settle the previous store's rows on the first reachable tick.
+      await attach();
+      if (settled === -1 && (ap || bootStaged)) {
         settled = await watcher.reconcile().catch(() => -1);
         if (settled >= 0) log({ event: "reconciled", settledApprovals: settled });
       }
       const action = await watcher.tick();
-      if (action === "activated") await refresh();
-      await detachIfStale();
-      await attach();
       if (action === "activated") await writeStatus().catch((error) => log({ event: "status_write_failed", reason: (error as Error).message }));
     })(), 5_000),
     setInterval(() => void writeStatus().catch((error) => log({ event: "status_write_failed", reason: (error as Error).message })), env.statusIntervalSeconds * 1000),
@@ -380,10 +293,10 @@ async function main(): Promise<void> {
   const stop = async (signal: string) => {
     for (const t of timers) clearInterval(t);
     log({ event: "stopping", signal, tickets });
-    // An unlock in flight settles its row before the process goes; the daemon keeps the release either way.
+    // An unlock in flight settles its row before the process goes; the store keeps the release either way.
     await watcher.inFlight?.catch(() => undefined);
     await store.appendEvent({ at: new Date().toISOString(), kind: "worker_stopped", host: env.hostId, signal, tickets }).catch(() => undefined);
-    daemon.close();
+    releaseBoot?.();
     if (ap) await ap.stop();
     process.exit(0);
   };

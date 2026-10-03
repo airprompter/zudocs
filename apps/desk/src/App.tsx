@@ -26,20 +26,20 @@ import { TicketView, routeRefusal, type RouteAvailability } from "./components/T
 import { Timeline } from "./components/Timeline";
 import { ROUTES, abTitle, mergeEvents, releaseSummary } from "./format";
 import { PAGE_LABEL, deskHref, mismatchRoute, newestHost, parseDeskRoute, ticketParam, type DeskRoute } from "./route";
-import { AIRGAP_START, CLIENT_RUN, DAEMON_CONNECT, DAEMON_GUARD, DAEMON_START, ENQUEUE_CALL, LAMBDA_START, POLICY_LINE, RUN_STEP, type Snippet } from "./snippets";
+import { AIRGAP_START, CLIENT_RUN, DAEMON_START, ENQUEUE_CALL, LAMBDA_START, POLICY_LINE, RUN_STEP, TELEMETRY_DAEMON, type Snippet } from "./snippets";
 
 export interface Notice { tone: "info" | "warn" | "error"; text: string }
 
 function snippetsFor(route: DeskRoute): readonly Snippet[] {
   switch (route) {
     case "architecture":
-      return [LAMBDA_START, DAEMON_CONNECT, DAEMON_START, DAEMON_GUARD, POLICY_LINE, AIRGAP_START];
+      return [LAMBDA_START, DAEMON_START, POLICY_LINE, TELEMETRY_DAEMON, AIRGAP_START];
     case "agent":
       return [RUN_STEP, LAMBDA_START, CLIENT_RUN];
     case "daemon":
-      return [DAEMON_CONNECT, DAEMON_START, DAEMON_GUARD, POLICY_LINE, ENQUEUE_CALL];
+      return [DAEMON_START, POLICY_LINE, TELEMETRY_DAEMON, ENQUEUE_CALL];
     case "operate":
-      return [LAMBDA_START, DAEMON_CONNECT, DAEMON_START, DAEMON_GUARD, POLICY_LINE, AIRGAP_START];
+      return [LAMBDA_START, DAEMON_START, POLICY_LINE, TELEMETRY_DAEMON, AIRGAP_START];
     default: {
       const unexpected: never = route;
       return unexpected;

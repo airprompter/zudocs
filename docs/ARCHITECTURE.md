@@ -27,7 +27,7 @@ are the product's brain and none of them are in this repository.
 Phase 1: the hosted zone and mail records, the landing page, sign-in, the budget, the trail, the CI deploy role.
 Phase 2: the prompts in AirPrompter (`PROMPTS.md`), the local registry seed and the laptop smoke.
 Phase 3: the us-east-1 host and the desk (`DESK.md`) — the API, its tables and key, the app, the Budgets action.
-Phase 4: the eu-west-1 host (`EU-WEST.md`) — `airprompterd` with a Node and a Python worker attached, the approvals
+Phase 4: the eu-west-1 host (`EU-WEST.md`) — a telemetry daemon, a Node and a Python worker that each load their own release, the approvals
 table and page, the wire function and its restore rule; the reply and escalation slots re-pinned to Nova 2 Lite
 while Luna is gated (generation 2 on dev, the first change that reached every host).
 Phase 5: ap-southeast-1 (`FLEET.md`) — the puller (`pullToDatastore` into the exchange bucket, the nudge queue as the

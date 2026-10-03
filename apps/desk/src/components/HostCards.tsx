@@ -25,7 +25,7 @@ function snippetFor(kind: string): { id: string; label: string; title: string } 
     case "lambda":
       return { id: "lambda-start", label: "how this function starts", title: TOOLTIPS.release };
     case "daemon":
-      return { id: "daemon-start", label: "how the workers attach", title: TOOLTIPS.daemon };
+      return { id: "daemon-start", label: "how this host runs", title: TOOLTIPS.daemon };
     case "airgapped":
       return { id: "airgap-start", label: "how this host starts offline", title: TOOLTIPS.airgap };
     case "puller":
@@ -72,14 +72,14 @@ function HostCard({ host, onBehind }: { host: HostStatus; onBehind?: (id: string
         <strong>{host.region}</strong> <span className="muted" title={daemon ? TOOLTIPS.daemon : undefined}>· {daemon ? "daemon host" : host.kind}</span>
         {asleep ? <span className="chip health-asleep" title={TOOLTIPS.power}>{power!.label}</span> : transition ? <span className="chip health-transition" title={TOOLTIPS.power}>{power!.label}</span> : <span className={`chip health-${z.status ?? "unknown"}`}>{z.status ?? "—"}</span>}
       </header>
-      {power && power.phase !== "awake" ? <p className="muted fine" title={TOOLTIPS.power}>{power.label} since {ago(power.since)} ({String(power.since).slice(11, 19)}Z) · by {power.by ?? "—"}{asleep ? " · the rows below are from before the sleep; only its volume bills" : " · the daemon re-reads its key from SSM and the workers re-attach"}</p> : null}
+      {power && power.phase !== "awake" ? <p className="muted fine" title={TOOLTIPS.power}>{power.label} since {ago(power.since)} ({String(power.since).slice(11, 19)}Z) · by {power.by ?? "—"}{asleep ? " · the rows below are from before the sleep; only its volume bills" : " · the daemon re-reads its key from SSM and each worker loads its release"}</p> : null}
       <dl className="kv">
         <div><dt>release</dt><dd>#{s.generation ?? "—"} · {effectiveApplyState(s) ?? "—"}{s.stagedGeneration ? <span className="staged"> · staged #{s.stagedGeneration} awaiting approval</span> : ""}{s.forcedDowngrade ? <span className="refusal"> · forced downgrade</span> : ""}{s.lastRefusal && !staleRefusal(s) ? <span className="refusal"> · refused: {s.lastRefusal}</span> : ""}</dd></div>
         <div><dt title={TOOLTIPS.storage}>store key</dt><dd><span className={`chip protection-${protection}`}>{protection}</span>{protection === "file_key" ? <span className="muted"> · a 0600 file beside the store — doctor warns</span> : null}</dd></div>
         <div><dt title={daemon ? TOOLTIPS.approval : undefined}>policy</dt><dd>{s.applyPolicy?.effective ?? "—"} <span className="muted">({s.applyPolicy?.source ?? "—"}{s.applyPolicy?.manifestSaid && s.applyPolicy.manifestSaid !== s.applyPolicy.effective ? `; the console says ${s.applyPolicy.manifestSaid}` : ""})</span></dd></div>
         <div><dt title={TOOLTIPS.lease}>lease</dt><dd>{s.leaseExpiresAt ? `${countdown(s.leaseExpiresAt)} · until ${String(s.leaseExpiresAt).slice(11, 19)}Z` : "—"}{s.leaseExpired ? <span className="refusal"> · expired</span> : ""}</dd></div>
         {daemon
-          ? <div><dt>contact</dt><dd>{ago(s.lastContactAt ?? null)} <span className="muted">· heartbeat by the daemon (not on its socket)</span></dd></div>
+          ? <div><dt>contact</dt><dd>{ago(s.lastContactAt ?? null)} <span className="muted">· reported by the worker</span></dd></div>
           : <div><dt>heartbeat</dt><dd>{ago(s.heartbeat?.lastAt ?? null)}{s.heartbeat?.lastRefusal ? ` · ${s.heartbeat.lastRefusal}` : ""}</dd></div>}
         <div><dt>sync</dt><dd>{s.lastSyncOutcome ?? "—"} · {ago(s.lastSyncAt ?? null)}{failures > 0 ? <span className={failures >= 3 ? "refusal" : "staged"}> · {failures} failure{failures === 1 ? "" : "s"} in a row</span> : ""}{staleRefusal(s) ? <span className="muted"> · last refusal {s.lastRefusal} (cleared by the next activation)</span> : ""}</dd></div>
         <div><dt>spool</dt><dd>{s.spool?.depthSegments ?? 0} seg · {s.spool?.depthBytes ?? 0} B{s.upload?.lastUploadAt ? ` · uploaded ${ago(s.upload.lastUploadAt)}` : ""}</dd></div>
@@ -90,11 +90,11 @@ function HostCard({ host, onBehind }: { host: HostStatus; onBehind?: (id: string
         <div><dt>sdk</dt><dd>{host.sdk}</dd></div>
         {daemon ? (
           <>
-            <div><dt>workers</dt><dd>{host.worker ? `node ${host.worker.sdk} · ${host.worker.tickets} ticket${host.worker.tickets === 1 ? "" : "s"} · ${host.worker.attached ? "attached" : "detached"}` : "node worker not reporting"}</dd></div>
-            <div><dt></dt><dd>{host.python ? `${host.python.sdk} · ${host.python.runs} run${host.python.runs === 1 ? "" : "s"} · ${host.python.attached ? "attached" : "detached"} · written ${ago(host.python.writtenAt)}` : "python worker not reporting"}</dd></div>
+            <div><dt>workers</dt><dd>{host.worker ? `node ${host.worker.sdk} · ${host.worker.tickets} ticket${host.worker.tickets === 1 ? "" : "s"} · ${host.worker.attached ? "serving" : "waiting"}` : "node worker not reporting"}</dd></div>
+            <div><dt></dt><dd>{host.python ? `${host.python.sdk} · ${host.python.runs} run${host.python.runs === 1 ? "" : "s"} · ${host.python.attached ? "serving" : "waiting"} · written ${ago(host.python.writtenAt)}` : "python worker not reporting"}</dd></div>
             <div><dt title={TOOLTIPS.demoMode}>cadence</dt><dd>{cadence ? <>a ticket every {Math.round(cadence.ticketIntervalSeconds / 60)} min{host.python?.cadence ? ` (python: ${Math.round(Number(host.python.cadence.ticketIntervalSeconds) / 60)} min)` : ""} · demo mode {cadence.demoMode}{cadence.demoMode === "on" && cadence.until ? ` until ${String(cadence.until).slice(11, 16)}Z` : ""}{cadence.reason && cadence.reason !== "absent" ? <span className="muted"> ({cadence.reason})</span> : null}{cadence.error ? <span className="refusal"> · the switch could not be read: {cadence.error}</span> : null}{cadence.readAt ? <span className="muted"> · read {ago(cadence.readAt)}</span> : null}</> : "not reported yet"}</dd></div>
             <div><dt title={TOOLTIPS.airgap}>imports</dt><dd>{host.imports ? `${host.imports.objects} export${host.imports.objects === 1 ? "" : "s"} in the exchange · ${host.imports.pending} pending · last pass ${ago(host.imports.lastPassAt)}${host.imports.last ? ` · last ${String(host.imports.last.outcome)} (${String(host.imports.last.uploaded ?? 0)} segment${Number(host.imports.last.uploaded ?? 0) === 1 ? "" : "s"})` : ""}` : "the import timer has not run yet"}</dd></div>
-            <div><dt>instance</dt><dd>{host.ec2 ? `${host.ec2.instanceId} · ${host.ec2.availabilityZone}` : "—"} · daemon {host.container?.instanceId?.slice(0, 12) ?? "—"}</dd></div>
+            <div><dt>instance</dt><dd>{host.ec2 ? `${host.ec2.instanceId} · ${host.ec2.availabilityZone}` : "—"} · sdk {host.container?.instanceId?.slice(0, 12) ?? "—"}</dd></div>
           </>
         ) : (
           <div><dt>container</dt><dd>{host.container?.instanceId?.slice(0, 12) ?? "—"} · {host.container?.invocations ?? 0} inv · {host.container?.coldStart ? "cold" : "warm"}</dd></div>

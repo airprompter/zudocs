@@ -22,6 +22,7 @@ import { isHostedRun, type AnyRun, type DirectProvider, type HostedRun, type Rou
 import { ROUTES, TOOLTIPS, ago, armLabel, checkLine, clock, latency, modelLabel, money, replyByline, routeLabel, score, syncLead, testLine, versionBadge } from "../format";
 import { Behind } from "./Behind";
 import { Fold } from "./Fold";
+import { IntegrationFlow } from "./IntegrationFlow";
 import { WhyThisText } from "./WhyThisText";
 
 export interface RouteAvailability {
@@ -234,6 +235,11 @@ function RunPanel({ run, busy, elsewhere, desk, enqueueNote, onBehind, onFeedbac
       {letter && !letter.error ? <p className="byline" title={TOOLTIPS.version}>{replyByline(letter.tag, letter.versionId, letter.generation, letter.arm)}</p> : null}
       <Fold title="How this reply got here">
         <div className="sync">
+          <IntegrationFlow label="How AirPrompter and Zudocs produced this reply" steps={[
+            { title: "AirPrompter release", detail: `Release #${letter?.generation ?? "—"} supplied the versioned prompt and checks.` },
+            { title: "Zudocs host", detail: `${run.host} ran ${letter?.tag ?? "the prompt"}${letter?.versionId ? ` ${letter.versionId}` : ""}${letter?.arm && letter.arm !== "none" ? ` for the ${armLabel(letter.arm)} group` : ""}.` },
+            { title: "Reply and evidence", detail: `${checks || "No checks on this step."}${letter?.observation?.latencyMs != null ? ` Answered in ${latency(letter.observation.latencyMs)}.` : ""}` },
+          ]} />
           <p>{syncLead(letter?.generation ?? null, desk?.generation ?? null)}{desk?.updatedAt ? ` AirPrompter last updated this desk ${ago(desk.updatedAt)}.` : ""}</p>
           {desk?.staged != null ? <p>Release #{desk.staged} is waiting. Replies keep using the release already running until it is approved.</p> : null}
           {letter ? <p title={TOOLTIPS.arm}>{testLine(letter.arm)}</p> : null}

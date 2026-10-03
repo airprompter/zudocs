@@ -10,8 +10,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Zudocs — documentation your customers actually read</title>
-  <meta name="description" content="Zudocs turns your product knowledge into documentation people find, read and trust. Hosted docs, search, permissions and a support desk that answers from your own pages.">
+  <title>Zudocs — a support desk powered by AirPrompter</title>
+  <meta name="description" content="See AirPrompter prompt releases reach the Zudocs support desk and shape a checked customer reply.">
   <link rel="stylesheet" href="styles.css">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
 </head>
@@ -20,20 +20,33 @@
     <a class="brand" href="/">Zu<span>docs</span></a>
     <nav>
       <a href="#product">Product</a>
-      <a href="#pricing">Pricing</a>
-      <a href="#how">How support works</a>
-      <a href="https://desk.zudocs.com">Sign in</a>
+      <a href="#how">Integration</a>
+      <a href="https://desk.zudocs.com">Support desk</a>
       <a class="cta" href="https://github.com/airprompter/zudocs">Source</a>
     </nav>
   </header>
 
   <main>
     <section class="hero">
-      <p class="eyebrow">Documentation, hosted</p>
-      <h1>Docs your customers actually read.</h1>
-      <p class="lede">Write in Markdown, publish in one click, and let search, permissions and a support desk that answers from your own pages do the rest. Zudocs is what a small product team uses instead of a wiki nobody updates.</p>
-      <!-- The desk is the demonstration; sign-in is Cognito's hosted UI, and self sign-up is off (the owner issues accounts). -->
-      <p class="actions"><a class="button" href="https://desk.zudocs.com">Open the support desk</a> <a class="quiet" href="#how">See how support works →</a></p>
+      <p class="eyebrow">Zudocs support · powered by AirPrompter</p>
+      <h1>From a prompt update to a customer reply.</h1>
+      <p class="lede">Zudocs is a fictional documentation company with a working support desk. AirPrompter owns its versioned prompts; Zudocs runs them on real hosts and shows what each ticket received.</p>
+      <p class="actions"><a class="button" href="https://desk.zudocs.com">Open the support desk</a> <a class="quiet" href="#how">See the integration →</a></p>
+      <p class="hero-note">Live release status and ticket runs are available after sign in.</p>
+    </section>
+
+    <section id="how" class="how" aria-labelledby="how-title">
+      <div class="how-heading">
+        <div><p class="eyebrow">One ticket, one traceable path</p><h2 id="how-title">How the integration works</h2></div>
+        <p>Follow a change from the prompt that was approved to the answer a customer sees.</p>
+      </div>
+      <ol class="integration-flow" aria-label="AirPrompter and Zudocs integration">
+        <li><span class="flow-number" aria-hidden="true">01</span><h3>Release in AirPrompter</h3><p>Versioned triage and reply prompts carry checks and any A/B split.</p></li>
+        <li><span class="flow-number" aria-hidden="true">02</span><h3>Load on Zudocs</h3><p>Each host verifies and applies the signed release through the Agent SDK.</p></li>
+        <li><span class="flow-number" aria-hidden="true">03</span><h3>Answer the ticket</h3><p>The desk runs the prompt and shows the reply, version and assigned variant.</p></li>
+        <li><span class="flow-number" aria-hidden="true">04</span><h3>See the evidence</h3><p>Checks, timing, tokens and feedback make each result inspectable.</p></li>
+      </ol>
+      <p class="how-note">The desk keeps the customer message and reply in front. Host rollout and SDK details are available when you open them. <a href="https://github.com/airprompter/zudocs">Read the source</a>.</p>
     </section>
 
     <section id="product" class="three">
@@ -48,21 +61,6 @@
       <div>
         <h2>Support</h2>
         <p>Tickets are triaged, drafted and escalated with help from prompts our team tunes without a deploy.</p>
-      </div>
-    </section>
-
-    <section id="how" class="how">
-      <h2>How support works here</h2>
-      <p>Every support ticket at Zudocs runs through three prompts — triage, reply and escalate. The prompts do not live in this app's code: they are governed in <a href="https://airprompter.com">AirPrompter</a>, versioned, checked against golden cases, rolled out gradually, and delivered to every Zudocs host in three regions the moment a change is approved. The desk shows exactly which version answered each ticket and what came back.</p>
-      <p>That is the point of Zudocs: it is a real deployment of the AirPrompter Agent SDK, in the open, so you can see how a prompt change reaches running software and how the results come back.</p>
-    </section>
-
-    <section id="pricing" class="pricing">
-      <h2>Plans</h2>
-      <div class="plans">
-        <div class="plan"><h3>Starter</h3><p class="price">$0</p><p>One space, public docs, community support.</p></div>
-        <div class="plan featured"><h3>Team</h3><p class="price">$24<span>/seat/month</span></p><p>Private spaces, permissions, the support desk.</p></div>
-        <div class="plan"><h3>Business</h3><p class="price">Talk to us</p><p>SSO, audit logs, a dedicated region.</p></div>
       </div>
     </section>
   </main>

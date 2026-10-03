@@ -15,15 +15,15 @@ export function DaemonSummary({ host, onBehind }: { host: HostStatus | null; onB
     return (
       <p className="muted daemon-missing">
         no daemon host has reported
-        {onBehind ? <> · <Behind id="daemon-start" onOpen={onBehind} title={TOOLTIPS.daemon}>how the workers attach</Behind></> : null}
+        {onBehind ? <> · <Behind id="daemon-start" onOpen={onBehind} title={TOOLTIPS.daemon}>how this host runs</Behind></> : null}
       </p>
     );
   }
   const status = host.status ?? {};
   const protection = String(status.storageProtection ?? "—");
   const power = host.powerView ?? null;
-  const node = host.worker?.attached ? "node attached" : "node not attached";
-  const python = host.python ? (host.python.attached ? "python attached" : "python not attached") : "python not reporting";
+  const node = host.worker?.attached ? "node serving" : "node waiting";
+  const python = host.python ? (host.python.attached ? "python serving" : "python waiting") : "python not reporting";
   return (
     <article className="host daemon-summary">
       <header>

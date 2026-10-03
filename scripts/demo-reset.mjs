@@ -95,7 +95,7 @@ say("3. policies");
   if (east?.effective === "auto") found(`us-east: auto (${east.source})`);
   else if (dryRun) found(`us-east: would set auto (now ${east?.effective} ${east?.source})`);
   else { const r = await desk.api("POST", "/presenter/policy", { value: "auto" }); did(`us-east: ${r.json.message ?? JSON.stringify(r.json).slice(0, 200)}`); }
-  found("eu-west: the daemon runs --apply-policy unlock_required (its unit's flag); no drill changes it, nothing to put back");
+  found("eu-west: the worker pins unlock_required; no drill changes it, nothing to put back");
 }
 
 // --- 3b. a replay in flight keeps writing runs for up to five minutes: let it finish before the tables are cleared ------

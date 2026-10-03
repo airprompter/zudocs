@@ -9,7 +9,7 @@
  * the host writes the row, `POST /approvals/{id}/approve` records the owner's decision exactly once (a repeat
  * answers with the row as it stands; a row the host has moved past — a newer generation staged on the same store,
  * or the host's own row saying something else is staged — answers `409 approval_stale` and is not approved), and
- * the host activates through its daemon and settles the row. Phase 6 adds
+ * the host's SDK activates it and settles the row. Phase 6 adds
  * the hosted staging run (`POST /tickets/{id}/hosted-run`, `hosted.ts`), the per-arm results (`GET /arms`), the
  * approval rows enriched with the ramp plan the us-east host read from the same signed manifest, and four presenter
  * actions: `host_cli` (an allowlisted `zudocs-cli` command on the eu-west host through Run Command), `policy` (this
@@ -337,7 +337,7 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       if (!decided.row) return { statusCode: 404, body: { error: "no_such_approval" } };
       if (decided.ok) {
         await store.appendEvent({ at, kind: "approval_decided", host: env.hostId, approvalId: decided.row.approvalId, forHost: decided.row.hostId, generation: decided.row.generation, decision: "approved", by });
-        return { statusCode: 200, body: { approval: decided.row, already: false, message: `release #${decided.row.generation} approved for ${decided.row.hostId}; the host activates it through its daemon and the card flips when it has` } };
+        return { statusCode: 200, body: { approval: decided.row, already: false, message: `release #${decided.row.generation} approved for ${decided.row.hostId}; the host's worker applies it and the card flips when it has` } };
       }
       return { statusCode: 200, body: { approval: decided.row, already: true, message: decided.row.decision === "pending" ? "that approval changed under you; read it again" : `release #${decided.row.generation} on ${decided.row.hostId} is already ${decided.row.decision}${decided.row.decidedBy ? ` (by ${decided.row.decidedBy})` : ""}` } };
     }

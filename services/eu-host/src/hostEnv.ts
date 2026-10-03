@@ -1,12 +1,12 @@
 /**
  * The worker's configuration, from `/etc/airprompter/zudocs.env` (systemd's EnvironmentFile; identifiers, table
- * names, regions, cadences — never a key: the Agent key lives in the daemon's own 0600 file and no worker process
- * has it). A missing name is an error that says which, so a mis-rendered boot fails loudly at the first start.
+ * names, regions, cadences). The Agent key arrives from the daemon's env file, which systemd injects; this process
+ * syncs its own release with it. A missing name is an error that says which, so a mis-rendered boot fails loudly.
  *
  * @example
  * ```ts
  * const env = readHostEnv(process.env);   // throws "host env: TICKETS_TABLE is missing"
- * env.stateDir;                           // "/var/lib/airprompter" — the daemon's store; this process attaches, never opens it
+ * env.stateDir;                           // "/var/lib/airprompter" — this process's store; the daemon only ships the spool
  * env.ticketIntervalSeconds;              // 3600 idle; env.demoTicketIntervalSeconds (120) while the demo-mode parameter says on
  * ```
  */
@@ -26,6 +26,11 @@ export interface HostEnv {
     readonly environment: "dev" | "staging" | "prod";
     readonly hostedEnvironment: "dev" | "staging" | "prod";
     readonly rootJwkPath: string;
+    readonly baseUrl: string;
+    readonly rootUrl: string;
+    readonly edgePointerUrl: string;
+    /** The Agent key. Present when systemd injected the daemon's env file. Never logged. */
+    readonly apiKey: string | null;
   };
   readonly dailyRunCap: number;
   /** Seconds between the worker's own ticket runs when idle (a queued ticket runs sooner; demo mode shortens it). */
@@ -66,7 +71,7 @@ const parameterName = (env: NodeJS.ProcessEnv, name: string, fallback: string): 
 };
 
 export function readHostEnv(env: NodeJS.ProcessEnv = process.env): HostEnv {
-  if (env.AIRPROMPTER_AGENT_KEY) throw new Error("host env: AIRPROMPTER_AGENT_KEY is set in a worker's environment; only the daemon holds the key");
+  const apiKey = env.AIRPROMPTER_AGENT_KEY?.trim() || null;
   const cap = Number(env.ZUDOCS_DAILY_RUN_CAP ?? "2000");
   if (!Number.isInteger(cap) || cap < 1) throw new Error("host env: ZUDOCS_DAILY_RUN_CAP must be a positive integer");
   return Object.freeze({
@@ -91,6 +96,10 @@ export function readHostEnv(env: NodeJS.ProcessEnv = process.env): HostEnv {
       environment: target(need(env, "AIRPROMPTER_ENVIRONMENT"), "AIRPROMPTER_ENVIRONMENT"),
       hostedEnvironment: target(need(env, "AIRPROMPTER_HOSTED_ENVIRONMENT"), "AIRPROMPTER_HOSTED_ENVIRONMENT"),
       rootJwkPath: need(env, "AIRPROMPTER_ROOT_JWK_PATH"),
+      baseUrl: need(env, "AIRPROMPTER_BASE_URL"),
+      rootUrl: need(env, "AIRPROMPTER_ROOT_URL"),
+      edgePointerUrl: need(env, "AIRPROMPTER_EDGE_POINTER_URL"),
+      apiKey,
     }),
     dailyRunCap: cap,
     ticketIntervalSeconds: seconds(env, "ZUDOCS_TICKET_INTERVAL_SECONDS", 3600, 30),

@@ -1,6 +1,6 @@
 /**
  * The approvals watcher against a fake store and a scripted daemon: a staged generation opens one row, a decision
- * unlocks through the daemon and settles the row, a restart resumes the same row, a replaced store (a new instance
+ * unlocks and settles the row, a restart resumes the same row, a replaced store (a new instance
  * staging the same generation) gets a fresh row and the old one is settled, an unlock on the host's shell is seen
  * and settled as superseded, a newer generation staged in place of a pending one settles it superseded, a row the
  * desk's reset cleared under the watcher is opened again for the generation still staged, a lost socket during an unlock is transient (the decision stands), a refused unlock is
@@ -127,7 +127,7 @@ test("a store wiped under a live watcher (the daemon restarted on a fresh store)
   assert.ok(h.logs.some((l) => l.event === "approval_store_replaced"));
 });
 
-test("the owner's approval makes the watcher unlock through the daemon, settle the row activated and write release_activated with the decider", async () => {
+test("the owner's approval makes the watcher unlock, settle the row activated and write release_activated with the decider", async () => {
   const h = harness();
   h.daemon.staged = 2;
   await h.watcher.tick();

@@ -76,53 +76,44 @@ export const CLIENT_RUN: Snippet = {
   "marks": []
 };
 
-export const DAEMON_CONNECT: Snippet = {
-  "id": "daemon-connect",
-  "file": "services/eu-host/src/worker.ts",
-  "caption": "What you write",
-  "text": "DaemonClient.connect({ socketPath: this.socketPath, agentId: this.scope.agentId, target: this.scope.target, sdk: `zudocs-worker/${WORKER_VERSION}` })",
-  "marks": [
-    {
-      "needle": "DaemonClient.connect",
-      "kind": "write"
-    }
-  ]
-};
-
 export const DAEMON_START: Snippet = {
   "id": "daemon-start",
   "file": "services/eu-host/src/worker.ts",
   "caption": "What you write",
-  "text": "const agent = await AirPrompterAgent.start({\n        organizationId: env.airprompter.organizationId,\n        agentId: env.airprompter.agentId,\n        target: env.airprompter.environment,\n        stateDir: env.stateDir,\n        root: { pinned: rootJwk as never, hostedEnvironment: env.airprompter.hostedEnvironment },\n        sync: { mode: \"daemon\", daemonSocketPath: socketPath },\n        models: [...MODELS],\n        variables: {\n          customer_tier: { resolve: async ({ subject }) => (subject ? (await store.getCustomer(subject))?.tier : undefined), trust: \"operator\", timeoutMs: 1500 },\n        },\n        logger: (event) => log({ source: \"airprompter-sdk\", ...event }),\n      });",
+  "text": "const agent = await AirPrompterAgent.start({\n        organizationId: env.airprompter.organizationId,\n        agentId: env.airprompter.agentId,\n        target: env.airprompter.environment,\n        apiKey: env.airprompter.apiKey!,\n        baseUrl: env.airprompter.baseUrl,\n        stateDir: env.stateDir,\n        root: { pinned: rootJwk as never, hostedEnvironment: env.airprompter.hostedEnvironment },\n        sync: { mode: \"resident\", pollSeconds: 30, edgePointerUrl: env.airprompter.edgePointerUrl, rootUrl: env.airprompter.rootUrl },\n        apply: {\n          policy: \"unlock_required\",\n          onStaged: (staged) => {\n            bootStaged = { generation: staged.generation, activate: staged.activate };\n            if (ap) return;\n            // start() throws while nothing is active, so the first staged release waits here for the desk.\n            return new Promise<void>((resolve) => {\n              releaseBoot = resolve;\n            });\n          },\n        },\n        telemetry: { upload: false },\n        models: [...MODELS],\n        variables: {\n          customer_tier: { resolve: async ({ subject }) => (subject ? (await store.getCustomer(subject))?.tier : undefined), trust: \"operator\", timeoutMs: 1500 },\n        },\n        logger: (event) => log({ source: \"airprompter-sdk\", ...event }),\n      });",
   "marks": [
     {
-      "needle": "mode: \"daemon\"",
+      "needle": "mode: \"resident\"",
       "kind": "write"
-    }
-  ]
-};
-
-export const DAEMON_GUARD: Snippet = {
-  "id": "daemon-guard",
-  "file": "services/eu-host/src/worker.ts",
-  "caption": "What you write",
-  "text": "if (agent.status().source !== \"daemon\") {\n        // The socket vanished between the check and the start: never a second, keyless, in-process sync.\n        log({ event: \"attach_fell_back\", source: agent.status().source });\n        await agent.stop();\n        return;\n      }",
-  "marks": [
+    },
     {
-      "needle": "source !== \"daemon\"",
-      "kind": "write"
+      "needle": "policy: \"unlock_required\"",
+      "kind": "host"
     }
   ]
 };
 
 export const POLICY_LINE: Snippet = {
   "id": "policy-line",
-  "file": "services/eu-host/host/units/airprompterd.service",
+  "file": "services/eu-host/src/worker.ts",
   "caption": "What this host adds",
-  "text": "  --apply-policy unlock_required \\",
+  "text": "          policy: \"unlock_required\",",
   "marks": [
     {
-      "needle": "--apply-policy unlock_required",
+      "needle": "policy: \"unlock_required\"",
+      "kind": "host"
+    }
+  ]
+};
+
+export const TELEMETRY_DAEMON: Snippet = {
+  "id": "telemetry-daemon",
+  "file": "services/eu-host/host/units/airprompterd.service",
+  "caption": "What this host adds",
+  "text": "ExecStart=/usr/local/bin/airprompter daemon \\",
+  "marks": [
+    {
+      "needle": "airprompter daemon",
       "kind": "host"
     }
   ]

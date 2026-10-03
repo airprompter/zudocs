@@ -1,14 +1,13 @@
-"""The Zudocs Python worker on the eu-west host: the public Python SDK (``airprompter-agent``) attached to the same
-``airprompterd`` as the Node worker — one daemon, one store, one key that no worker holds — running one ticket every
-two hours idle (every five minutes while the demo-mode parameter it reads every minute says on; the same fail-closed
-rules as the Node worker's ``demoMode.ts``) through LiteLLM to Bedrock (Converse, the instance role's credentials): ``support.reply`` rendered
-with ``customer_tier`` from the desk's own table, the model called with the release's inference settings, the
-observation filed by the SDK's LiteLLM callback, the declared checks run, feedback from their verdicts, the record
-written to the desk's runs table with ``host: eu-west-1/ec2`` and the Python SDK's name, and this process's part of
-the host's status row (``python``) every thirty seconds. Waits for the daemon's socket, and for the daemon to serve a
-generation (on a fresh host the first release lands staged for the desk to approve; an SDK cannot attach before
-that — the Node worker minds the approval), before it starts the SDK; exits 3 without a daemon (systemd retries).
-Logs JSON lines with ids and counts — never a render, a ticket or an answer.
+"""The Zudocs Python worker on the eu-west host: the public Python SDK (``airprompter-agent``) loads its own release
+beside the Node worker. The telemetry daemon ships the spool and serves nothing. This process syncs with the Agent
+key systemd injects, pins ``unlock_required``, and retries ``start`` while the first release is still staged (the
+Node worker minds the desk's approval). It runs one ticket every two hours idle (every five minutes while the
+demo-mode parameter it reads every minute says on; the same fail-closed rules as the Node worker's ``demoMode.ts``)
+through LiteLLM to Bedrock (Converse, the instance role's credentials): ``support.reply`` rendered with
+``customer_tier`` from the desk's own table, the model called with the release's inference settings, the observation
+filed by the SDK's LiteLLM callback, the declared checks run, feedback from their verdicts, the record written to
+the desk's runs table with ``host: eu-west-1/ec2`` and the Python SDK's name, and this process's part of the host's
+status row (``python``) every thirty seconds. Logs JSON lines with ids and counts — never a render, a ticket or an answer.
 
     $ /opt/zudocs/venv/bin/python /opt/zudocs/pyworker.py      # as the airprompter user, zudocs.env in the environment
 """
@@ -32,7 +31,6 @@ import litellm
 from airprompter_agent import AirPrompterAgent, SDK_NAME
 from airprompter_agent.integrations.litellm import AirPrompterLiteLLMCallback, litellm_inference, litellm_metadata
 from airprompter_agent_core import SDK_VERSION
-from airprompter_agent_sync.sync.daemon import DaemonClient, daemon_socket_path
 from airprompter_agent_telemetry.spool.writer import Observation
 
 # The models this worker can call and how LiteLLM names them on Bedrock's Converse API. The release's name is the
@@ -230,8 +228,9 @@ def variable_origins(declared: list[dict[str, Any]], values: dict[str, Any], sou
 
 
 def main() -> None:
-    if os.environ.get("AIRPROMPTER_AGENT_KEY"):
-        raise SystemExit("host env: AIRPROMPTER_AGENT_KEY is set in a worker's environment; only the daemon holds the key")
+    api_key = os.environ.get("AIRPROMPTER_AGENT_KEY", "").strip()
+    if not api_key:
+        raise SystemExit("host env: AIRPROMPTER_AGENT_KEY is not set; this process syncs its own release")
     host_id = need("ZUDOCS_HOST_ID")
     state_dir = need("AIRPROMPTER_STATE_DIR")
     agent_id = need("AIRPROMPTER_AGENT")
@@ -249,57 +248,33 @@ def main() -> None:
         root = json.load(f)
     if "d" in root:
         raise SystemExit("the pinned root carries a private member")
-    socket_path = daemon_socket_path(state_dir=state_dir, agent_id=agent_id, target=target)
 
-    # The daemon first: its socket (up to two minutes), then a generation to attach to — a fresh store stages the
-    # first release, and the SDK's attach needs an active slot. Starting the SDK before that would fall back to an
-    # in-process, keyless sync and create a store of its own; this process never does.
-    waited = 0.0
-    client: Optional[DaemonClient] = None
-    while client is None and waited < 120:
-        client = DaemonClient.connect(socket_path=socket_path, agent_id=agent_id, target=target, sdk=f"zudocs-pyworker/{WORKER_VERSION}")
-        if client is None:
-            time.sleep(3)
-            waited += 3
-    if client is None:
-        log(event="daemon_absent", socketPath=socket_path)
-        sys.exit(3)
-    announced = False
+    # This process syncs its own release. The first one under unlock_required is staged until the Node worker's
+    # approval unlocks the store; start refuses until something is active, and this loop waits that out.
     while True:
         try:
-            doc = client.request("status")
-        except Exception as error:  # noqa: BLE001 — the daemon restarted; reconnect and ask again
-            log(event="daemon_status_unavailable", reason=str(error)[:200])
-            client.close()
-            client = None
-            while client is None:
-                time.sleep(3)
-                client = DaemonClient.connect(socket_path=socket_path, agent_id=agent_id, target=target, sdk=f"zudocs-pyworker/{WORKER_VERSION}")
-            continue
-        if int(doc.get("generation") or 0) > 0:
+            ap = AirPrompterAgent.start(
+                organization_id=need("AIRPROMPTER_ORG"),
+                agent_id=agent_id,
+                target=target,
+                api_key=api_key,
+                base_url=need("AIRPROMPTER_BASE_URL"),
+                root={"pinned": root, "hosted_environment": need("AIRPROMPTER_HOSTED_ENVIRONMENT")},
+                state_dir=state_dir,
+                sync={"mode": "resident", "poll_seconds": 30, "edge_pointer_url": need("AIRPROMPTER_EDGE_POINTER_URL"), "root_url": need("AIRPROMPTER_ROOT_URL")},
+                apply={"policy": "unlock_required"},
+                telemetry={"upload": False},
+                models=MODELS,
+                variables={"customer_tier": {"resolve": lambda ctx: (tables.get_customer(ctx.subject) or {}).get("tier") if getattr(ctx, "subject", None) else None, "trust": "operator", "timeout_seconds": 1.5}},
+                logger=lambda event: log(source="airprompter-sdk", **event),
+            )
             break
-        if not announced:
-            log(event="awaiting_first_approval", stagedGeneration=doc.get("stagedGeneration"), applyPolicy=(doc.get("applyPolicy") or {}).get("effective"))
-            announced = True
-        time.sleep(5)
-    client.close()
-
-    ap = AirPrompterAgent.start(
-        organization_id=need("AIRPROMPTER_ORG"),
-        agent_id=agent_id,
-        target=target,
-        root={"pinned": root, "hosted_environment": need("AIRPROMPTER_HOSTED_ENVIRONMENT")},
-        state_dir=state_dir,
-        sync={"mode": "daemon", "daemon_socket_path": socket_path},
-        models=MODELS,
-        variables={"customer_tier": {"resolve": lambda ctx: (tables.get_customer(ctx.subject) or {}).get("tier") if getattr(ctx, "subject", None) else None, "trust": "operator", "timeout_seconds": 1.5}},
-        logger=lambda event: log(source="airprompter-sdk", **event),
-    )
+        except Exception as error:  # noqa: BLE001 — only a store with nothing active yet is retried
+            if getattr(error, "code", None) != "no_verified_release":
+                raise
+            log(event="sdk_waiting", reason=str(error)[:300])
+            time.sleep(5)
     status = ap.status()
-    if status.source != "daemon" or not (status.daemon or {}).get("attached"):
-        log(event="daemon_absent", socketPath=socket_path)
-        ap.stop()
-        sys.exit(3)
     callback = ReleaseNamedCallback(ap)
     litellm.callbacks = [callback]
     litellm.suppress_debug_info = True
@@ -346,12 +321,12 @@ def main() -> None:
     def write_status() -> None:
         s = ap.status()
         h = ap.healthz()
-        tables.merge_status(host_id, {"instanceId": s.instance_id, "sdk": sdk, "startedAt": started_at, "writtenAt": now_iso(), "generation": s.generation, "stagedGeneration": s.staged_generation, "applyState": s.apply_state, "source": s.source, "attached": bool((s.daemon or {}).get("attached")), "healthz": h.get("status"), "reasons": h.get("reasons", []), "runs": runs, "lastRunAt": last_run_at, "variables": {"sources": list(s.variables.get("sources", [])) if isinstance(s.variables, dict) else []}, "cadence": cadence_fields()})
+        tables.merge_status(host_id, {"instanceId": s.instance_id, "sdk": sdk, "startedAt": started_at, "writtenAt": now_iso(), "generation": s.generation, "stagedGeneration": s.staged_generation, "applyState": s.apply_state, "source": s.source, "attached": s.generation > 0, "healthz": h.get("status"), "reasons": h.get("reasons", []), "runs": runs, "lastRunAt": last_run_at, "variables": {"sources": list(s.variables.get("sources", [])) if isinstance(s.variables, dict) else []}, "cadence": cadence_fields()})
 
     tables.append_event({"at": started_at, "kind": "worker_started", "host": host_id, "sdk": sdk, "instanceId": status.instance_id, "generation": status.generation, "source": status.source, "language": "python"})
     ap.on_change(lambda change: tables.append_event({"at": now_iso(), "kind": "release_changed", "host": host_id, "generation": change.generation, "stagedGeneration": change.staged_generation, "applyState": ap.status().apply_state, "seenBy": "python"}))
     read_demo_mode()
-    log(event="serving", hostId=host_id, generation=status.generation, stagedGeneration=status.staged_generation, socketPath=socket_path, sdk=sdk, intervalSeconds=interval, demoMode=demo["mode"])
+    log(event="serving", hostId=host_id, generation=status.generation, stagedGeneration=status.staged_generation, source=status.source, sdk=sdk, intervalSeconds=interval, demoMode=demo["mode"])
     write_status()
 
     def run_one() -> None:

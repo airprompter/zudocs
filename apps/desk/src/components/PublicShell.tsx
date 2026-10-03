@@ -10,9 +10,10 @@
 import { useState } from "react";
 import { CodeDrawer } from "./CodeDrawer";
 import { Behind } from "./Behind";
-import { AIRGAP_START, DAEMON_CONNECT, DAEMON_GUARD, DAEMON_START, LAMBDA_START, POLICY_LINE, RUN_STEP } from "../snippets";
+import { IntegrationFlow } from "./IntegrationFlow";
+import { AIRGAP_START, DAEMON_START, LAMBDA_START, POLICY_LINE, RUN_STEP, TELEMETRY_DAEMON } from "../snippets";
 
-const SNIPPETS = [RUN_STEP, LAMBDA_START, DAEMON_CONNECT, DAEMON_START, DAEMON_GUARD, POLICY_LINE, AIRGAP_START];
+const SNIPPETS = [RUN_STEP, LAMBDA_START, DAEMON_START, POLICY_LINE, TELEMETRY_DAEMON, AIRGAP_START];
 
 export function PublicShell({ environment, agentId, onSignIn, problem }: { environment: string; agentId: string; onSignIn: () => void; problem?: string }) {
   const [sheet, setSheet] = useState(false);
@@ -32,10 +33,18 @@ export function PublicShell({ environment, agentId, onSignIn, problem }: { envir
       <div className="columns">
         <main className="centre support-welcome">
           {problem ? <p className="problem">{problem}</p> : null}
-          <p className="eyebrow">Documentation, hosted</p>
-          <h1>Support that answers from your docs.</h1>
-          <p className="lede">Zudocs is Publish, Search and Support. Team and Business customers write in about PDF export, search, SSO and billing. Every ticket is triaged and answered from the pages they already host — the prompts live in AirPrompter, not in this app.</p>
+          <p className="eyebrow">Zudocs support · powered by AirPrompter</p>
+          <h1>From a prompt update to a customer reply.</h1>
+          <p className="lede">Zudocs customers ask about their docs. AirPrompter supplies the versioned prompts; the Zudocs desk uses them to triage, answer and check each ticket.</p>
           <p className="actions"><button type="button" className="button" onClick={onSignIn}>Sign in to the inbox</button></p>
+          <section className="welcome-flow" aria-labelledby="welcome-flow-title">
+            <h2 id="welcome-flow-title">How the two systems work together</h2>
+            <IntegrationFlow label="AirPrompter to Zudocs support" steps={[
+              { title: "AirPrompter releases", detail: "A signed version carries the prompts, checks and any A/B split." },
+              { title: "Zudocs loads it", detail: "The Agent SDK gives this desk the release its host has applied." },
+              { title: "A ticket gets a reply", detail: "The desk shows the answer, its prompt version and the results of its checks." },
+            ]} />
+          </section>
           <p className="fine muted">
             <Behind id="run-step" onOpen={openBehind}>how a reply is written</Behind>
             {" · "}

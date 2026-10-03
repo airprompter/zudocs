@@ -62,9 +62,9 @@ export type ApprovalDecision = "pending" | "approved" | "activated" | "supersede
 
 /**
  * A release staged on a host under `unlock_required`, waiting for the owner. The host writes it (`pending`), the desk
- * decides (`approved`), the host activates through the daemon and settles it (`activated`, or `failed` with the
+ * decides (`approved`), the host worker activates through its SDK and settles it (`activated`, or `failed` with the
  * SDK's reason); a release that went live another way (an operator's `airprompter unlock` on the host's shell, an
- * update window) or was overtaken settles as `superseded`. The id is the host, the generation and the daemon's
+ * update window) or was overtaken settles as `superseded`. The id is the host, the generation and the worker's
  * store, so a restarted worker finds its own row, a replaced instance gets a fresh one, and the desk's approve is
  * idempotent. A `failed` row is re-opened only by a restarted worker — an operator's deliberate retry, never a loop.
  */

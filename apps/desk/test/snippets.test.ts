@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { extractBalanced, extractLine } from "../src/excerpt";
-import { AIRGAP_START, CLIENT_RUN, DAEMON_CONNECT, DAEMON_GUARD, DAEMON_START, ENQUEUE_CALL, LAMBDA_START, POLICY_LINE, RUN_STEP } from "../src/snippets";
+import { AIRGAP_START, CLIENT_RUN, DAEMON_START, ENQUEUE_CALL, LAMBDA_START, POLICY_LINE, RUN_STEP, TELEMETRY_DAEMON } from "../src/snippets";
 
 const repo = join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "..");
 const read = (path: string) => readFileSync(join(repo, path), "utf8");
@@ -37,16 +37,14 @@ test("each snippet is the source slice, not a shortened sample", () => {
   assert.equal(CLIENT_RUN.text, extractLine(api, "runTicket:"));
   assert.ok(CLIENT_RUN.text.includes("/tickets/${encodeURIComponent(ticketId)}/run"));
 
-  assert.equal(DAEMON_CONNECT.text, extractBalanced(worker, "DaemonClient.connect({"));
   assert.equal(DAEMON_START.text, extractBalanced(worker, "const agent = await AirPrompterAgent.start({"));
-  assert.equal(DAEMON_GUARD.text, extractBalanced(worker, 'if (agent.status().source !== "daemon")'));
-  assert.ok(!DAEMON_START.text.includes("apiKey"), "the attached worker passes no apiKey");
-  assert.ok(DAEMON_START.text.includes('mode: "daemon"'));
-  assert.ok(worker.indexOf(DAEMON_GUARD.text) > worker.indexOf(DAEMON_START.text));
+  assert.ok(DAEMON_START.text.includes("apiKey:"));
+  assert.ok(DAEMON_START.text.includes('mode: "resident"'));
+  assert.ok(DAEMON_START.text.includes('policy: "unlock_required"'));
 
-  assert.equal(POLICY_LINE.text, extractLine(unit, "--apply-policy unlock_required"));
-  assert.ok(POLICY_LINE.text.includes("--apply-policy unlock_required"));
-  assert.ok(!POLICY_LINE.text.includes("EnvironmentFile") && !POLICY_LINE.text.includes("zudocs-agent-key"));
+  assert.equal(POLICY_LINE.text, extractLine(worker, 'policy: "unlock_required"'));
+  assert.ok(POLICY_LINE.text.includes('policy: "unlock_required"'));
+  assert.equal(TELEMETRY_DAEMON.text, extractLine(unit, "ExecStart=/usr/local/bin/airprompter daemon"));
 
   assert.equal(AIRGAP_START.text, extractBalanced(airgap, "const agent = await AirPrompterAgent.start({"));
   assert.ok(AIRGAP_START.text.includes('mode: "offline"'));

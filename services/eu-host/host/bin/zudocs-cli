@@ -1,7 +1,7 @@
 #!/bin/bash
-# The operator's CLI on this host: runs `airprompter <command>` as the daemon's user (the socket and the store are
-# its, 0600), scoped to this host's Agent and environment from zudocs.env, against the same state directory the
-# daemon serves — so `unlock`, `rollback` and `policy` go through the daemon and every attached worker follows.
+# The operator's CLI on this host: runs `airprompter <command>` as the airprompter user, scoped to this host's
+# Agent and environment from zudocs.env, against the workers' store. In SDK 0.3.0, `unlock`, `rollback` and
+# `policy` act on that store. The pinned binary is cli/v0.3.0.
 # `doctor` gets the Agent key in its environment (from the root-only env file; run as root), never on argv and
 # never echoed, so its source check runs; every other command takes no key. Prints what the CLI prints. The drop
 # to the daemon's user is `runuser -u` (util-linux-core, on every AL2023 image), which keeps the environment.

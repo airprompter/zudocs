@@ -22,7 +22,7 @@ the honest notes — what the SDK cannot do on this host yet, and how the desk s
 | Telemetry | The SDK's normal upload to AirPrompter, and the tee: the same segment's rows as CloudWatch EMF lines on stdout, only after AirPrompter accepted the segment; dimensions capped to `tag`, `versionId`, `arm`, `status` | `src/tee.ts` |
 | Cap | 2,000 runs per UTC day (an atomic DynamoDB counter, refused at the line); HTTP 429 `daily_cap` with the count — nothing is simulated | `src/store.ts`, `src/handler.ts` |
 | Status and timeline | Every run and presenter action writes `status()` + `healthz()` to the status table (one row per host); `onChange` and every action append to the events table (partitioned by UTC day). The eu-west host writes the same tables across regions (`docs/EU-WEST.md`) | `src/runtime.ts`, `src/store.ts` |
-| Approvals | The eu-west host's staged releases: the host opens the row, `POST /approvals/{id}/approve` flips it `pending → approved` exactly once under the signer's e-mail (a repeat answers `already: true` with the row as it stands; a row the host has moved past — a newer generation staged on the same store, or the host's later status row naming another staged generation — answers `409 approval_stale` and records nothing), the host activates through its daemon and settles it | `src/store.ts`, `src/handler.ts` |
+| Approvals | The eu-west host's staged releases: the host opens the row, `POST /approvals/{id}/approve` flips it `pending → approved` exactly once under the signer's e-mail (a repeat answers `already: true` with the row as it stands; a row the host has moved past — a newer generation staged on the same store, or the host's later status row naming another staged generation — answers `409 approval_stale` and records nothing), then the worker activates it through its Agent SDK and settles the row | `src/store.ts`, `src/handler.ts` |
 
 Routes (all behind the Cognito JWT authorizer; `src/router.ts` is what the stack registers):
 `GET /tickets`, `GET /tickets/{id}`, `POST /tickets/{id}/run`, `POST /tickets/{id}/escalate`,
@@ -132,7 +132,7 @@ on `/` — the support inbox. The pages are client routes (CloudFront already se
   Signed out, the welcome and Sign in; nothing calls the API. *how this reply is written* is
   inside that disclosure and opens `runStep`. Route compare, replay and the presenter live on Operator.
 - `/daemon` Europe — the same inbox; the action is enqueue. Approvals live here.
-  *why this host waits* opens `--apply-policy unlock_required`.
+  *why this host waits* opens `policy: "unlock_required"`.
 - `/fleet` Hosts — the status rows. A quiet *how this host starts* opens the source slice.
 - `/operate` — release bar, presenter, host cards, and the timeline. Europe, Hosts and Operator are quiet links.
 

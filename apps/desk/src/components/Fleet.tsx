@@ -21,8 +21,8 @@ export function Fleet({ onBehind, note }: { onBehind: (id: string) => void; note
       </article>
       <article className="host">
         <header><strong>eu-west-1</strong> <span className="muted" title={TOOLTIPS.daemon}>· the eu-west host</span></header>
-        <p className="fine">Workers attach to the daemon. A staged release waits for a person.</p>
-        <p className="behind-row"><Behind id="daemon-start" onOpen={onBehind} title={TOOLTIPS.daemon}>how the workers attach</Behind></p>
+        <p className="fine">Each host loads its own release. The daemon ships telemetry. A staged release waits for a person.</p>
+        <p className="behind-row"><Behind id="daemon-start" onOpen={onBehind} title={TOOLTIPS.daemon}>how this host runs</Behind></p>
       </article>
       <article className="host">
         <header><strong>No route out</strong> <span className="muted" title={TOOLTIPS.airgap}>· air-gapped host</span></header>

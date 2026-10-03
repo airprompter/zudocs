@@ -1,21 +1,22 @@
-# The Zudocs Node ticket worker on the eu-west host: attached to airprompterd over its socket (the same user, so
-# the 0600 socket and the shared spool are reachable), no key in its environment (zudocs.env carries identifiers
-# and table names only; readHostEnv refuses a key), runs tickets through Bedrock with the instance role, minds the
-# desk's approvals, writes the host's status row. Exits 3 when the daemon is not on the socket; systemd retries.
+# The Zudocs Node ticket worker on the eu-west host. It loads its own release (resident sync) with the Agent
+# key systemd injects from airprompterd.env — the airprompter user cannot read that root-only file. It pins
+# unlock_required, minds the desk's approvals, and runs tickets through Bedrock with the instance role.
+# airprompterd ships the spool; this unit does not wait on it to serve.
 #
 #   $ systemctl status zudocs-worker
 #   $ tail -f /var/log/zudocs/worker.log
 
 [Unit]
-Description=Zudocs eu-west ticket worker (AirPrompter Agent SDK, daemon mode)
+Description=Zudocs eu-west ticket worker (AirPrompter Agent SDK, resident)
 After=network-online.target airprompterd.service
-Wants=network-online.target airprompterd.service
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=airprompter
 Group=airprompter
 EnvironmentFile=/etc/airprompter/zudocs.env
+EnvironmentFile=-/etc/airprompter/airprompterd.env
 Environment=NODE_OPTIONS=--enable-source-maps
 Environment="ZUDOCS_WORKER_NAME=eu-west worker"
 ExecStart=/usr/local/bin/node /opt/zudocs/worker.mjs
@@ -34,7 +35,7 @@ ReadWritePaths=/var/lib/airprompter /var/log/zudocs
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictAddressFamilies=AF_INET AF_INET6
 RestrictNamespaces=true
 LockPersonality=true
 SystemCallArchitectures=native

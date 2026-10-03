@@ -16,8 +16,8 @@ import { clock, modelLabel } from "../format";
 
 function describe(e: TimelineEvent): string {
   switch (e.kind) {
-    case "host_started": return `${e.source === "daemon" ? "worker attached to the daemon" : "container started"} · release #${e.generation}${e.stagedGeneration ? ` (staged #${e.stagedGeneration})` : ""} · ${e.storageProtection} · policy ${e.applyPolicy}`;
-    case "worker_started": return `${e.language ?? "worker"} worker attached · ${e.sdk} · release #${e.generation}`;
+    case "host_started": return `${e.source === "store" ? "this host loaded the release" : e.source === "daemon" ? "worker started on the Europe host" : "container started"} · release #${e.generation}${e.stagedGeneration ? ` (staged #${e.stagedGeneration})` : ""} · ${e.storageProtection} · policy ${e.applyPolicy}`;
+    case "worker_started": return `${e.language ?? "worker"} worker started · ${e.sdk} · release #${e.generation}`;
     case "worker_stopped": return `${e.language ?? "worker"} worker stopped${e.tickets !== undefined ? ` after ${e.tickets} tickets` : e.runs !== undefined ? ` after ${e.runs} runs` : ""}`;
     case "release_changed": return `release #${e.generation} ${e.applyState}${e.stagedGeneration ? ` · staged #${e.stagedGeneration}` : ""}${e.seenBy ? ` (seen by ${e.seenBy})` : ""}`;
     case "release_staged": return `release #${e.generation} staged — awaiting approval (policy ${e.policy})${e.note ? ` · console: ${e.note}` : ""}`;

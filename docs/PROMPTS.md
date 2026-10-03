@@ -89,13 +89,13 @@ On `dev` (generation 2; apply policy `auto` on the environment, lease 3600 s, `d
 the current generation and release digest) `support.triage` is pinned to `rev-2` and the three other slots to
 `rev-3`. `rev-1` is the imported text; `rev-2` the same text with the Luna settings; `rev-3` the same text with
 the Nova 2 Lite settings. Staging and prod hold nothing yet. The environment's policy is `auto`; the eu-west host
-pins `unlock_required` locally (`--apply-policy`), which is what the desk's Approvals page shows — the console's
+pins `unlock_required` locally (`apply.policy` on the worker), which is what the desk's Approvals page shows — the console's
 `auto` is advisory there (`docs/EU-WEST.md`). A promotion is a new generation, and every host learns of it by pull — the SDK's edge pointer (one CDN
 304 per idle poll), the origin only when the pointer moved.
 
 ## The local registry (`./prompts`)
 
-`airprompter dev ./prompts --daemon` serves a directory of prompt files as a registry over the protocol's own
+`airprompter dev ./prompts` serves a directory of prompt files as a registry over the protocol's own
 routes — a dev key, a self-made root, every save a generation — so the desk on a laptop syncs from it exactly as
 from AirPrompter. The directory is **ignored**; only `prompts/.gitkeep` is committed, and the seed fills it:
 
@@ -120,7 +120,7 @@ variables, checks, settings, the golden reference — are cross-checked by the s
 known to declare).
 
 The CLI is installed by hand, not by npm: download `airprompter-darwin-arm64` (or your platform) and its `.sha256`
-from the `cli/v0.1.0` release of `airprompter/airprompter-agent-sdk`, compare digests, `chmod +x`, and put it at
+from the `cli/v0.3.0` release of `airprompter/airprompter-agent-sdk`, compare digests, `chmod +x`, and put it at
 `.bin/airprompter` (ignored) or on your `PATH` (`AIRPROMPTER_CLI` overrides where the smoke looks).
 
 `npm run dev:proof` is the same render against AirPrompter itself: the SDK syncs the promoted release with the
@@ -142,7 +142,7 @@ counts and verdicts on every path, so it can go into a pull request.
   therefore two prompt slots chained by the application; when workflow versions exist, `support.escalate` becomes
   one slot with `ap.workflow(tag)` and step attribution.
 - **The dev registry carries no checks, settings or golden sets.** The CLI's front matter reads `tag`, `model`,
-  `variables` and `version` only, so the daemon serves the release without `outputChecks`, `inference` or
+  `variables` and `version` only, so the local dev registry serves the release without `outputChecks`, `inference` or
   `goldenSet`; `ap.checks()` on a render from it finds nothing. The seed writes them anyway and the smoke evaluates
   the checks with the public evaluator (`evaluateChecks` from the SDK) so the file is a faithful copy of the pin.
   Against AirPrompter itself (`dev:proof`) the checks are on the wire and `ap.checks()` runs them.

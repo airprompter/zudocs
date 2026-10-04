@@ -3,6 +3,9 @@ import { test } from "node:test";
 import type { Approval, HostStatus, Run, TimelineEvent } from "../src/api";
 import { journeySnapshot } from "../src/components/ReleaseJourney";
 import { replyPair } from "../src/components/ReplyComparison";
+import { integrationSnapshot, IntegrationStatus, settingLabel } from "../src/components/IntegrationStatus";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 const at = "2026-10-03T12:00:00.000Z";
 const host = (generation: number, stagedGeneration: number | null): HostStatus => ({
@@ -62,4 +65,33 @@ test("reply comparison requires two releases on the same ticket host and route",
   assert.equal(replyPair([before, { ...after, ticketId: "T-1052" }]), null);
   assert.deepEqual(replyPair([before, after])?.before.run.runId, before.runId);
   assert.deepEqual(replyPair([before, after])?.after.run.runId, after.runId);
+});
+
+test("integration settings follow the active host release, not a pending release or another host", () => {
+  const currentHost = host(86, 87);
+  const snapshot = integrationSnapshot(currentHost, [run(87, at), run(86, at, "us-east-1/lambda"), run(86, at)]);
+  assert.equal(snapshot.current?.reply.generation, 86);
+  assert.equal(snapshot.latest?.reply.generation, 87);
+  assert.equal(integrationSnapshot(currentHost, [run(87, at)]).current, null);
+  assert.equal(snapshot.ramps, null);
+  assert.deepEqual(integrationSnapshot({ ...currentHost, status: { ...currentHost.status, ramps: [] } }, []).ramps, []);
+});
+
+test("integration rollout uses the host plan and finds the candidate by name", () => {
+  const currentHost = host(86, null);
+  currentHost.status.ramps = [
+    { experimentId: "reply", tag: "support.reply", arms: ["candidate", "control"], weightBps: [2500, 7500], step: 0, nextStepAt: null, plan: [{ notBefore: at, weightBps: [2500, 7500] }, { notBefore: at, weightBps: [5000, 5000] }] },
+    { experimentId: "triage", tag: "support.triage", arms: ["control", "candidate"], weightBps: [1000, 9000], step: 0, nextStepAt: null, plan: [] },
+  ];
+  const html = renderToStaticMarkup(createElement(IntegrationStatus, { host: currentHost, runs: [] }));
+  assert.match(html, /new reply 25% · current reply 75%/);
+  assert.match(html, /25% → 50%/);
+  assert.doesNotMatch(html, /90%/);
+  assert.match(html, /No reply settings recorded yet/);
+});
+
+test("recorded SDK settings display their public units", () => {
+  assert.deepEqual(settingLabel("temperatureMilli", 300), { label: "Temperature", value: "0.3" });
+  assert.deepEqual(settingLabel("topPMilli", 950), { label: "Top-p", value: "0.95" });
+  assert.deepEqual(settingLabel("maxOutputTokens", 600), { label: "Max output tokens", value: "600" });
 });

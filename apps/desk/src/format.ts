@@ -115,11 +115,12 @@ export function abTitle(ramps: Array<{ arms: string[]; weightBps: number[] }> | 
   return `A|B · ${100 - next}% current reply · ${next}% new reply${more}`;
 }
 
-/** Whether this reply and the desk are on the same AirPrompter release. */
-export function syncLead(replyGeneration: number | null, deskGeneration: number | null): string {
+/** Compare a reply's release with the latest report from the host that wrote it. */
+export function syncLead(replyGeneration: number | null, hostGeneration: number | null): string {
   if (replyGeneration == null) return "This reply has no release on its record.";
-  if (deskGeneration == null || replyGeneration === deskGeneration) return `This reply was written from release #${replyGeneration}, the release this desk is running.`;
-  return `This reply was written from release #${replyGeneration}. This desk is now running release #${deskGeneration}.`;
+  if (hostGeneration == null) return `This reply was written from release #${replyGeneration}. Current status for that host is unavailable.`;
+  if (replyGeneration === hostGeneration) return `This reply was written from release #${replyGeneration}; its host last reported the same release.`;
+  return `This reply was written from release #${replyGeneration}. Its host last reported release #${hostGeneration}.`;
 }
 
 /** What an A|B assignment means for the customer in front of the room. */

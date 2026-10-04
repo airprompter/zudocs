@@ -43,9 +43,10 @@ function BehindLine({ kind, onBehind }: { kind: string; onBehind?: (id: string) 
 
 export function HostCards({ state, onBehind }: { state: State | null; onBehind?: (id: string) => void }) {
   const hosts = [...(state?.hosts ?? [])].sort((a, b) => (a.hostId < b.hostId ? 1 : -1));
+  const old = hosts.filter((host) => Date.now() - Date.parse(host.writtenAt) > (host.kind === "lambda" ? 2 * 60 * 60_000 : host.kind === "daemon" ? 10 * 60_000 : 15 * 60_000)).length;
   return (
     <section className="hosts">
-      <div className="pane-title"><h2>Hosts</h2><span className="muted">{hosts.length} reporting</span></div>
+      <div className="pane-title"><h2>Hosts</h2><span className="muted">{hosts.length} recorded{old ? ` · ${old} stale` : ""}</span></div>
       {hosts.length === 0 ? <p className="muted">No host has written its status yet — run a ticket.</p> : hosts.map((h) => (h.kind === "puller" ? <PullerCard key={h.hostId} host={h} onBehind={onBehind} /> : h.kind === "airgapped" ? <AirgapCard key={h.hostId} host={h} onBehind={onBehind} /> : <HostCard key={h.hostId} host={h} onBehind={onBehind} />))}
     </section>
   );
@@ -62,7 +63,7 @@ function HostCard({ host, onBehind }: { host: HostStatus; onBehind?: (id: string
   const power = host.powerView ?? null;
   const asleep = power !== null && (power.phase === "asleep" || power.phase === "going_to_sleep");
   const transition = power !== null && (power.phase === "waking" || power.phase === "started" || power.phase === "going_to_sleep");
-  const stale = !asleep && !transition && Date.now() - Date.parse(host.writtenAt) > 10 * 60_000;
+  const stale = !asleep && !transition && Date.now() - Date.parse(host.writtenAt) > (host.kind === "lambda" ? 2 * 60 * 60_000 : 10 * 60_000);
   const protection = String(s.storageProtection ?? "—");
   const failures = Number(s.consecutiveSyncFailures ?? 0);
   const cadence = host.cadence ?? null;
@@ -70,7 +71,7 @@ function HostCard({ host, onBehind }: { host: HostStatus; onBehind?: (id: string
     <article className={`host${stale ? " stale" : ""}${asleep ? " asleep" : ""}${!asleep && !transition && z.status === "degraded" ? " degraded" : ""}`}>
       <header>
         <strong>{host.region}</strong> <span className="muted" title={daemon ? TOOLTIPS.daemon : undefined}>· {daemon ? "daemon host" : host.kind}</span>
-        {asleep ? <span className="chip health-asleep" title={TOOLTIPS.power}>{power!.label}</span> : transition ? <span className="chip health-transition" title={TOOLTIPS.power}>{power!.label}</span> : <span className={`chip health-${z.status ?? "unknown"}`}>{z.status ?? "—"}</span>}
+        {asleep ? <span className="chip health-asleep" title={TOOLTIPS.power}>{power!.label}</span> : transition ? <span className="chip health-transition" title={TOOLTIPS.power}>{power!.label}</span> : stale ? <span className="chip health-stale">last report {ago(host.writtenAt)}</span> : <span className={`chip health-${z.status ?? "unknown"}`}>{z.status ?? "—"}</span>}
       </header>
       {power && power.phase !== "awake" ? <p className="muted fine" title={TOOLTIPS.power}>{power.label} since {ago(power.since)} ({String(power.since).slice(11, 19)}Z) · by {power.by ?? "—"}{asleep ? " · the rows below are from before the sleep; only its volume bills" : " · the daemon re-reads its key from SSM and each worker loads its release"}</p> : null}
       <dl className="kv">
@@ -117,7 +118,7 @@ function PullerCard({ host, onBehind }: { host: HostStatus; onBehind?: (id: stri
     <article className={`host${stale ? " stale" : ""}${z.status === "degraded" ? " degraded" : ""}`}>
       <header>
         <strong>{host.region}</strong> <span className="muted" title={TOOLTIPS.puller}>· puller (the fleet pattern)</span>
-        <span className={`chip health-${z.status ?? "unknown"}`}>{z.status ?? "—"}</span>
+        <span className={`chip health-${stale ? "stale" : z.status ?? "unknown"}`}>{stale ? `last report ${ago(host.writtenAt)}` : z.status ?? "—"}</span>
       </header>
       <dl className="kv">
         <div><dt title={TOOLTIPS.release}>exchange</dt><dd>{s.generation ? <>release #{s.generation} · pulled {ago(s.pulledAt ?? null)}{s.keyId ? <span title={TOOLTIPS.distributionKey}> · sealed to key {shortKey(s.keyId)}</span> : <span className="staged" title="Allowed on the dev target only; the SDK refuses plaintext anywhere else."> · plaintext (dev)</span>}</> : "nothing pulled yet"}</dd></div>
@@ -149,7 +150,7 @@ function AirgapCard({ host, onBehind }: { host: HostStatus; onBehind?: (id: stri
     <article className={`host${stale ? " stale" : ""}${z.status === "degraded" ? " degraded" : ""}`}>
       <header>
         <strong>{host.region}</strong> <span className="muted" title={TOOLTIPS.airgap}>· air-gapped host</span>
-        <span className={`chip health-${z.status ?? "unknown"}`}>{z.status ?? a?.phase ?? "—"}</span>
+        <span className={`chip health-${stale ? "stale" : z.status ?? "unknown"}`}>{stale ? `not reporting · ${ago(host.writtenAt)}` : z.status ?? a?.phase ?? "—"}</span>
       </header>
       <dl className="kv">
         <div><dt>route out</dt><dd><span className="chip protection-file_key">none</span> <span className="muted">· telemetry by export/import</span>{a?.probe ? <span className="muted"> · probe: {a.probe.curl.meaning} ({a.probe.curl.seconds}s); DNS {a.probe.dns.resolved ? "resolves" : "does not resolve"}</span> : null}</dd></div>

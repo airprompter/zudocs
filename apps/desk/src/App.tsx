@@ -22,9 +22,10 @@ import { Fold } from "./components/Fold";
 import { Inbox } from "./components/Inbox";
 import { Presenter, type CliOutput } from "./components/Presenter";
 import { ReleaseBar } from "./components/ReleaseBar";
+import { ReleaseJourney } from "./components/ReleaseJourney";
 import { TicketView, routeRefusal, type RouteAvailability } from "./components/TicketView";
 import { Timeline } from "./components/Timeline";
-import { ROUTES, abTitle, mergeEvents, releaseSummary } from "./format";
+import { ROUTES, abTitle, mergeEvents } from "./format";
 import { PAGE_LABEL, deskHref, mismatchRoute, newestHost, parseDeskRoute, ticketParam, type DeskRoute } from "./route";
 import { AIRGAP_START, CLIENT_RUN, DAEMON_START, ENQUEUE_CALL, LAMBDA_START, POLICY_LINE, RUN_STEP, TELEMETRY_DAEMON, type Snippet } from "./snippets";
 
@@ -79,6 +80,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [sheet, setSheet] = useState(false);
+  const [journeyOpen, setJourneyOpen] = useState(false);
   const [sheetFocus, setSheetFocus] = useState<string | null>(null);
   const openBehind = (id: string) => {
     setSheetFocus(id);
@@ -103,6 +105,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   const go = useCallback((next: DeskRoute, ticket: string | null, mode: "push" | "replace" = "push") => {
     setSheet(false);
     setSheetFocus(null);
+    setJourneyOpen(false);
     remember(deskHref(next, ticket), mode);
   }, [remember]);
 
@@ -268,15 +271,13 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   const lambdaHostId = state?.host?.hostId ?? null;
   const daemonHost = state?.hosts?.find((h) => h.kind === "daemon") ?? null;
   const daemonHostId = daemonHost?.hostId ?? null;
+  const lambdaHost = state?.hosts?.find((h) => h.hostId === lambdaHostId) ?? null;
+  const supportHost = route === "daemon" ? daemonHost : lambdaHost;
   const runHost = newestHost(runs);
   const other = (route === "agent" || route === "daemon") && runHost ? mismatchRoute(route, runHost, lambdaHostId, daemonHostId) : null;
   const selected = tickets.find((t) => t.ticketId === selectedId) ?? null;
   const missing = missingId !== null && missingId === selectedId;
   const powerNote = daemonHost?.powerView && daemonHost.powerView.phase !== "awake" ? daemonHost.powerView.label : null;
-  const fleet = state ? releaseSummary(state.hosts) : null;
-  const updatedAt = [...events].reverse().find((event) => event.kind === "release_changed" || event.kind === "release_activated")?.at ?? null;
-  const desk = { generation: fleet?.generation ?? null, staged: fleet?.staged?.generation ?? null, updatedAt };
-
   return (
     <div className={`desk route-${route}${sheet ? " sheet-open" : ""}`}>
       <header className="top">
@@ -292,7 +293,8 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
           <button type="button" className="link" onClick={onSignOut}>Sign out</button>
         </div>
       </header>
-      <AgentLine state={state} events={events} />
+      <AgentLine host={supportHost} events={events} label={route === "daemon" ? "Europe support agent" : "Support agent"} expanded={journeyOpen} onJourney={() => setJourneyOpen((open) => !open)} />
+      {journeyOpen && supportHost ? <ReleaseJourney host={supportHost} approvals={approvals} events={events} runs={runs} ticketId={selectedId} onClose={() => setJourneyOpen(false)} /> : null}
       {notice ? <div className={`notice notice-${notice.tone}`} role="status">{notice.text}<button type="button" className="link" onClick={() => setNotice(null)}>dismiss</button></div> : null}
       <div className="columns">
         {route === "architecture" ? (
@@ -307,9 +309,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
               <div className="reading">
                 {route === "daemon" ? (
                   <>
-                    <Fold title={approvals.some((a) => a.decision === "pending") ? "Approvals · waiting" : "Approvals"}>
-                      <Approvals approvals={approvals} busy={busy} onApprove={approve} />
-                    </Fold>
+                    {approvals.some((a) => a.decision === "pending") ? <Approvals approvals={approvals} busy={busy} onApprove={approve} /> : <Fold title="Approvals"><Approvals approvals={approvals} busy={busy} onApprove={approve} /></Fold>}
                     <Fold title="Europe host">
                       <DaemonSummary host={daemonHost} onBehind={openBehind} />
                     </Fold>
@@ -323,7 +323,8 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
                     frozen={state?.frozen ?? null}
                     hosted={state?.features?.hosted ? state.hosted ?? null : null}
                     routes={routes}
-                    desk={desk}
+                    hosts={state?.hosts ?? []}
+                    events={events}
                     elsewhere={other ? { href: deskHref(other, selected.ticketId), label: other === "daemon" ? "This reply was written on the Europe desk" : "This reply was written in the inbox", onClick: (event) => follow(event, other) } : null}
                     enqueue={route === "daemon" ? {
                       label: daemonHostId ? `Enqueue ${selected.ticketId}` : "Enqueue",

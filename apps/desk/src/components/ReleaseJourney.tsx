@@ -17,7 +17,8 @@ export function journeySnapshot(host: HostStatus, approvals: Approval[], events:
   const detected = latest("release_staged") ?? latest("release_changed");
   const applied = latest("release_activated") ?? [...matchingEvents].reverse().find((event) => event.kind === "release_changed" && event.applyState === "active");
   const serving = active === generation && effectiveApplyState(host.status ?? {}) === "active";
-  const proofSince = approval?.stagedAt ?? (host.kind === "daemon" ? host.container?.startedAt : null);
+  // A daemon restart does not erase the reply's recorded release provenance.
+  const proofSince = approval?.stagedAt ?? null;
   const run = [...runs].filter((item) => !isHostedRun(item) && item.kind === "run" && item.host === host.hostId && item.generation === generation && (!proofSince || item.at >= proofSince))
     .sort((a, b) => b.at.localeCompare(a.at))[0];
   const reply = run && !isHostedRun(run) ? run.steps.find((step) => step.step === "reply") : null;

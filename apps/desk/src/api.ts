@@ -74,7 +74,7 @@ export interface HostStatus {
   container: { instanceId: string; coldStart: boolean; startedAt: string; invocations: number };
   /** The eu-west host's attached workers: the Node worker that writes the row, the Python worker's own part. */
   worker?: { instanceId: string; sdk: string; startedAt: string; tickets: number; source: string; attached: boolean; healthz: string; reasons: string[] } | null;
-  python?: { instanceId: string; sdk: string; startedAt: string; writtenAt: string; generation: number; stagedGeneration: number | null; applyState: string; source: string; attached: boolean; healthz: string; reasons: string[]; runs: number; lastRunAt: string | null; cadence?: { ticketIntervalSeconds: number; demoMode: "on" | "off" } | null } | null;
+  python?: { instanceId: string; sdk: string; startedAt: string; writtenAt: string; generation: number; releaseDigest?: string | null; applyPolicy?: {effective: string; source: string}; ramps?: Ramp[]; stagedGeneration: number | null; applyState: string; source: string; attached: boolean; healthz: string; reasons: string[]; runs: number; lastRunAt: string | null; cadence?: { ticketIntervalSeconds: number; demoMode: "on" | "off" } | null } | null;
   ec2?: { instanceId: string; availabilityZone: string } | null;
   /** The puller mirrors the air-gapped host's document: when it looked, and the host's own part (`services/airgap/src/status.ts`). */
   mirroredAt?: string;

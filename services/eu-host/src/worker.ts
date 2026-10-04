@@ -35,6 +35,7 @@ import type { RunHost } from "../../desk-api/src/runtime.js";
 import { createStore, dayOf, type Store, type Ticket } from "../../desk-api/src/store.js";
 import { TicketCadence, parseDemoMode, readDemoModeParameter, type DemoModeDoc } from "./demoMode.js";
 import { readHostEnv, type HostEnv } from "./hostEnv.js";
+import { sdkStatus } from "../../desk-api/src/sdkStatus.js";
 import { statusFields } from "./statusRow.js";
 import { verifyRootCommand } from "./verifyRoot.js";
 
@@ -161,7 +162,7 @@ async function main(): Promise<void> {
   let tickets = 0;
   let lastHealth: string | null = null;
   const writeStatus = async (): Promise<void> => {
-    const status = ap?.status() ?? null;
+    const status = ap ? sdkStatus(ap) : null;
     const healthz = ap?.healthz() ?? null;
     const verdict = healthz ?? { status: "failing" as const, reasons: ["sdk_not_started"], generation: null, consecutiveSyncFailures: null, leaseExpiresAt: null };
     await store.updateStatus(env.hostId, { ...statusFields({ hostId: env.hostId, region: env.region, status, healthz, sdk, tickets, startedAt, now: new Date().toISOString(), ec2 }), cadence: cadenceFields() });

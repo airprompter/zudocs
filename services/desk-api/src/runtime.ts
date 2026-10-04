@@ -21,6 +21,7 @@
  * await ap.invoke(async () => { ... ap.prompt("support.reply", { subject }).renderAsync(values) ... });
  * ```
  */
+import { sdkStatus } from "./sdkStatus.js";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { DecryptCommand, EncryptCommand, KMSClient } from "@aws-sdk/client-kms";
@@ -207,7 +208,7 @@ async function startHost(): Promise<Host> {
         kind: "lambda",
         sdk: host.sdk,
         writtenAt: new Date().toISOString(),
-        status: ap.status(),
+        status: sdkStatus(ap),
         healthz: ap.healthz(),
         container: { instanceId: ap.instanceId, coldStart: host.coldStart, startedAt, invocations: host.invocations },
       });

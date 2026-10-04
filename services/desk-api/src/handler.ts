@@ -22,6 +22,7 @@
  * // curl -H "authorization: Bearer $ID_TOKEN" https://<api>/tickets
  * ```
  */
+import { sdkStatus } from "./sdkStatus.js";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyResultV2, Context } from "aws-lambda";
 import { normalizeFeedback } from "@airprompter/agent-sdk";
@@ -306,7 +307,7 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       return {
         statusCode: 200,
         body: {
-          host: { hostId: env.hostId, region: env.region, sdk: host.sdk, instanceId: ap.instanceId, startedAt: host.startedAt, invocations: host.invocations, coldStart: host.coldStart, status: ap.status(), healthz: ap.healthz(), models: MODELS, stateDir: env.stateDir },
+          host: { hostId: env.hostId, region: env.region, sdk: host.sdk, instanceId: ap.instanceId, startedAt: host.startedAt, invocations: host.invocations, coldStart: host.coldStart, status: sdkStatus(ap), healthz: ap.healthz(), models: MODELS, stateDir: env.stateDir },
           hosts: withPower,
           cap: { day, used, cap: env.dailyRunCap },
           airprompter: { baseUrl: env.airprompter.baseUrl, environment: env.airprompter.environment, agentId: env.airprompter.agentId },

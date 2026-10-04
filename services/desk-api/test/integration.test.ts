@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { AirPrompterAgent, publicJwkOf, releaseDigest, type Experiment, type LoadedRelease } from "@airprompter/agent-sdk";
 import { FakeControlPlane } from "@airprompter/agent-sdk/testing";
 import { compareRun, previewAssignments, publishedReader, publishedRollout } from "../src/integration.js";
+import { sdkStatus } from "../src/sdkStatus.js";
 import type { RunRecord } from "../src/run.js";
 
 function fixture(experiment = false) {
@@ -124,6 +125,8 @@ test("real SDK syncs a published release automatically and runs its cached sched
     await ap.syncNow();
     assert.equal(ap.generation,2,"automatic sync does not bypass signed policy tightening");
     assert.equal(ap.status().stagedGeneration,3);
+    assert.equal(sdkStatus(ap).releaseDigest,ap.manifest!.payload.releaseDigest);
+    assert.equal(sdkStatus(ap).generation,2,"the report describes the active release while generation 3 is held");
     assert.equal(ap.status().applyPolicy.effective,'unlock_required');
   } finally {await ap.stop();rmSync(stateDir,{recursive:true,force:true});}
 });

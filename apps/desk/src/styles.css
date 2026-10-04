@@ -454,3 +454,6 @@ select { font: inherit; color: var(--ink); background: var(--card); border: 1px 
 .visitor-candidate { background: var(--accent); }
 .visitor-refused { background: #ad5252; }
 @media (max-width: 640px) { .visitor-grid { grid-template-columns: repeat(10,minmax(0,1fr)); } .evidence-table th, .evidence-table td { padding: 10px 6px; } .demo-card { padding: 16px; } }
+
+.integration-summary { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 18px; margin-top: 16px; }
+.integration-summary span { font-size: 13px; }

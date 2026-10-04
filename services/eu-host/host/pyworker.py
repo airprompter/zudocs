@@ -323,7 +323,10 @@ def main() -> None:
     def write_status() -> None:
         s = ap.status()
         h = ap.healthz()
-        tables.merge_status(host_id, {"instanceId": s.instance_id, "sdk": sdk, "startedAt": started_at, "writtenAt": now_iso(), "generation": s.generation, "stagedGeneration": s.staged_generation, "applyState": s.apply_state, "source": s.source, "attached": s.generation > 0, "healthz": h.get("status"), "reasons": h.get("reasons", []), "runs": runs, "lastRunAt": last_run_at, "variables": {"sources": list(s.variables.get("sources", [])) if isinstance(s.variables, dict) else []}, "cadence": cadence_fields()})
+        manifest = ap.manifest
+        active = manifest["payload"] if manifest else {}
+        digest = active.get("releaseDigest") if active.get("generation") == s.generation else None
+        tables.merge_status(host_id, {"instanceId": s.instance_id, "sdk": sdk, "startedAt": started_at, "writtenAt": now_iso(), "generation": s.generation, "releaseDigest": digest, "applyPolicy": dict(s.apply_policy), "ramps": list(s.ramps), "stagedGeneration": s.staged_generation, "applyState": s.apply_state, "source": s.source, "attached": s.generation > 0, "healthz": h.get("status"), "reasons": h.get("reasons", []), "runs": runs, "lastRunAt": last_run_at, "variables": {"sources": list(s.variables.get("sources", [])) if isinstance(s.variables, dict) else []}, "cadence": cadence_fields()})
 
     tables.append_event({"at": started_at, "kind": "worker_started", "host": host_id, "sdk": sdk, "instanceId": status.instance_id, "generation": status.generation, "source": status.source, "language": "python"})
     ap.on_change(lambda change: tables.append_event({"at": now_iso(), "kind": "release_changed", "host": host_id, "generation": change.generation, "stagedGeneration": change.staged_generation, "applyState": ap.status().apply_state, "seenBy": "python"}))

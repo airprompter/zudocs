@@ -36,6 +36,14 @@ test("journey keeps a staged release separate from the older reply until the hos
   assert.match(active.phases[3]!.detail, /rev-4; 1\/1 checks passed/);
 });
 
+test("journey keeps a reply written before a daemon restart", () => {
+  const earlier = "2026-10-02T12:00:00.000Z";
+  const snapshot = journeySnapshot(host(86, null), [], [], [run(86, earlier)], "T-1041", Date.parse(at) + 1000)!;
+  assert.equal(snapshot.phases[3]?.state, "done");
+  assert.equal(snapshot.phases[3]?.at, earlier);
+  assert.match(snapshot.phases[3]!.detail, /rev-3; 1\/1 checks passed/);
+});
+
 test("reply comparison requires two releases on the same ticket host and route", () => {
   const before = run(86, "2026-10-03T12:00:00.000Z");
   const after = run(87, "2026-10-03T13:00:00.000Z");

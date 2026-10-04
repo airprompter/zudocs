@@ -25,9 +25,9 @@ test("callback is exact, and the pages ignore one trailing slash and the query",
   assert.equal(ticketParam("?ticket=T-1041"), "T-1041");
   assert.equal(ticketParam(""), null);
   assert.equal(deskHref("agent", "T-1041"), "/?ticket=T-1041");
-  assert.equal(deskHref("architecture", null), "/fleet");
+  assert.equal(deskHref("architecture", null), "/system");
   assert.equal(deskHref("daemon", "T-1052"), "/daemon?ticket=T-1052");
-  assert.equal(PAGE_LABEL.architecture, "Hosts");
+  assert.equal(PAGE_LABEL.architecture, "System");
   assert.equal(PAGE_LABEL.agent, "Inbox");
   assert.equal(PAGE_LABEL.daemon, "Europe");
 });
@@ -63,4 +63,16 @@ test("the Inbox uses the fresh SDK check while Europe retains its own database r
   assert.equal(inbox.container.instanceId, "new");
   assert.equal(supportHostSnapshot(state, europe.hostId), europe);
   assert.equal(supportHostSnapshot(state, "unknown"), null);
+});
+
+// Canonical navigation and legacy URLs must reach the same functional view.
+test("database and system pages retain selected tickets and accept existing bookmarks", () => {
+  for (const [legacy, current, route] of [["/fleet", "/system", "architecture"], ["/operate", "/system/controls", "operate"]] as const) {
+    assert.equal(parseDeskRoute(legacy), route);
+    assert.equal(parseDeskRoute(current), route);
+    assert.equal(deskHref(route, "T-1052"), `${current}?ticket=T-1052`);
+  }
+  assert.equal(parseDeskRoute("/database/"), "database");
+  assert.equal(parseDeskRoute("/system/experiments"), "experiments");
+  assert.equal(deskHref("database", "T-1052"), "/database?ticket=T-1052");
 });

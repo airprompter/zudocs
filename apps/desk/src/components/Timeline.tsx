@@ -14,7 +14,7 @@
 import type { TimelineEvent } from "../api";
 import { clock, modelLabel } from "../format";
 
-function describe(e: TimelineEvent): string {
+export function describeEvent(e: TimelineEvent): string {
   switch (e.kind) {
     case "host_started": return `${e.source === "store" ? "this host loaded the release" : e.source === "daemon" ? "worker started on the Europe host" : "container started"} · release #${e.generation}${e.stagedGeneration ? ` (staged #${e.stagedGeneration})` : ""} · ${e.storageProtection} · policy ${e.applyPolicy}`;
     case "worker_started": return `${e.language ?? "worker"} worker started · ${e.sdk} · release #${e.generation}`;
@@ -57,14 +57,14 @@ export function Timeline({ events }: { events: TimelineEvent[] }) {
   const newest = [...events].reverse();
   return (
     <section className="timeline">
-      <div className="pane-title"><h2>Timeline</h2><span className="muted">{events.length} today</span></div>
+      <div className="pane-title"><h2>Timeline</h2><span className="muted">{events.length} loaded events</span></div>
       {newest.length === 0 ? <p className="muted">Nothing yet today.</p> : (
         <ol>
           {newest.map((e, i) => (
             <li key={e.id ?? `${e.at}-${i}`} className={`event kind-${e.kind}`}>
               <span className="event-time">{clock(e.at)}</span>
               <span className="event-host">{e.host}</span>
-              <span className="event-text">{describe(e)}</span>
+              <span className="event-text">{describeEvent(e)}</span>
             </li>
           ))}
         </ol>

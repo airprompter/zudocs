@@ -10,6 +10,7 @@
 import { useEffect, useState } from "react";
 import { splitMarks } from "../excerpt";
 import type { Snippet } from "../snippets";
+import { SlideOut } from "./SlideOut";
 
 export function CodeDrawer({ snippets, focus, onClose }: { snippets: readonly Snippet[]; focus?: string | null; onClose: () => void }) {
   useEffect(() => {
@@ -17,16 +18,12 @@ export function CodeDrawer({ snippets, focus, onClose }: { snippets: readonly Sn
     document.querySelector(`[data-snippet="${focus}"]`)?.scrollIntoView({ block: "start" });
   }, [focus]);
   return (
-    <aside className="code-drawer" aria-label="Code">
-      <div className="pane-title">
-        <h2>Code</h2>
-        <button type="button" className="link sheet-close" onClick={onClose}>Close</button>
-      </div>
+    <SlideOut title="Integration code" onClose={onClose}>
       <p className="fine legend">
         <mark className="mark-write">What you write</mark> is the SDK call. <mark className="mark-host">What this host adds</mark> is this deployment. The block is the whole call.
       </p>
       {snippets.map((snippet) => <SnippetBlock key={snippet.id} snippet={snippet} focused={snippet.id === focus} />)}
-    </aside>
+    </SlideOut>
   );
 }
 

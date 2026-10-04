@@ -18,13 +18,16 @@
  * ```
  */
 import type { State } from "../api";
+import { useState } from "react";
+import { Fold } from "./Fold";
 import { TOOLTIPS, clock } from "../format";
 
 export interface CliOutput { command: string; summary: string; document: unknown; stdout: string; status: string; at: string }
 
 export function Presenter({ state, busy, selectedTicketId, onAction, environment, agentId, cliOutput }: { state: State | null; busy: string | null; selectedTicketId: string | null; onAction: (action: string, body?: Record<string, unknown>) => void; environment: string; agentId: string; cliOutput: CliOutput | null }) {
   const cap = state?.cap;
-  const disabled = busy !== null;
+  const [batch, setBatch] = useState(5);
+  const disabled = busy !== null || state === null;
   // "Run this ticket there now" is for hosts that run tickets: the daemon host. The puller pulls; the air-gapped host has no model.
   const others = (state?.hosts ?? []).filter((h) => h.kind === "daemon").map((h) => h.hostId);
   const wire = state?.features?.wire ?? false;
@@ -40,12 +43,11 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
   const doors = (["openai", "anthropic"] as const).filter((p) => state?.providers?.[p]?.configured);
   return (
     <section className="presenter">
-      <div className="pane-title"><h2>Presenter</h2><span className="muted" title={TOOLTIPS.cap}>{cap ? `${cap.used.toLocaleString()} / ${cap.cap.toLocaleString()} runs today` : "—"}</span></div>
-      <h3 className="presenter-group">This account’s function</h3>
+      <div className="pane-title"><h2>Controls</h2><span className="muted" title={TOOLTIPS.cap}>{cap ? `${cap.used.toLocaleString()} / ${cap.cap.toLocaleString()} runs today` : "—"}</span></div>
+      <Fold title="US desk function">
       <div className="button-row">
-        <button type="button" className="button secondary" disabled={disabled} onClick={() => onAction("replay", { n: 5 })}>Replay 5</button>
-        <button type="button" className="button secondary" disabled={disabled} onClick={() => onAction("replay", { n: 12 })}>Replay 12</button>
-        <button type="button" className="button secondary" disabled={disabled} onClick={() => onAction("replay", { n: 30 })}>Replay 30</button>
+        <label className="control-select">Batch size <select value={batch} onChange={(event) => setBatch(Number(event.target.value))}>{[5, 12, 30].map((n) => <option key={n} value={n}>{n} tickets</option>)}</select></label>
+        <button type="button" className="button secondary" disabled={disabled} onClick={() => onAction("replay", { n: batch })}>Run batch</button>
       </div>
       <div className="button-row">
         <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("heartbeat")}>Heartbeat now</button>
@@ -74,7 +76,8 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
         <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("policy", { value: "unlock_required" })}>set unlock_required</button>
         <button type="button" className="chip-button" disabled={disabled} title={TOOLTIPS.golden} onClick={() => onAction("golden")}>Golden set now</button>
       </div>
-      <h3 className="presenter-group">The eu-west host</h3>
+      </Fold>
+      <Fold title="Europe workers">
       <div className="button-row">
         {others.map((hostId) => (
           <button key={hostId} type="button" className="button secondary" disabled={disabled || !selectedTicketId} onClick={() => selectedTicketId && onAction("enqueue", { ticketId: selectedTicketId, host: hostId })}>Run {selectedTicketId ?? "…"} on {hostId.split("/")[0]}</button>
@@ -112,7 +115,7 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
           <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "doctor" })}>doctor</button>
           <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "unlock" })}>unlock</button>
           <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Roll the eu-west host back to its previous release? A step below the stored generation is a forced downgrade the fleet page reports; the host is held back until something newer is promoted.")) onAction("host_cli", { command: "rollback" }); }}>rollback</button>
-          <span className="muted fine">the answer lands on the timeline</span>
+          <span className="muted fine">the latest answer appears below; its activity record is in Database</span>
         </div>
       ) : null}
       {cliOutput ? (
@@ -121,13 +124,14 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
           <pre className="output cli">{cliOutput.stdout.trim().slice(0, 4000) || "(no output)"}</pre>
         </div>
       ) : null}
-      <h3 className="presenter-group">Records</h3>
+      </Fold>
+      <Fold title="Record maintenance">
       <div className="button-row">
         <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Re-seed the inbox? Tickets keep their ids; run headlines are cleared.")) onAction("seed"); }}>Re-seed</button>
         <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Clear every run, feedback row, approval, timeline event and the day counters, and re-seed the inbox? This is the reset script's last step.")) onAction("reset"); }}>Reset records</button>
-        {nudge ? <button type="button" className="chip-button" disabled={disabled} title={TOOLTIPS.nudge} onClick={() => onAction("nudge")}>Nudge the fleet</button> : null}
       </div>
-      {nudge ? <p className="muted fine">placeholder for change notification: the puller reads the origin now</p> : null}
+      </Fold>
+      {nudge ? <Fold title="Release distribution"><div className="button-row"><button type="button" className="chip-button" disabled={disabled} title={TOOLTIPS.nudge} onClick={() => onAction("nudge")}>Check for a new release</button></div><p className="muted fine">Ask the distribution puller to check now. It still verifies the signed release.</p></Fold> : null}
       <p className="muted fine">AirPrompter {environment} · {agentId}{state ? ` · this container ${state.host.instanceId.slice(0, 12)} (${state.host.invocations} inv)` : ""}</p>
     </section>
   );

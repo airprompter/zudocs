@@ -29,7 +29,7 @@ function snippetFor(kind: string): { id: string; label: string; title: string } 
     case "airgapped":
       return { id: "airgap-start", label: "how this host starts offline", title: TOOLTIPS.airgap };
     case "puller":
-      return { id: "airgap-start", label: "how the exchange is filled", title: TOOLTIPS.puller };
+      return null;
     default:
       return null;
   }
@@ -47,9 +47,13 @@ export function HostCards({ state, onBehind }: { state: State | null; onBehind?:
   return (
     <section className="hosts">
       <div className="pane-title"><h2>Hosts</h2><span className="muted">{hosts.length} recorded{old ? ` · ${old} stale` : ""}</span></div>
-      {hosts.length === 0 ? <p className="muted">No host has written its status yet — run a ticket.</p> : hosts.map((h) => (h.kind === "puller" ? <PullerCard key={h.hostId} host={h} onBehind={onBehind} /> : h.kind === "airgapped" ? <AirgapCard key={h.hostId} host={h} onBehind={onBehind} /> : <HostCard key={h.hostId} host={h} onBehind={onBehind} />))}
+      {hosts.length === 0 ? <p className="muted">No host has written its status yet — run a ticket.</p> : hosts.map((h) => <HostDetail key={h.hostId} host={h} onBehind={onBehind} />)}
     </section>
   );
+}
+
+export function HostDetail({ host, onBehind }: { host: HostStatus; onBehind?: (id: string) => void }) {
+  return host.kind === "puller" ? <PullerCard host={host} onBehind={onBehind} /> : host.kind === "airgapped" ? <AirgapCard host={host} onBehind={onBehind} /> : <HostCard host={host} onBehind={onBehind} />;
 }
 
 const shortKey = (keyId: string | null | undefined): string => (keyId ? `${keyId.slice(0, 8)}…` : "—");

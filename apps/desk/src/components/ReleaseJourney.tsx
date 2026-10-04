@@ -1,6 +1,7 @@
 /** A host-specific account of a signed release reaching one customer reply. */
 import { isHostedRun, type AnyRun, type Approval, type HostStatus, type TimelineEvent } from "../api";
 import { ago, clock, effectiveApplyState } from "../format";
+import { IntegrationStatus } from "./IntegrationStatus";
 
 export interface JourneyPhase { title: string; detail: string; at: string | null; state: "done" | "waiting" | "unknown" }
 export interface JourneySnapshot { generation: number; active: number; fresh: boolean; phases: JourneyPhase[] }
@@ -49,10 +50,11 @@ export function ReleaseJourney({ host, approvals, events, runs, ticketId, onClos
   return (
     <section className="release-journey" aria-label="Release path">
       <div className="release-journey-head">
-        <div><span className="eyebrow">From AirPrompter to Zudocs</span><h2>{journey ? `Follow release #${journey.generation} on ${host.region}` : `Waiting for a release on ${host.region}`}</h2></div>
+        <div><span className="eyebrow">From AirPrompter to Zudocs</span><h2>{journey ? `Release #${journey.generation} · status, rollout and settings on ${host.region}` : `Waiting for a release on ${host.region}`}</h2></div>
         <button type="button" className="link" onClick={onClose}>Close</button>
       </div>
       {journey ? <>
+        <IntegrationStatus host={host} runs={runs} />
         <ol className="journey-steps">
           {journey.phases.map((phase) => <li key={phase.title} className={`journey-${phase.state}`}>
             <span className="journey-mark" aria-hidden="true">{phase.state === "done" ? "✓" : phase.state === "waiting" ? "…" : "?"}</span>

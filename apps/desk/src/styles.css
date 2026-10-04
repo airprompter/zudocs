@@ -107,6 +107,15 @@ button:disabled { cursor: default; opacity: 0.55; }
 .journey-steps p { margin: 3px 0; color: var(--muted); font-size: 12px; }
 .journey-steps small, .journey-asof { color: var(--muted); font-size: 11px; }
 .journey-asof { margin: 0; }
+.integration-status { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 12px 0; }
+.integration-status section { min-width: 0; }
+.integration-status h3 { margin: 0 0 8px; font-size: 13px; }
+.integration-status p { margin: 6px 0; font-size: 12px; }
+.integration-status .fine { font-size: 11px; }
+.integration-settings { margin: 8px 0; font-size: 12px; }
+.integration-settings div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--rule); }
+.integration-settings dt { color: var(--muted); }
+.integration-settings dd { margin: 0; }
 .byline { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
 .sync p { margin: 0 0 10px; font-size: 15px; line-height: 1.5; }
 .notice { display: flex; gap: 12px; align-items: center; padding: 8px 20px; font-size: 13px; border-bottom: 1px solid var(--rule); }
@@ -318,7 +327,7 @@ mark.mark-host { background: var(--amber-soft); color: var(--amber); }
 
 @media (max-width: 640px) {
   .release-journey { padding: 12px 16px; }
-  .journey-steps, .reply-comparison-grid { grid-template-columns: minmax(0, 1fr); }
+  .journey-steps, .reply-comparison-grid, .integration-status { grid-template-columns: minmax(0, 1fr); }
   .top .who { margin-left: 0; width: 100%; justify-content: flex-start; }
   .top .who > .muted { display: none; }
   .agent-line { padding: 7px 16px; }

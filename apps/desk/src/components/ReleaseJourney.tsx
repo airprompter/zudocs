@@ -50,11 +50,12 @@ export function ReleaseJourney({ host, approvals, events, runs, ticketId, onClos
   return (
     <section className="release-journey" aria-label="Release path">
       <div className="release-journey-head">
-        <div><span className="eyebrow">From AirPrompter to Zudocs</span><h2>{journey ? `Release #${journey.generation} · status, rollout and settings on ${host.region}` : `Waiting for a release on ${host.region}`}</h2></div>
+        <div><span className="eyebrow">From AirPrompter to Zudocs</span><h2>{journey ? `Status, rollout and settings · ${host.region}` : `Waiting for a release on ${host.region}`}</h2></div>
         <button type="button" className="link" onClick={onClose}>Close</button>
       </div>
       {journey ? <>
         <IntegrationStatus host={host} runs={runs} />
+        <h3 className="fine">Release #{journey.generation} path</h3>
         <ol className="journey-steps">
           {journey.phases.map((phase) => <li key={phase.title} className={`journey-${phase.state}`}>
             <span className="journey-mark" aria-hidden="true">{phase.state === "done" ? "✓" : phase.state === "waiting" ? "…" : "?"}</span>

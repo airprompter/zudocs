@@ -39,7 +39,7 @@ export function IntegrationStatus({ host, runs }: { host: HostStatus; runs: AnyR
       <h3>Prompt in Zudocs</h3>
       <p><strong>Release #{generation || "—"} · {active ? "active locally" : effectiveApplyState(host.status) ?? "state unreported"}</strong></p>
       <p>Last release check: {host.status.lastSyncAt ? `${clock(host.status.lastSyncAt)} · ${ago(host.status.lastSyncAt)}` : "not reported"}. Result: {host.status.lastSyncOutcome ?? "not reported"}.</p>
-      <p>{latest ? <>Desk database: saved reply {latest.reply.versionId ?? "version unreported"} from release #{latest.reply.generation ?? "—"} at {clock(latest.run.at)}{latest.reply.generation !== generation ? " · this is an earlier release" : ""}.</> : "Desk database: no reply recorded for this ticket on this host."}</p>
+      <p>{latest ? <>Desk database: saved reply {latest.reply.versionId ?? "version unreported"} from release #{latest.reply.generation ?? "—"} at {clock(latest.run.at)}{latest.reply.generation !== generation ? " · different from this host’s active release" : ""}.</> : "Desk database: no reply recorded for this ticket on this host."}</p>
       <Fold title="Where Zudocs stores this">
         <p>{host.status.source === "store" ? "Loaded from the SDK’s local release cache." : `Release source: ${host.status.source ?? "not reported"}.`} Cache protection: {host.status.storageProtection === "kms" ? "encrypted; key protected by KMS" : host.status.storageProtection ?? "not reported"}.</p>
         <p className="muted fine">The SDK stores the release locally. The desk database stores reply records and host reports, including the version and settings used. This report does not independently read the latest AirPrompter release.</p>

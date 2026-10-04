@@ -72,6 +72,7 @@ test("integration settings follow the active host release, not a pending release
   const snapshot = integrationSnapshot(currentHost, [run(87, at), run(86, at, "us-east-1/lambda"), run(86, at)]);
   assert.equal(snapshot.current?.reply.generation, 86);
   assert.equal(snapshot.latest?.reply.generation, 87);
+  assert.match(renderToStaticMarkup(createElement(IntegrationStatus, { host: currentHost, runs: [run(87, at)] })), /different from this host’s active release/);
   assert.equal(integrationSnapshot(currentHost, [run(87, at)]).current, null);
   assert.equal(snapshot.ramps, null);
   assert.deepEqual(integrationSnapshot({ ...currentHost, status: { ...currentHost.status, ramps: [] } }, []).ramps, []);

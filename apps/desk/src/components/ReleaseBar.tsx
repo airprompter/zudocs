@@ -22,7 +22,7 @@ export function ReleaseBar({ state }: { state: State | null }) {
     <div className={`release${s.refusal || s.failing || frozen ? " release-bad" : ""}`} title={TOOLTIPS.release}>
       <strong>release #{s.generation}</strong>
       {frozen ? <span className="refusal" title={TOOLTIPS.frozen}>FROZEN — every Run refuses: {state.frozen?.reason}</span> : null}
-      <span>active on {s.activeOn}/{s.total} host{s.total === 1 ? "" : "s"}</span>
+      <span>last reported active on {s.activeOn}/{s.total} recorded host{s.total === 1 ? "" : "s"}</span>
       {s.staged ? <span className="staged">staged #{s.staged.generation} awaiting approval ({s.staged.hosts.join(", ")})</span> : null}
       {s.refusal ? <span className="refusal">refused: {s.refusal}</span> : null}
       {s.staleRefusal ? <span className="muted" title="The SDK keeps a network refusal until the next activation; the host's last poll succeeded.">last refusal: {s.staleRefusal} (cleared by the next activation)</span> : null}

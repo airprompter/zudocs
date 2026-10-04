@@ -27,8 +27,9 @@ test("vocabulary: the badge says prompt version and release #N; generation/manif
   assert.equal(abTitle(null, false), "A|B");
   assert.equal(abTitle([], false), "A|B · no test on this release");
   assert.equal(abTitle([{ arms: ["control", "candidate"], weightBps: [7000, 3000] }], false), "A|B · 70% current reply · 30% new reply");
-  assert.equal(syncLead(86, 86), "This reply was written from release #86, the release this desk is running.");
-  assert.equal(syncLead(80, 86), "This reply was written from release #80. This desk is now running release #86.");
+  assert.equal(syncLead(86, 86), "This reply was written from release #86; its host last reported the same release.");
+  assert.equal(syncLead(80, 86), "This reply was written from release #80. Its host last reported release #86.");
+  assert.equal(syncLead(86, null), "This reply was written from release #86. Current status for that host is unavailable.");
   assert.equal(testLine("none"), "No test is on this release, so every customer gets this reply.");
   assert.equal(testLine("candidate"), "This customer got the new reply. The same customer gets that reply on every desk.");
   assert.equal(checkLine([{ verdict: "pass" }, { verdict: "pass" }, { verdict: "fail" }]), "2 passed, 1 failed.");

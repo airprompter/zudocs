@@ -1,24 +1,19 @@
-/**
- * One line for the agent that writes support replies, and when AirPrompter last
- * changed the release it is running. The mix of an A|B test is not on this line.
- *
- * @example
- * ```tsx
- * <AgentLine state={state} events={events} />
- * ```
- */
-import type { State, TimelineEvent } from "../api";
-import { TOOLTIPS, ago, releaseSummary } from "../format";
+/** The selected support host's release, with a quiet way to follow its path into a reply. */
+import type { HostStatus, TimelineEvent } from "../api";
+import { ago } from "../format";
 
-export function AgentLine({ state, events }: { state: State | null; events: TimelineEvent[] }) {
-  const summary = state ? releaseSummary(state.hosts) : null;
-  const updated = [...events].reverse().find((event) => event.kind === "release_changed" || event.kind === "release_activated");
+export function AgentLine({ host, events, label, expanded, onJourney }: { host: HostStatus | null; events: TimelineEvent[]; label: string; expanded: boolean; onJourney: () => void }) {
+  const active = Number(host?.status?.generation ?? 0);
+  const staged = Number(host?.status?.stagedGeneration ?? 0);
+  const applied = [...events].reverse().find((event) => event.host === host?.hostId && (!host?.container?.startedAt || event.at >= host.container.startedAt) && Number(event.generation) === active &&
+    (event.kind === "release_activated" || (event.kind === "release_changed" && event.applyState === "active")));
   return (
-    <p className="agent-line" title={TOOLTIPS.release}>
-      <strong>Support agent</strong>
-      {summary?.generation != null ? <span> · release #{summary.generation}</span> : <span> · reading the release…</span>}
-      {summary?.staged ? <span className="staged"> · update #{summary.staged.generation} waiting</span> : null}
-      {updated ? <span> · updated from AirPrompter {ago(updated.at)}</span> : null}
+    <p className="agent-line">
+      <strong>{label}</strong>
+      {active > 0 ? <span> · release #{active} on {host?.region}</span> : <span> · waiting for a release</span>}
+      {staged > active ? <span className="staged"> · update #{staged} waiting for approval</span> : null}
+      {applied ? <span> · applied {ago(applied.at)}</span> : host ? <span> · last reported {ago(host.writtenAt)}</span> : null}
+      {host ? <button type="button" className="link journey-toggle" aria-expanded={expanded} onClick={onJourney}>{expanded ? "Hide release path" : "Follow release path"}</button> : null}
     </p>
   );
 }

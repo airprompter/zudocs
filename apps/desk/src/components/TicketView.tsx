@@ -18,11 +18,13 @@
  * ```
  */
 import { useEffect, useState } from "react";
-import { isHostedRun, type AnyRun, type DirectProvider, type HostedRun, type Route, type Run, type Step, type Ticket } from "../api";
+import { isHostedRun, type AnyRun, type DirectProvider, type HostStatus, type HostedRun, type Route, type Run, type Step, type Ticket, type TimelineEvent } from "../api";
 import { ROUTES, TOOLTIPS, ago, armLabel, checkLine, clock, latency, modelLabel, money, replyByline, routeLabel, score, syncLead, testLine, versionBadge } from "../format";
 import { Behind } from "./Behind";
 import { Fold } from "./Fold";
 import { IntegrationFlow } from "./IntegrationFlow";
+import { ReplyComparison } from "./ReplyComparison";
+import { ReplyText } from "./ReplyText";
 import { WhyThisText } from "./WhyThisText";
 
 export interface RouteAvailability {
@@ -42,7 +44,7 @@ export function routeRefusal(route: Route, availability: RouteAvailability): str
   return null;
 }
 
-export function TicketView({ ticket, runs, busy, frozen, routes, enqueue, elsewhere, desk, emptyNote, onBehind, onRun, onEscalate, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; hosted: { target: string; runUrl: string } | null; routes: Record<Route, RouteAvailability>; enqueue: { label: string; disabled: boolean; note: string | null; onEnqueue: () => void } | null; elsewhere: { href: string; label: string; onClick: (event: { preventDefault: () => void; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; button: number }) => void } | null; desk: { generation: number | null; staged: number | null; updatedAt: string | null } | null; emptyNote: string; onBehind?: (id: string) => void; onRun: (provider?: DirectProvider) => void; onEscalate: () => void; onHosted: () => void; onCompareAll: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
+export function TicketView({ ticket, runs, busy, frozen, routes, enqueue, elsewhere, hosts, events, emptyNote, onBehind, onRun, onEscalate, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; hosted: { target: string; runUrl: string } | null; routes: Record<Route, RouteAvailability>; enqueue: { label: string; disabled: boolean; note: string | null; onEnqueue: () => void } | null; elsewhere: { href: string; label: string; onClick: (event: { preventDefault: () => void; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; button: number }) => void } | null; hosts: HostStatus[]; events: TimelineEvent[]; emptyNote: string; onBehind?: (id: string) => void; onRun: (provider?: DirectProvider) => void; onEscalate: () => void; onHosted: () => void; onCompareAll: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
   const isFrozen = frozen?.frozen ?? false;
   const disabled = busy !== null;
   const blocked = routeRefusal("bedrock", routes.bedrock);
@@ -72,10 +74,11 @@ export function TicketView({ ticket, runs, busy, frozen, routes, enqueue, elsewh
         <p className="eyebrow thread-from">From the customer</p>
         <blockquote className="ticket-body">{ticket.body}</blockquote>
       </section>
-      {latest ? (isHostedRun(latest) ? <HostedPanel run={latest} /> : <RunPanel run={latest} busy={busy} elsewhere={elsewhere} desk={desk} enqueueNote={enqueue?.note ?? null} onBehind={onBehind} onFeedback={onFeedback} />) : <p className="muted centre-note">{emptyNote}</p>}
+      {latest ? (isHostedRun(latest) ? <HostedPanel run={latest} /> : <RunPanel run={latest} busy={busy} elsewhere={elsewhere} hosts={hosts} events={events} enqueueNote={enqueue?.note ?? null} onBehind={onBehind} onFeedback={onFeedback} />) : <p className="muted centre-note">{emptyNote}</p>}
+      <ReplyComparison runs={runs} />
       {earlier.length ? (
         <Fold title={`Earlier replies · ${earlier.length}`}>
-          {earlier.map((run) => (isHostedRun(run) ? <HostedPanel key={run.runId} run={run} /> : <RunPanel key={run.runId} run={run} busy={busy} elsewhere={null} desk={desk} enqueueNote={null} onBehind={onBehind} onFeedback={onFeedback} />))}
+          {earlier.map((run) => (isHostedRun(run) ? <HostedPanel key={run.runId} run={run} /> : <RunPanel key={run.runId} run={run} busy={busy} elsewhere={null} hosts={hosts} events={events} enqueueNote={null} onBehind={onBehind} onFeedback={onFeedback} />))}
         </Fold>
       ) : null}
       <CompareTable runs={runs} />
@@ -220,13 +223,18 @@ function HostedPanel({ run }: { run: HostedRun }) {
   );
 }
 
-function RunPanel({ run, busy, elsewhere, desk, enqueueNote, onBehind, onFeedback }: { run: Run; busy: string | null; elsewhere: { href: string; label: string; onClick: (event: { preventDefault: () => void; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; button: number }) => void } | null; desk: { generation: number | null; staged: number | null; updatedAt: string | null } | null; enqueueNote: string | null; onBehind?: (id: string) => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
+function RunPanel({ run, busy, elsewhere, hosts, events, enqueueNote, onBehind, onFeedback }: { run: Run; busy: string | null; elsewhere: { href: string; label: string; onClick: (event: { preventDefault: () => void; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; button: number }) => void } | null; hosts: HostStatus[]; events: TimelineEvent[]; enqueueNote: string | null; onBehind?: (id: string) => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
   const step = (name: Step["step"]) => run.steps.find((s) => s.step === name) ?? null;
   const reply = step("reply");
   const summary = step("summary");
   const handoff = step("handoff");
   const letter = reply ?? summary ?? handoff;
   const checks = checkLine(letter?.checks ?? []);
+  const host = hosts.find((item) => item.hostId === run.host);
+  const hostGeneration = typeof host?.status?.generation === "number" ? host.status.generation as number : null;
+  const stagedGeneration = typeof host?.status?.stagedGeneration === "number" ? host.status.stagedGeneration as number : null;
+  const appliedAt = [...events].reverse().find((event) => event.host === run.host && (!host?.container?.startedAt || event.at >= host.container.startedAt) && Number(event.generation) === hostGeneration &&
+    (event.kind === "release_activated" || (event.kind === "release_changed" && event.applyState === "active")))?.at;
   return (
     <section className={`run letter${run.ok ? "" : " run-failed"}`}>
       {reply ? (reply.error ? <p className="problem">{reply.error.name}: {reply.error.message}</p> : <ReplyText text={reply.output ?? ""} />) : null}
@@ -240,8 +248,8 @@ function RunPanel({ run, busy, elsewhere, desk, enqueueNote, onBehind, onFeedbac
             { title: "Zudocs host", detail: `${run.host} ran ${letter?.tag ?? "the prompt"}${letter?.versionId ? ` ${letter.versionId}` : ""}${letter?.arm && letter.arm !== "none" ? ` for the ${armLabel(letter.arm)} group` : ""}.` },
             { title: "Reply and evidence", detail: `${checks || "No checks on this step."}${letter?.observation?.latencyMs != null ? ` Answered in ${latency(letter.observation.latencyMs)}.` : ""}` },
           ]} />
-          <p>{syncLead(letter?.generation ?? null, desk?.generation ?? null)}{desk?.updatedAt ? ` AirPrompter last updated this desk ${ago(desk.updatedAt)}.` : ""}</p>
-          {desk?.staged != null ? <p>Release #{desk.staged} is waiting. Replies keep using the release already running until it is approved.</p> : null}
+          <p>{syncLead(letter?.generation ?? null, hostGeneration)}{appliedAt ? ` That host applied it ${ago(appliedAt)}.` : ""}</p>
+          {stagedGeneration != null && stagedGeneration > (hostGeneration ?? 0) ? <p>Release #{stagedGeneration} is waiting on this host. Replies keep using release #{hostGeneration ?? "unknown"} until it is applied.</p> : null}
           {letter ? <p title={TOOLTIPS.arm}>{testLine(letter.arm)}</p> : null}
           {run.triage?.category || run.triage?.priority ? <p>The agent read this as {run.triage.category ?? "—"}, {run.triage.priority ?? "—"}.{run.triage.summary ? ` ${run.triage.summary}` : ""}</p> : null}
           {checks ? <p>{checks}</p> : null}
@@ -257,12 +265,6 @@ function RunPanel({ run, busy, elsewhere, desk, enqueueNote, onBehind, onFeedbac
       </Fold>
     </section>
   );
-}
-
-function ReplyText({ text }: { text: string }) {
-  return <div className="output reply">{text.split(/(\*\*[^*\n]+\*\*)/g).map((part, index) =>
-    /^\*\*[^*\n]+\*\*$/.test(part) ? <strong key={index}>{part.slice(2, -2)}</strong> : part,
-  )}</div>;
 }
 
 function FeedbackRow({ run, step, busy, onFeedback }: { run: Run; step: string; busy: string | null; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {

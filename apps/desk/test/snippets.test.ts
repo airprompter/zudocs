@@ -24,7 +24,7 @@ test("each snippet is the source slice, not a shortened sample", () => {
   const worker = read("services/eu-host/src/worker.ts");
   const unit = read("services/eu-host/host/units/airprompterd.service");
   const airgap = read("services/airgap/src/runtime.ts");
-  const presenter = read("apps/desk/src/components/Presenter.tsx");
+  const metrics = read("apps/desk/src/components/Metrics.tsx");
 
   assert.equal(LAMBDA_START.text, extractBalanced(runtime, "const ap = await AirPrompterAgent.start({"));
   for (const needle of ["apiKey,", 'storageProtection: "kms"', 'mode: "on_invoke"', 'policy: "auto"', "teeFetch"]) {
@@ -50,8 +50,8 @@ test("each snippet is the source slice, not a shortened sample", () => {
   assert.ok(AIRGAP_START.text.includes('mode: "offline"'));
   assert.ok(!AIRGAP_START.text.includes("apiKey"));
 
-  assert.equal(ENQUEUE_CALL.text, 'onAction("enqueue", { ticketId: selectedTicketId, host: hostId })');
-  assert.ok(presenter.includes(ENQUEUE_CALL.text));
+  assert.equal(ENQUEUE_CALL.text, 'onAction("enqueue", {ticketId,host:eu!.hostId})');
+  assert.ok(metrics.includes(ENQUEUE_CALL.text));
 });
 
 test("the desk source has no inline style", () => {

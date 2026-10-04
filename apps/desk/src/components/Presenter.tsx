@@ -1,6 +1,5 @@
 /**
- * The system controls: a heartbeat / sync now, a re-seed of the inbox, "run this ticket on eu-west now" (the other
- * host's queue), the wire: cut (the eu-west host loses AirPrompter and Bedrock, keeps the desk's tables; a rule
+ * The system controls: a heartbeat / sync now, a re-seed of the inbox, the wire: cut (the eu-west host loses AirPrompter and Bedrock, keeps the desk's tables; a rule
  * restores it in 15 minutes whatever happens) and restore — and the nudge: one message on the fleet's queue, so the
  * puller reads the origin now instead of on its schedule. Phase 6 adds the drills: the operator's CLI on the eu-west
  * host (policy show, rollback, unlock, status, doctor — a job the API hands itself; the CLI's own document lands on
@@ -13,7 +12,7 @@
  *
  * @example
  * ```tsx
- * <Presenter state={state} busy={busy} selectedTicketId="T-1041" onAction={(action, body) => api.presenter(action, body)} environment="dev" agentId="agent_…" cliOutput={null} />
+ * <Presenter state={state} busy={busy} onAction={(action, body) => api.presenter(action, body)} environment="dev" agentId="agent_…" cliOutput={null} />
  * ```
  */
 import type { State } from "../api";
@@ -22,12 +21,10 @@ import { TOOLTIPS, clock } from "../format";
 
 export interface CliOutput { command: string; summary: string; document: unknown; stdout: string; status: string; at: string }
 
-export function Presenter({ state, busy, selectedTicketId, onAction, environment, agentId, cliOutput }: { state: State | null; busy: string | null; selectedTicketId: string | null; onAction: (action: string, body?: Record<string, unknown>) => void; environment: string; agentId: string; cliOutput: CliOutput | null }) {
+export function Presenter({ state, busy, onAction, environment, agentId, cliOutput }: { state: State | null; busy: string | null; onAction: (action: string, body?: Record<string, unknown>) => void; environment: string; agentId: string; cliOutput: CliOutput | null }) {
   const cap = state?.cap;
 
   const disabled = busy !== null || state === null;
-  // "Run this ticket there now" is for hosts that run tickets: the daemon host. The puller pulls; the air-gapped host has no model.
-  const others = (state?.hosts ?? []).filter((h) => h.kind === "daemon").map((h) => h.hostId);
   const wire = state?.features?.wire ?? false;
   const nudge = state?.features?.nudge ?? false;
   const hostCli = state?.features?.hostCli ?? false;
@@ -69,11 +66,6 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
       </div>
       </Fold>
       <Fold title="Europe workers">
-      <div className="button-row">
-        {others.map((hostId) => (
-          <button key={hostId} type="button" className="button secondary" disabled={disabled || !selectedTicketId} onClick={() => selectedTicketId && onAction("enqueue", { ticketId: selectedTicketId, host: hostId })}>Run {selectedTicketId ?? "…"} on {hostId.split("/")[0]}</button>
-        ))}
-      </div>
       {wire ? (
         <div className="button-row" title={TOOLTIPS.wire}>
           <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Cut the eu-west host's wire? AirPrompter and Bedrock go dark for it; the desk's tables stay; a rule restores it in 15 minutes.")) onAction("cut_wire"); }}>Cut the wire (eu-west)</button>

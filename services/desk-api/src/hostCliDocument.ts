@@ -12,7 +12,7 @@
  * @example
  * ```ts
  * HOST_CLI_COMMANDS["policy show"];                        // "zudocs-cli policy show --json" — what the host executes
- * hostCliDocumentContent().parameters.command.allowedValues;   // ["status", "doctor", "policy show", "unlock", "rollback"]
+ * hostCliDocumentContent().parameters.command.allowedValues;   // ["status", "doctor", "policy show"]
  * HOST_CLI_DOCUMENT_NAME;                                  // "zudocs-desk-host-cli"
  * ```
  */
@@ -22,11 +22,9 @@ export const HOST_CLI_COMMANDS: Readonly<Record<HostCliCommand, string>> = Objec
   "status": "zudocs-cli status --json",
   "doctor": "zudocs-cli doctor --json",
   "policy show": "zudocs-cli policy show --json",
-  "unlock": "zudocs-cli unlock --json",
-  "rollback": "zudocs-cli rollback --json",
 });
 
-export type HostCliCommand = "status" | "doctor" | "policy show" | "unlock" | "rollback";
+export type HostCliCommand = "status" | "doctor" | "policy show";
 
 export const isHostCliCommand = (value: unknown): value is HostCliCommand => typeof value === "string" && Object.prototype.hasOwnProperty.call(HOST_CLI_COMMANDS, value);
 

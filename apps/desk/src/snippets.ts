@@ -80,14 +80,14 @@ export const DAEMON_START: Snippet = {
   "id": "daemon-start",
   "file": "services/eu-host/src/worker.ts",
   "caption": "What you write",
-  "text": "const agent = await AirPrompterAgent.start({\n        organizationId: env.airprompter.organizationId,\n        agentId: env.airprompter.agentId,\n        target: env.airprompter.environment,\n        apiKey: env.airprompter.apiKey!,\n        baseUrl: env.airprompter.baseUrl,\n        stateDir: env.stateDir,\n        root: { pinned: rootJwk as never, hostedEnvironment: env.airprompter.hostedEnvironment },\n        sync: { mode: \"resident\", pollSeconds: 30, edgePointerUrl: env.airprompter.edgePointerUrl, rootUrl: env.airprompter.rootUrl },\n        apply: { policy: \"unlock_required\" },\n        telemetry: { upload: false },\n        models: [...MODELS],\n        variables: {\n          customer_tier: { resolve: async ({ subject }) => (subject ? (await store.getCustomer(subject))?.tier : undefined), trust: \"operator\", timeoutMs: 1500 },\n        },\n        logger: (event) => log({ source: \"airprompter-sdk\", ...event }),\n      });",
+  "text": "const agent = await AirPrompterAgent.start({\n        organizationId: env.airprompter.organizationId,\n        agentId: env.airprompter.agentId,\n        target: env.airprompter.environment,\n        apiKey: env.airprompter.apiKey!,\n        baseUrl: env.airprompter.baseUrl,\n        stateDir: env.stateDir,\n        root: { pinned: rootJwk as never, hostedEnvironment: env.airprompter.hostedEnvironment },\n        sync: { mode: \"resident\", pollSeconds: 30, edgePointerUrl: env.airprompter.edgePointerUrl, rootUrl: env.airprompter.rootUrl },\n        apply: { policy: \"auto\" },\n        telemetry: { upload: false },\n        models: [...MODELS],\n        variables: {\n          customer_tier: { resolve: async ({ subject }) => (subject ? (await store.getCustomer(subject))?.tier : undefined), trust: \"operator\", timeoutMs: 1500 },\n        },\n        logger: (event) => log({ source: \"airprompter-sdk\", ...event }),\n      });",
   "marks": [
     {
       "needle": "mode: \"resident\"",
       "kind": "write"
     },
     {
-      "needle": "policy: \"unlock_required\"",
+      "needle": "policy: \"auto\"",
       "kind": "host"
     }
   ]
@@ -97,10 +97,10 @@ export const POLICY_LINE: Snippet = {
   "id": "policy-line",
   "file": "services/eu-host/src/worker.ts",
   "caption": "What this host adds",
-  "text": "        apply: { policy: \"unlock_required\" },",
+  "text": "        apply: { policy: \"auto\" },",
   "marks": [
     {
-      "needle": "policy: \"unlock_required\"",
+      "needle": "policy: \"auto\"",
       "kind": "host"
     }
   ]

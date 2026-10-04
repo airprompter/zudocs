@@ -23,7 +23,7 @@ const COLLECTIONS: [Collection, string, string][] = [
   ["tickets", "Tickets", "Ticket records, joined with their customers by the desk API."],
   ["customers", "Customers", "Customer records associated with the tickets in this inbox."],
   ["hosts", "Host reports", "Persisted reports from the status table. These can lag the live SDK check."],
-  ["approvals", "Approvals", "Up to 50 latest saved approval records. Rollout plans are added by the API."],
+  ["approvals", "Legacy approvals", "Historical Zudocs approval records, read-only. Current releases are approved and published in AirPrompter."],
   ["events", "Activity", "Recent saved events: initially up to 100 for the current UTC day, then new events as they arrive."],
   ["usage", "Daily usage", "The current UTC day's run counter and configured daily limit."],
 ];

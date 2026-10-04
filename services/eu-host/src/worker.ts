@@ -1,11 +1,9 @@
 /**
  * The eu-west ticket worker: one Node process on the shared host beside `airprompterd`. The daemon ships telemetry
  * and nothing else. This process loads its own release (its store, then its own sync) with the Agent key systemd
- * injects, and pins `unlock_required` so a staged release waits for the desk. What it does:
+ * injects, and automatically applies verified releases published by AirPrompter. What it does:
  *
  * - **the SDK**, started in resident mode. A start that finds nothing verified is retried; the process keeps running.
- * - **approvals** (`ApprovalWatcher`): a staged release → a row the desk shows → the owner approves → `ap.unlock()`
- *   on this process's store.
  * - **status**: every 30 s this process's `status()` and `healthz()`, merged into the host's row; every health
  *   transition is a timeline row.
  * - **tickets**: every `ZUDOCS_TICKET_INTERVAL_SECONDS` (an hour idle; `ZUDOCS_DEMO_TICKET_INTERVAL_SECONDS`,
@@ -28,14 +26,13 @@ import { fileURLToPath } from "node:url";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
-import { AirPrompterAgent, SDK_NAME, SDK_VERSION, isAgentStartError, isStoreError } from "@airprompter/agent-sdk";
+import { AirPrompterAgent, SDK_NAME, SDK_VERSION, isAgentStartError } from "@airprompter/agent-sdk";
 import { createCallers } from "../../desk-api/src/bedrock.js";
 import { MODELS } from "../../desk-api/src/modelCatalogue.js";
 import { collectObservations, tapObservations } from "../../desk-api/src/observe.js";
 import { runTicket, type StepRecord } from "../../desk-api/src/run.js";
 import type { RunHost } from "../../desk-api/src/runtime.js";
 import { createStore, dayOf, type Store, type Ticket } from "../../desk-api/src/store.js";
-import { ApprovalWatcher } from "./approvals.js";
 import { TicketCadence, parseDemoMode, readDemoModeParameter, type DemoModeDoc } from "./demoMode.js";
 import { readHostEnv, type HostEnv } from "./hostEnv.js";
 import { statusFields } from "./statusRow.js";
@@ -93,11 +90,10 @@ async function main(): Promise<void> {
   if (rootJwk.d !== undefined) throw new Error(`${env.airprompter.rootJwkPath} carries a private member`);
   if (!env.airprompter.apiKey) throw new Error("host env: AIRPROMPTER_AGENT_KEY is not set; this process syncs its own release");
   const store = createStore(DynamoDBDocumentClient.from(new DynamoDBClient({ region: env.tablesRegion }), { marshallOptions: { removeUndefinedValues: true } }), env.tables);
-  const storeIdNow = (): string => ap?.instanceId ?? "pending";
   const sdk = `${SDK_NAME}/${SDK_VERSION}`;
   const ec2 = await readEc2Identity();
 
-  // --- The SDK: this process syncs and serves. Under unlock_required, start() returns with generation 0 and a staged release. --
+  // --- The SDK: resident sync verifies and applies AirPrompter releases without desk approval. --
   let ap: AirPrompterAgent | null = null;
   let host: RunHost | null = null;
   let attaching = false;
@@ -114,7 +110,7 @@ async function main(): Promise<void> {
         stateDir: env.stateDir,
         root: { pinned: rootJwk as never, hostedEnvironment: env.airprompter.hostedEnvironment },
         sync: { mode: "resident", pollSeconds: 30, edgePointerUrl: env.airprompter.edgePointerUrl, rootUrl: env.airprompter.rootUrl },
-        apply: { policy: "unlock_required" },
+        apply: { policy: "auto" },
         telemetry: { upload: false },
         models: [...MODELS],
         variables: {
@@ -176,33 +172,9 @@ async function main(): Promise<void> {
     lastHealth = health;
   };
 
-  // --- Approvals: this process staged the release; the desk's approval unlocks it --------------------------------
-  const watcher = new ApprovalWatcher({
-    hostId: env.hostId,
-    storeId: storeIdNow,
-    store,
-    // Null until start() has returned. Its initial status can be generation 0 with a staged release.
-    status: () => {
-      if (!ap) return null;
-      const s = ap.status();
-      return { generation: s.generation, stagedGeneration: s.stagedGeneration, unlockRequests: s.unlockRequests };
-    },
-    unlock: async () => ap?.unlock() ?? null,
-    isRefusal: (error) => isStoreError(error),
-    now: () => new Date().toISOString(),
-    log,
-  });
-  let settled = -1;
-  try {
-    settled = await watcher.reconcile();
-  } catch (error) {
-    // The approvals table may not exist yet on the very first deploy (the desk stack lands after this one); the
-    // watcher's ticks keep trying and the row appears once it does.
-    log({ event: "reconcile_failed", reason: (error as Error).message.slice(0, 200) });
-  }
   await readDemoMode();
   await writeStatus().catch((error) => log({ event: "status_write_failed", reason: (error as Error).message }));
-  log({ event: "serving", hostId: env.hostId, settledApprovals: settled, ec2: ec2?.instanceId ?? null, demoMode: demoMode.mode, ticketIntervalSeconds: cadence.intervalSeconds });
+  log({ event: "serving", hostId: env.hostId, ec2: ec2?.instanceId ?? null, demoMode: demoMode.mode, ticketIntervalSeconds: cadence.intervalSeconds });
 
   // --- Tickets -----------------------------------------------------------------------------------------------------------
   const cursor = { last: null as string | null };
@@ -212,7 +184,7 @@ async function main(): Promise<void> {
     running = true;
     try {
       if (!ap || !host || ap.generation === 0) {
-        // Nothing verified to serve (a fresh host under unlock_required waiting for the desk's approval): say so,
+        // Nothing verified to serve yet: say so,
         // run nothing — and take nothing off the presenter's queue, so a queued ticket runs once the host serves.
         if (from === "timer") log({ event: "ticket_skipped", reason: ap ? "no_verified_release" : "sdk_not_started", from });
         return;
@@ -246,17 +218,8 @@ async function main(): Promise<void> {
 
   void attach();
   const timers = [
-    // Start (or retry) this process's own sync, then the watcher. The first staged release is held inside start()
-    // until the desk approves; a later one is ap.unlock(). The row flips with the decision, not at the next status timer.
-    setInterval(() => void (async () => {
-      await attach();
-      if (settled === -1 && ap) {
-        settled = await watcher.reconcile().catch(() => -1);
-        if (settled >= 0) log({ event: "reconciled", settledApprovals: settled });
-      }
-      const action = await watcher.tick();
-      if (action === "activated") await writeStatus().catch((error) => log({ event: "status_write_failed", reason: (error as Error).message }));
-    })(), 5_000),
+    // Retry initial attachment; the SDK owns resident release polling and activation.
+    setInterval(() => void attach(), 5_000),
     setInterval(() => void writeStatus().catch((error) => log({ event: "status_write_failed", reason: (error as Error).message })), env.statusIntervalSeconds * 1000),
     // The ticket timer under the demo-mode switch: looked at every ten seconds, due once per interval in force.
     setInterval(() => { if (cadence.due(Date.now())) void runOne("timer"); }, 10_000),
@@ -268,8 +231,6 @@ async function main(): Promise<void> {
   const stop = async (signal: string) => {
     for (const t of timers) clearInterval(t);
     log({ event: "stopping", signal, tickets });
-    // An unlock in flight settles its row before the process goes; the store keeps the release either way.
-    await watcher.inFlight?.catch(() => undefined);
     await store.appendEvent({ at: new Date().toISOString(), kind: "worker_stopped", host: env.hostId, signal, tickets }).catch(() => undefined);
     if (ap) await ap.stop();
     process.exit(0);

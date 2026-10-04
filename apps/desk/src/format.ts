@@ -8,7 +8,7 @@
  * @example
  * ```ts
  * versionBadge("support.reply", "rev-2", 1);   // "reply rev-2 · release #1"
- * releaseSummary(hosts).staged;                // { generation: 2, hosts: ["eu-west-1"] } — what the bar says is awaiting approval
+ * releaseSummary(hosts).staged;                // { generation: 2, hosts: ["eu-west-1"] } — what the bar says is waiting for activation
  * mergeEvents(current, fresh);                 // the timeline without a row shown twice
  * segmentRender("Hi <ticket>help</ticket>, tier team.", [{ name: "ticket", value: "help", fenced: true, origin: "call_site", … }, …]);
  * ```
@@ -25,7 +25,7 @@ export const TOOLTIPS = {
   release: "A release is a signed manifest at a generation; hosts pull it and apply it under their own policy.",
   storage: "How the slot store's data key is protected on this host. kms: wrapped by a KMS key. file_key: a 0600 file — reported, never hidden.",
   cap: "Runs per UTC day this host allows. At the line the API refuses with HTTP 429; nothing is simulated.",
-  approval: "This host's policy is unlock_required: AirPrompter stages a release and only your approval (or an operator's unlock on the host) makes it live. The console can request an unlock; it can never grant one.",
+  approval: "AirPrompter approves and publishes releases. The SDK verifies and applies them automatically under the signed policy; Zudocs has no release approval action.",
   daemon: "On the Europe host, each worker loads its own signed release with the Agent SDK. airprompterd ships their telemetry; it does not serve releases.",
   ignoredByContract: "The hosted route accepts these OpenAI parameters and ignores them by contract: the sealed version owns its settings. The response carries no settings, so this is the contract's word, not an observation.",
   lease: "How long this host may keep serving without hearing from AirPrompter. After it lapses the host degrades (keeps serving, says so) — the wire-cut drill shows it.",
@@ -39,9 +39,9 @@ export const TOOLTIPS = {
   providerDoor: "The kill switch and the daily line: a direct provider's key is billed outside AWS, where the account's budget deny policy cannot reach it — so the host refuses for itself. A closed door answers 503 before anything is called; a provider past its own daily line answers 429. The release's own model in your account is never gated by either.",
   hosted: "Hosted staging: the same prompts run on AirPrompter's own execution with a run key bound to one environment — no store, no model key of ours. The stream is replayed as it arrived; the compatible endpoint shows the caller's temperature marked ignored by contract beside the version's sealed settings (the response carries no settings; the mark is the contract's word).",
   hostCli: "The operator's CLI on the eu-west host, through Session Manager's Run Command, targeted by the instance's Name tag: a fixed list of zudocs-cli commands; the CLI's own document lands on the timeline. Nothing typed here reaches a shell.",
-  frozen: "A signed disable directive stops rendering when a host verifies and applies it. On the Europe host, each worker applies its own release under the local approval policy. Only the console lifts a freeze.",
+  frozen: "A signed disable directive stops rendering when a host verifies and applies it. On the Europe host, each worker verifies and automatically applies published releases. Only the console lifts a freeze.",
   golden: "The golden set: cases with expected outputs, run against the pinned model on this host before a staged release activates (under auto too). Below the floor, the release stays staged.",
-  policyLocal: "This host's own apply policy, set by an operator through the SDK. auto loosens a pin the console tightened; unlock_required tightens it by hand. The console's setting is advisory once a host is pinned.",
+  policyLocal: "Read-only SDK application policy. Zudocs cannot override it; signed policy tightening is enforced by the SDK.",
   power: "The eu-west host is a t4g.micro the desk stops and starts at EC2: asleep, only its 8 GiB volume bills. A schedule puts it to sleep every night. On start, the daemon re-reads its Agent key from SSM and each worker loads its release — about three minutes to a fresh row.",
   demoMode: "The eu-west workers' cadence: idle, a ticket an hour (Node) and every two hours (Python) — cents a day. Demo mode drops that to every two and five minutes for at most four hours, then lapses on its own; the workers read the switch every minute, and the nightly sleep skips the host while it is on.",
 } as const;

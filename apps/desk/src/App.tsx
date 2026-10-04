@@ -197,7 +197,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   useEffect(() => { void loadTickets(); void loadState(); void loadEvents(); void loadApprovals(); void loadArms(); }, [loadTickets, loadState, loadEvents, loadApprovals, loadArms]);
   useEffect(() => {
     const s = setInterval(() => void loadState(), 10_000);
-    const e = setInterval(() => { void loadEvents(); void loadApprovals(); }, 5_000);
+    const e = setInterval(() => { void loadEvents(); }, 5_000);
     const a = setInterval(() => void loadArms(), 20_000);
     return () => { clearInterval(s); clearInterval(e); clearInterval(a); };
   }, [loadState, loadEvents, loadApprovals, loadArms]);
@@ -247,14 +247,6 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
     say("info", typeof result.message === "string" ? result.message : `${action}: done`);
     await Promise.all([loadState(), loadEvents(), action === "seed" || action === "reset" ? loadTickets() : Promise.resolve(), loadArms(), action === "reset" ? loadApprovals() : Promise.resolve()]);
     if (action === "seed" || action === "reset") { setRuns([]); if (action === "reset") { setEvents([]); lastEventAt.current = null; } }
-  });
-  const approve = (approvalId: string) => act("approve", async () => {
-    try {
-      const { message, already } = await api.approve(approvalId);
-      say(already ? "warn" : "info", message);
-    } finally {
-      await Promise.all([loadApprovals(), loadEvents()]);
-    }
   });
 
   const selectTicket = (id: string) => {
@@ -327,9 +319,9 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
         {route === "compare" ? <main className="centre"><RecordComparison api={api} runs={ticketRuns} ticketId={selectedId} boardUrl={config.airprompterBoardUrl} tickets={tickets} onSelect={selectTicket} ready={runsTicketId === selectedId && selectedId !== null} /></main> : null}
         {route === "database" ? <main className="centre"><Database tickets={tickets} runs={ticketRuns} selectedId={selectedId} onSelect={selectTicket} state={state} approvals={approvals} events={events} reads={reads} runsReady={runsTicketId === selectedId && selectedId !== null} runsReadAt={runsTicketId === selectedId ? runsReadAt : null} runsUnavailable={runsUnavailable} onRefresh={refreshRecords} /></main> : null}
         {inSystem ? <main className="centre"><div className="page-content system">
-          <header className="page-heading"><div><p className="eyebrow">AirPrompter integration</p><h1>System</h1><p className="muted">Deployment status, approvals and controls.</p></div></header>
+          <header className="page-heading"><div><p className="eyebrow">AirPrompter integration</p><h1>System</h1><p className="muted">AirPrompter releases, automatic sync and recorded results.</p></div></header>
           <nav className="section-nav" aria-label="System pages">{(["architecture", "experiments", "metrics", "operate"] as const).map((page) => <a key={page} href={deskHref(page, selectedId)} aria-current={route === page ? "page" : undefined} onClick={(event) => follow(event, page)}>{page === "architecture" ? "Overview" : PAGE_LABEL[page]}</a>)}</nav>
-          {route === "architecture" ? <SystemOverview state={state} approvals={approvals} busy={busy} onApprove={approve} onBehind={openBehind} reads={reads} /> : null}
+          {route === "architecture" ? <SystemOverview state={state} onBehind={openBehind} reads={reads} api={api} boardUrl={config.airprompterBoardUrl} /> : null}
           {route === "operate" ? <Presenter state={state} busy={busy} onAction={presenter} environment={config.environment} agentId={config.agentId} cliOutput={newestCli(events)} /> : null}
           {route === "experiments" ? <><ExperimentDemo api={api} state={state} busy={busy} onAction={presenter} boardUrl={config.airprompterBoardUrl} /><Experiments arms={arms} /></> : null}
           {route === "metrics" ? <Metrics events={events} state={state} arms={arms} busy={busy} onAction={presenter} boardUrl={config.airprompterBoardUrl} ticketId={selectedId} /> : null}

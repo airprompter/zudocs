@@ -40,10 +40,10 @@ test("each snippet is the source slice, not a shortened sample", () => {
   assert.equal(DAEMON_START.text, extractBalanced(worker, "const agent = await AirPrompterAgent.start({"));
   assert.ok(DAEMON_START.text.includes("apiKey:"));
   assert.ok(DAEMON_START.text.includes('mode: "resident"'));
-  assert.ok(DAEMON_START.text.includes('policy: "unlock_required"'));
+  assert.ok(DAEMON_START.text.includes('policy: "auto"'));
 
-  assert.equal(POLICY_LINE.text, extractLine(worker, 'policy: "unlock_required"'));
-  assert.ok(POLICY_LINE.text.includes('policy: "unlock_required"'));
+  assert.equal(POLICY_LINE.text, extractLine(worker, 'policy: "auto"'));
+  assert.ok(POLICY_LINE.text.includes('policy: "auto"'));
   assert.equal(TELEMETRY_DAEMON.text, extractLine(unit, "ExecStart=/usr/local/bin/airprompter daemon"));
 
   assert.equal(AIRGAP_START.text, extractBalanced(airgap, "const agent = await AirPrompterAgent.start({"));

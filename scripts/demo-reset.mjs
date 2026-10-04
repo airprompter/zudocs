@@ -93,9 +93,8 @@ say("3. policies");
   const state = await desk.state();
   const east = state.host.status?.applyPolicy;
   if (east?.effective === "auto") found(`us-east: auto (${east.source})`);
-  else if (dryRun) found(`us-east: would set auto (now ${east?.effective} ${east?.source})`);
-  else { const r = await desk.api("POST", "/presenter/policy", { value: "auto" }); did(`us-east: ${r.json.message ?? JSON.stringify(r.json).slice(0, 200)}`); }
-  found("eu-west: the worker pins unlock_required; no drill changes it, nothing to put back");
+  else found(`us-east: policy ${east?.effective} (${east?.source}); manage release policy in AirPrompter or host maintenance`);
+  found("eu-west: workers automatically sync AirPrompter releases; no local release override");
 }
 
 // --- 3b. a replay in flight keeps writing runs for up to five minutes: let it finish before the tables are cleared ------

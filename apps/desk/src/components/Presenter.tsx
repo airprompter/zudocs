@@ -2,9 +2,8 @@
  * The system controls: a heartbeat / sync now, a re-seed of the inbox, the wire: cut (the eu-west host loses AirPrompter and Bedrock, keeps the desk's tables; a rule
  * restores it in 15 minutes whatever happens) and restore — and the nudge: one message on the fleet's queue, so the
  * puller reads the origin now instead of on its schedule. Phase 6 adds the drills: the operator's CLI on the eu-west
- * host (policy show, rollback, unlock, status, doctor — a job the API hands itself; the CLI's own document lands on
- * the timeline and the newest answer is shown below the buttons), this host's own apply policy (an operator's act on
- * the SDK — the one loosening in the fleet; the daemon host's policy is its unit's flag), the golden set run now, and
+ * host (policy show, status, doctor — a job the API hands itself; the CLI's own document lands on
+ * the timeline and the newest answer is shown below the buttons), read-only release policy, the golden set run now, and
  * the reset's clearing step. Phase 8 adds the steady state: **Wake the fleet** and **Sleep** (the eu-west host started
  * and stopped at EC2; the card reads waking / asleep since). Traffic controls live on Experiments;
  * upload controls live on Metrics.
@@ -60,8 +59,6 @@ export function Presenter({ state, busy, onAction, environment, agentId, cliOutp
       ) : null}
       <div className="button-row" title={TOOLTIPS.policyLocal}>
         <span className="muted fine">this host: policy {policy?.effective ?? "—"} ({policy?.source ?? "—"})</span>
-        <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("policy", { value: "auto" })}>set auto</button>
-        <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("policy", { value: "unlock_required" })}>set unlock_required</button>
         <button type="button" className="chip-button" disabled={disabled} title={TOOLTIPS.golden} onClick={() => onAction("golden")}>Golden set now</button>
       </div>
       </Fold>
@@ -89,8 +86,6 @@ export function Presenter({ state, busy, onAction, environment, agentId, cliOutp
           <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "policy show" })}>policy show</button>
           <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "status" })}>status</button>
           <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "doctor" })}>doctor</button>
-          <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("host_cli", { command: "unlock" })}>unlock</button>
-          <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Roll the eu-west host back to its previous release? A step below the stored generation is a forced downgrade the fleet page reports; the host is held back until something newer is promoted.")) onAction("host_cli", { command: "rollback" }); }}>rollback</button>
           <span className="muted fine">the latest answer appears below; its activity record is in Database</span>
         </div>
       ) : null}

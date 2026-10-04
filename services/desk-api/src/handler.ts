@@ -5,16 +5,9 @@
  * them writes this host's status row. The daily cap is taken atomically before a run and refused as HTTP 429 with
  * the count; nothing is simulated at the line. `replay` is the one asynchronous action: the function invokes itself
  * with a job event and walks it sequentially under the same cap. The status tick (`{ tick: "status" }` from EventBridge
- * every five minutes) is a sync pass and one status row, so the card never goes stale between runs. Approvals are the eu-west host's staged releases:
- * the host writes the row, `POST /approvals/{id}/approve` records the owner's decision exactly once (a repeat
- * answers with the row as it stands; a row the host has moved past — a newer generation staged on the same store,
- * or the host's own row saying something else is staged — answers `409 approval_stale` and is not approved), and
- * the host's SDK activates it and settles the row. Phase 6 adds
- * the hosted staging run (`POST /tickets/{id}/hosted-run`, `hosted.ts`), the per-arm results (`GET /arms`), the
- * approval rows enriched with the ramp plan the us-east host read from the same signed manifest, and four presenter
- * actions: `host_cli` (an allowlisted `zudocs-cli` command on the eu-west host through Run Command), `policy` (this
- * host's own apply policy — an operator's act, the one way a pin loosens), `golden` (run the active release's golden
- * sets now and show the report) and `reset` (clear the desk's records and re-seed: the reset script's last step).
+ * every five minutes) is a sync pass and one status row, so the card never goes stale between runs. Releases are approved and published in
+ * AirPrompter; local approval and policy writes answer 409. The desk reads independently verified release metadata
+ * at GET /rollout and keeps historical local approval records read-only. Host CLI commands are diagnostics only.
  * A frozen environment (a `disable` directive on the manifest) refuses every run with the SDK's own reason.
  * Phase 8 adds three more: `sleep_host` and `wake_host` (the eu-west host stopped and started through the power
  * function; the card reads asleep since / waking from the row's marker, and a poll that finds the marker in
@@ -32,7 +25,7 @@
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyResultV2, Context } from "aws-lambda";
 import { normalizeFeedback } from "@airprompter/agent-sdk";
-import { compareRun, previewAssignments } from "./integration.js";
+import { compareRun, previewAssignments, publishedRollout } from "./integration.js";
 import type { RunRecord } from "./run.js";
 import { foldArms } from "./arms.js";
 import { HOST_CLI_COMMANDS, documentOf, isHostCliCommand, type HostCliCommand } from "./hostCli.js";
@@ -242,6 +235,11 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       const record = await hostedRun({ ports: { env: { hosted: env.hosted, hostId: env.hostId, region: env.region, agentId: env.airprompter.agentId }, store }, client: host.hosted, ticket, customer, by });
       return { statusCode: record.ok ? 200 : 502, body: { run: record } };
     }
+    case "rollout": {
+      if (!host.publishedRelease) return { statusCode: 501, body: { error: "rollout_unavailable" } };
+      try { return { statusCode: 200, body: publishedRollout(await host.publishedRelease(), Date.now()) }; }
+      catch { return { statusCode: 503, body: { error: "published_release_unavailable", message: "The AirPrompter release could not be verified." } }; }
+    }
     case "comparison": {
       const run = await store.getRun(params.runId!);
       if (!run) return { statusCode: 404, body: { error: "no_such_run" } };
@@ -332,31 +330,14 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
     case "list_approvals": {
       await ap.invoke(async () => undefined);
       const approvals = await store.listApprovals(50);
-      // The ramp plan a staged release carries: this host applied the same generation under `auto` and read it from the
-      // signed manifest, so the page can show what one approval on eu-west unlocks — every step of the plan, no check-in.
+      // Legacy records remain inspectable; any matching ramp metadata is read-only SDK evidence.
       const status = ap.status();
       const rampsOf = (generation: number) => (status.generation === generation ? status.ramps ?? [] : []).map((r) => ({ experimentId: r.experimentId, tag: r.tag, arms: r.arms, weightBps: r.weightBps, plan: r.plan, readBy: env.hostId }));
       const enriched = approvals.map((a) => ({ ...a, ramps: rampsOf(a.generation) }));
       return { statusCode: 200, body: { approvals: enriched, pending: approvals.filter((a) => a.decision === "pending").length } };
     }
-    case "approve": {
-      // Everyone who can sign in is the owner (README › sign-in); the decision is recorded once, under the signer's name.
-      const at = new Date().toISOString();
-      const current = await store.getApproval(params.approvalId!);
-      if (!current) return { statusCode: 404, body: { error: "no_such_approval" } };
-      if (current.decision === "pending") {
-        const [approvals, hosts] = await Promise.all([store.listApprovals(50), store.listStatus()]);
-        const staleness = approvalStaleness(current, approvals, hosts);
-        if (staleness.stale) return { statusCode: 409, body: { error: "approval_stale", approval: current, message: `not approved: ${staleness.reason}; the host settles this row on its next tick` } };
-      }
-      const decided = await store.approve(params.approvalId!, by, at);
-      if (!decided.row) return { statusCode: 404, body: { error: "no_such_approval" } };
-      if (decided.ok) {
-        await store.appendEvent({ at, kind: "approval_decided", host: env.hostId, approvalId: decided.row.approvalId, forHost: decided.row.hostId, generation: decided.row.generation, decision: "approved", by });
-        return { statusCode: 200, body: { approval: decided.row, already: false, message: `release #${decided.row.generation} approved for ${decided.row.hostId}; the host's worker applies it and the card flips when it has` } };
-      }
-      return { statusCode: 200, body: { approval: decided.row, already: true, message: decided.row.decision === "pending" ? "that approval changed under you; read it again" : `release #${decided.row.generation} on ${decided.row.hostId} is already ${decided.row.decision}${decided.row.decidedBy ? ` (by ${decided.row.decidedBy})` : ""}` } };
-    }
+    case "approve":
+      return { statusCode: 409, body: { error: "airprompter_managed", message: "Approve and publish releases in AirPrompter. Zudocs only syncs and observes signed releases." } };
     case "healthz": {
       const healthz = ap.healthz();
       return { statusCode: healthz.ok ? 200 : 503, body: healthz };
@@ -494,16 +475,8 @@ async function presenter(host: Host, action: string, body: Record<string, unknow
       await store.appendEvent({ at: requestedAt, kind: "presenter", host: env.hostId, action, by, command, forHost: `${env.euHost.region}/ec2` });
       return { statusCode: 202, body: { action, command, line: HOST_CLI_COMMANDS[command], requestedAt, message: `zudocs-cli ${command} queued for the eu-west host; the timeline shows the CLI's answer when it lands (seconds; doctor takes up to a minute)` } };
     }
-    case "policy": {
-      // This host's own apply policy: an operator's act on the SDK (`setApplyPolicy`) — `auto` loosens a pin the console tightened, `unlock_required` tightens it by hand.
-      const value = body.value;
-      if (value !== "auto" && value !== "unlock_required") return { statusCode: 400, body: { error: "no_such_policy", message: "value is auto or unlock_required" } };
-      const before = ap.status().applyPolicy;
-      const after = await ap.invoke(async () => ap.setApplyPolicy(value, { by }));
-      await store.appendEvent({ at: at(), kind: "policy_set", host: env.hostId, value, before: before.effective, after: after.effective, source: after.source, by });
-      await host.writeStatus();
-      return { statusCode: 200, body: { action, before, after, message: before.effective === after.effective ? `this host's policy was already ${after.effective} (${after.source})` : `this host's policy: ${before.effective} → ${after.effective} (${after.source}); the console's setting is advisory here` } };
-    }
+    case "policy":
+      return { statusCode: 409, body: { error: "airprompter_managed", message: "Release policy is managed in AirPrompter; Zudocs does not override it." } };
     case "golden": {
       // The active release's golden sets, run now against the pinned model; the SDK files goldenPass per case, the desk shows counts.
       const tag = typeof body.tag === "string" ? body.tag : undefined;

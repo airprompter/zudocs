@@ -11,20 +11,24 @@
 
 import type { HostStatus, State } from "./api";
 
-export type DeskRoute = "architecture" | "agent" | "daemon" | "operate";
+export type DeskRoute = "architecture" | "agent" | "daemon" | "operate" | "database" | "experiments";
 
 export const PAGE_LABEL: Record<DeskRoute, string> = {
-  architecture: "Hosts",
+  architecture: "System",
   agent: "Inbox",
   daemon: "Europe",
-  operate: "Operator",
+  operate: "Controls",
+  database: "Database",
+  experiments: "Experiments",
 };
 
 const PATH: Record<DeskRoute, string> = {
-  architecture: "/fleet",
+  architecture: "/system",
   agent: "/",
   daemon: "/daemon",
-  operate: "/operate",
+  operate: "/system/controls",
+  database: "/database",
+  experiments: "/system/experiments",
 };
 
 /** Exact match. A trailing slash is a different path and is not the callback. */
@@ -40,11 +44,15 @@ export function parseDeskRoute(pathname: string): DeskRoute {
     case "/agent":
       return "agent";
     case "/fleet":
+    case "/system":
       return "architecture";
     case "/daemon":
       return "daemon";
     case "/operate":
+    case "/system/controls":
       return "operate";
+    case "/database": return "database";
+    case "/system/experiments": return "experiments";
     default:
       return "agent";
   }

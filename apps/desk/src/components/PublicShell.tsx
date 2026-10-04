@@ -36,7 +36,6 @@ export function PublicShell({ environment, agentId, onSignIn, problem }: { envir
           <p className="eyebrow">Zudocs support · powered by AirPrompter</p>
           <h1>From a prompt update to a customer reply.</h1>
           <p className="lede">Zudocs customers ask about their docs. AirPrompter supplies the versioned prompts; the Zudocs desk uses them to triage, answer and check each ticket.</p>
-          <p className="actions"><button type="button" className="button" onClick={onSignIn}>Sign in to the inbox</button></p>
           <section className="welcome-flow" aria-labelledby="welcome-flow-title">
             <h2 id="welcome-flow-title">How the two systems work together</h2>
             <IntegrationFlow label="AirPrompter to Zudocs support" steps={[
@@ -52,7 +51,7 @@ export function PublicShell({ environment, agentId, onSignIn, problem }: { envir
             {environment || agentId ? ` · ${environment} · ${agentId}` : ""}
           </p>
         </main>
-        <CodeDrawer snippets={SNIPPETS} focus={focus} onClose={() => setSheet(false)} />
+        {sheet ? <CodeDrawer snippets={SNIPPETS} focus={focus} onClose={() => setSheet(false)} /> : null}
       </div>
     </div>
   );

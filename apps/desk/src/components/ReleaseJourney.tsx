@@ -1,6 +1,7 @@
 /** A host-specific account of a signed release reaching one customer reply. */
 import { isHostedRun, type AnyRun, type Approval, type HostStatus, type TimelineEvent } from "../api";
 import { ago, clock, effectiveApplyState } from "../format";
+import { Fold } from "./Fold";
 import { IntegrationStatus } from "./IntegrationStatus";
 
 export interface JourneyPhase { title: string; detail: string; at: string | null; state: "done" | "waiting" | "unknown" }
@@ -45,23 +46,21 @@ export function journeySnapshot(host: HostStatus, approvals: Approval[], events:
   return { generation, active, fresh, phases };
 }
 
-export function ReleaseJourney({ host, approvals, events, runs, ticketId, onClose }: { host: HostStatus; approvals: Approval[]; events: TimelineEvent[]; runs: AnyRun[]; ticketId: string | null; onClose: () => void }) {
+export function ReleaseJourney({ host, approvals, events, runs, ticketId }: { host: HostStatus; approvals: Approval[]; events: TimelineEvent[]; runs: AnyRun[]; ticketId: string | null }) {
   const journey = journeySnapshot(host, approvals, events, runs, ticketId);
   return (
     <section className="release-journey" aria-label="Release path">
-      <div className="release-journey-head">
-        <div><span className="eyebrow">From AirPrompter to Zudocs</span><h2>{journey ? `Status, rollout and settings · ${host.region}` : `Waiting for a release on ${host.region}`}</h2></div>
-        <button type="button" className="link" onClick={onClose}>Close</button>
-      </div>
+      <p className="eyebrow">From AirPrompter to Zudocs · {host.region}</p>
       {journey ? <>
         <IntegrationStatus host={host} runs={runs} />
-        <h3 className="fine">Release #{journey.generation} path</h3>
+        <Fold title={`Release #${journey.generation} path`}>
         <ol className="journey-steps">
           {journey.phases.map((phase) => <li key={phase.title} className={`journey-${phase.state}`}>
             <span className="journey-mark" aria-hidden="true">{phase.state === "done" ? "✓" : phase.state === "waiting" ? "…" : "?"}</span>
             <div><strong>{phase.title}</strong><p>{phase.detail}</p>{phase.at ? <small>{clock(phase.at)} · {ago(phase.at)}</small> : null}</div>
           </li>)}
         </ol>
+        </Fold>
         <p className="journey-asof">{host.reportSource === "live" ? "Live SDK check" : journey.fresh ? "Host report" : "Last known host report"} from {ago(host.writtenAt)}. {host.kind === "lambda" ? "This function checks for a new release when the desk refreshes its status or runs a ticket." : "The Europe workers check for new releases in the background."} Times come from host and desk records; an event outside the recent timeline has no shown time.</p>
       </> : <p className="muted">The host has not reported a signed release yet.</p>}
     </section>

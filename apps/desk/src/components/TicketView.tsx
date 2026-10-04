@@ -23,8 +23,9 @@ import { ROUTES, TOOLTIPS, ago, armLabel, checkLine, clock, latency, modelLabel,
 import { Behind } from "./Behind";
 import { Fold } from "./Fold";
 import { IntegrationFlow } from "./IntegrationFlow";
-import { ReplyComparison } from "./ReplyComparison";
+import { ReplyComparison, replyPair } from "./ReplyComparison";
 import { ReplyText } from "./ReplyText";
+import { SlideOut } from "./SlideOut";
 import { WhyThisText } from "./WhyThisText";
 
 export interface RouteAvailability {
@@ -44,13 +45,15 @@ export function routeRefusal(route: Route, availability: RouteAvailability): str
   return null;
 }
 
-export function TicketView({ ticket, runs, busy, frozen, routes, enqueue, elsewhere, hosts, events, emptyNote, onBehind, onRun, onEscalate, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; hosted: { target: string; runUrl: string } | null; routes: Record<Route, RouteAvailability>; enqueue: { label: string; disabled: boolean; note: string | null; onEnqueue: () => void } | null; elsewhere: { href: string; label: string; onClick: (event: { preventDefault: () => void; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; button: number }) => void } | null; hosts: HostStatus[]; events: TimelineEvent[]; emptyNote: string; onBehind?: (id: string) => void; onRun: (provider?: DirectProvider) => void; onEscalate: () => void; onHosted: () => void; onCompareAll: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
+export function TicketView({ ticket, runs, busy, frozen, routes, enqueue, elsewhere, hosts, events, emptyNote, onBehind, onRun, onEscalate, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; routes: Record<Route, RouteAvailability>; enqueue: { label: string; disabled: boolean; note: string | null; onEnqueue: () => void } | null; elsewhere: { href: string; label: string; onClick: (event: { preventDefault: () => void; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; button: number }) => void } | null; hosts: HostStatus[]; events: TimelineEvent[]; emptyNote: string; onBehind?: (id: string) => void; onRun: (provider?: DirectProvider) => void; onEscalate: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
   const isFrozen = frozen?.frozen ?? false;
   const disabled = busy !== null;
   const blocked = routeRefusal("bedrock", routes.bedrock);
   const ordered = [...runs].sort((a, b) => (a.at < b.at ? 1 : -1));
   const latest = ordered[0] ?? null;
   const earlier = ordered.slice(1);
+  const [panel, setPanel] = useState<"comparison" | "history" | null>(null);
+  useEffect(() => { setPanel(null); }, [ticket.ticketId]);
   return (
     <div className="ticket-view">
       <section className="ticket-card">
@@ -75,11 +78,15 @@ export function TicketView({ ticket, runs, busy, frozen, routes, enqueue, elsewh
         <blockquote className="ticket-body">{ticket.body}</blockquote>
       </section>
       {latest ? (isHostedRun(latest) ? <HostedPanel run={latest} /> : <RunPanel run={latest} busy={busy} elsewhere={elsewhere} hosts={hosts} events={events} enqueueNote={enqueue?.note ?? null} onBehind={onBehind} onFeedback={onFeedback} />) : <p className="muted centre-note">{emptyNote}</p>}
-      <ReplyComparison runs={runs} />
-      {earlier.length ? (
-        <Fold title={`Earlier replies · ${earlier.length}`}>
+      <div className="ticket-inspect">
+        {replyPair(runs) ? <button type="button" className="link" onClick={() => setPanel("comparison")}>Compare release changes</button> : null}
+        {earlier.length ? <button type="button" className="link" onClick={() => setPanel("history")}>Earlier replies · {earlier.length}</button> : null}
+      </div>
+      {panel === "comparison" ? <SlideOut title="Release comparison" wide onClose={() => setPanel(null)}><ReplyComparison runs={runs} /></SlideOut> : null}
+      {panel === "history" ? (
+        <SlideOut title="Earlier replies" onClose={() => setPanel(null)}>
           {earlier.map((run) => (isHostedRun(run) ? <HostedPanel key={run.runId} run={run} /> : <RunPanel key={run.runId} run={run} busy={busy} elsewhere={null} hosts={hosts} events={events} enqueueNote={null} onBehind={onBehind} onFeedback={onFeedback} />))}
-        </Fold>
+        </SlideOut>
       ) : null}
       <CompareTable runs={runs} />
     </div>
@@ -224,6 +231,7 @@ function HostedPanel({ run }: { run: HostedRun }) {
 }
 
 function RunPanel({ run, busy, elsewhere, hosts, events, enqueueNote, onBehind, onFeedback }: { run: Run; busy: string | null; elsewhere: { href: string; label: string; onClick: (event: { preventDefault: () => void; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; button: number }) => void } | null; hosts: HostStatus[]; events: TimelineEvent[]; enqueueNote: string | null; onBehind?: (id: string) => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const step = (name: Step["step"]) => run.steps.find((s) => s.step === name) ?? null;
   const reply = step("reply");
   const summary = step("summary");
@@ -241,7 +249,8 @@ function RunPanel({ run, busy, elsewhere, hosts, events, enqueueNote, onBehind, 
       {!reply && summary ? (summary.error ? <p className="problem">{summary.error.name}: {summary.error.message}</p> : <ReplyText text={summary.output ?? ""} />) : null}
       {handoff ? (handoff.error ? <p className="problem">{handoff.error.name}: {handoff.error.message}</p> : <pre className="output">{handoff.output ?? ""}</pre>) : null}
       {letter && !letter.error ? <p className="byline" title={TOOLTIPS.version}>{replyByline(letter.tag, letter.versionId, letter.generation, letter.arm)}</p> : null}
-      <Fold title="How this reply got here">
+      <button type="button" className="link reply-details-link" onClick={() => setDetailsOpen(true)}>Reply details</button>
+      {detailsOpen ? <SlideOut title="Reply details" onClose={() => setDetailsOpen(false)}>
         <div className="sync">
           <IntegrationFlow label="How AirPrompter and Zudocs produced this reply" steps={[
             { title: "AirPrompter release", detail: `Release #${letter?.generation ?? "—"} supplied the versioned prompt and checks.` },
@@ -262,7 +271,7 @@ function RunPanel({ run, busy, elsewhere, hosts, events, enqueueNote, onBehind, 
           {elsewhere ? <p><a href={elsewhere.href} onClick={elsewhere.onClick}>{elsewhere.label}</a></p> : null}
           {onBehind ? <p className="behind-row"><Behind id="run-step" onOpen={onBehind} title={TOOLTIPS.version}>how this reply is written</Behind></p> : null}
         </div>
-      </Fold>
+      </SlideOut> : null}
     </section>
   );
 }

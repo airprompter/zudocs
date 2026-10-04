@@ -11,7 +11,7 @@
  * ```
  */
 
-export type RouteName = "list_tickets" | "get_ticket" | "run_ticket" | "escalate_ticket" | "hosted_run" | "feedback" | "state" | "events" | "arms" | "list_approvals" | "approve" | "presenter" | "healthz";
+export type RouteName = "list_tickets" | "get_ticket" | "run_ticket" | "escalate_ticket" | "hosted_run" | "feedback" | "state" | "events" | "arms" | "list_approvals" | "approve" | "presenter" | "healthz" | "comparison";
 
 export interface Route {
   method: "GET" | "POST";
@@ -30,6 +30,7 @@ export const ROUTES: readonly Route[] = Object.freeze([
   { method: "GET", pattern: "/state", name: "state" },
   { method: "GET", pattern: "/events", name: "events" },
   { method: "GET", pattern: "/arms", name: "arms" },
+  { method: "GET", pattern: "/comparison/{runId}", name: "comparison" },
   { method: "GET", pattern: "/approvals", name: "list_approvals" },
   { method: "POST", pattern: "/approvals/{approvalId}/approve", name: "approve" },
   { method: "POST", pattern: "/presenter/{action}", name: "presenter" },

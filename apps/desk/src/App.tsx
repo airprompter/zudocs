@@ -16,6 +16,9 @@ import { CodeDrawer } from "./components/CodeDrawer";
 import { Database, type RecordReads } from "./components/Database";
 import { SlideOut } from "./components/SlideOut";
 import { SystemOverview } from "./components/SystemOverview";
+import { RecordComparison } from "./components/RecordComparison";
+import { ExperimentDemo } from "./components/ExperimentDemo";
+import { Metrics } from "./components/Metrics";
 import { Experiments } from "./components/Experiments";
 import { Inbox } from "./components/Inbox";
 import { Presenter, type CliOutput } from "./components/Presenter";
@@ -29,6 +32,8 @@ export interface Notice { tone: "info" | "warn" | "error"; text: string }
 
 function snippetsFor(route: DeskRoute): readonly Snippet[] {
   switch (route) {
+    case "compare":
+    case "metrics":
     case "database":
     case "experiments":
     case "architecture":
@@ -179,7 +184,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
     if (polling.current.arms) return;
     polling.current.arms = true;
     try {
-      const next = await api.arms();
+      const next = await api.arms(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
       if (Array.isArray(next?.arms) && Array.isArray(next.ramps) && Array.isArray(next.stickiness)) setArms(next);
     } catch { /* next poll */ } finally { polling.current.arms = false; }
   }, [api, markRead]);
@@ -202,14 +207,15 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   useEffect(() => { if (selectedId) void loadRuns(selectedId); else setRuns([]); }, [selectedId, loadRuns]);
   const seenForeignRun = useRef<string | null>(null);
   useEffect(() => {
-    const newest = [...events].reverse().find((e) => e.kind === "ticket_run" && state && e.host !== state.host.hostId);
+    const newest = [...events].reverse().find((e) => e.kind === "ticket_run");
     const key = newest ? (newest.id ?? `${newest.at}|${newest.host}`) : null;
     if (key && key !== seenForeignRun.current) {
       seenForeignRun.current = key;
       if (selectedId) void loadRuns(selectedId);
       void loadTickets();
+      void loadArms();
     }
-  }, [events, selectedId, loadRuns, loadTickets, state]);
+  }, [events, selectedId, loadRuns, loadTickets, loadArms, state]);
 
   const act = useCallback(async (label: string, fn: () => Promise<void>) => {
     setBusy(label);
@@ -239,7 +245,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   const presenter = (action: string, body?: Record<string, unknown>) => act(action, async () => {
     const result = await api.presenter(action, body);
     say("info", typeof result.message === "string" ? result.message : `${action}: done`);
-    await Promise.all([loadState(), loadEvents(), action === "seed" || action === "reset" ? loadTickets() : Promise.resolve(), action === "reset" || action === "replay" ? loadArms() : Promise.resolve(), action === "reset" ? loadApprovals() : Promise.resolve()]);
+    await Promise.all([loadState(), loadEvents(), action === "seed" || action === "reset" ? loadTickets() : Promise.resolve(), loadArms(), action === "reset" ? loadApprovals() : Promise.resolve()]);
     if (action === "seed" || action === "reset") { setRuns([]); if (action === "reset") { setEvents([]); lastEventAt.current = null; } }
   });
   const approve = (approvalId: string) => act("approve", async () => {
@@ -268,14 +274,15 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   const missing = missingId !== null && missingId === selectedId;
   const powerNote = daemonHost?.powerView && daemonHost.powerView.phase !== "awake" ? daemonHost.powerView.label : null;
   const inInbox = route === "agent" || route === "daemon";
-  const inSystem = !inInbox && route !== "database";
+  const inDatabase = route === "database" || route === "compare";
+  const inSystem = !inInbox && !inDatabase;
   const refreshRecords = () => { void loadTickets(); void loadState(); void loadEvents(); void loadApprovals(); if (selectedId) void loadRuns(selectedId); };
   return (
     <div className={`desk route-${route}`}>
       <header className="top">
         <span className="brand">Zu<span>docs</span> <em>support</em></span>
         <nav className="desk-nav" aria-label="Pages">
-          {(["agent", "database", "architecture"] as const).map((page) => <a key={page} href={deskHref(page, selectedId)} aria-current={(page === "agent" ? inInbox : page === "architecture" ? inSystem : route === page) ? "page" : undefined} onClick={(event) => follow(event, page)}>{PAGE_LABEL[page]}</a>)}
+          {(["agent", "database", "architecture"] as const).map((page) => <a key={page} href={deskHref(page, selectedId)} aria-current={(page === "agent" ? inInbox : page === "architecture" ? inSystem : (page === "database" ? inDatabase : route === page)) ? "page" : undefined} onClick={(event) => follow(event, page)}>{PAGE_LABEL[page]}</a>)}
         </nav>
         <div className="who"><button type="button" className="link" onClick={onSignOut}>Sign out</button></div>
       </header>
@@ -300,7 +307,6 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
                     routes={routes}
                     hosts={supportHost ? [...(state?.hosts ?? []).filter((host) => host.hostId !== supportHost.hostId), supportHost] : state?.hosts ?? []}
                     events={events}
-                    elsewhere={null}
                     enqueue={route === "daemon" ? {
                       label: daemonHostId ? `Enqueue ${selected.ticketId}` : "Enqueue",
                       disabled: daemonHostId === null,
@@ -318,13 +324,15 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
             </main>
           </>
         ) : null}
+        {route === "compare" ? <main className="centre"><RecordComparison api={api} runs={ticketRuns} ticketId={selectedId} boardUrl={config.airprompterBoardUrl} tickets={tickets} onSelect={selectTicket} ready={runsTicketId === selectedId && selectedId !== null} /></main> : null}
         {route === "database" ? <main className="centre"><Database tickets={tickets} runs={ticketRuns} selectedId={selectedId} onSelect={selectTicket} state={state} approvals={approvals} events={events} reads={reads} runsReady={runsTicketId === selectedId && selectedId !== null} runsReadAt={runsTicketId === selectedId ? runsReadAt : null} runsUnavailable={runsUnavailable} onRefresh={refreshRecords} /></main> : null}
         {inSystem ? <main className="centre"><div className="page-content system">
           <header className="page-heading"><div><p className="eyebrow">AirPrompter integration</p><h1>System</h1><p className="muted">Deployment status, approvals and controls.</p></div></header>
-          <nav className="section-nav" aria-label="System pages">{(["architecture", "operate", "experiments"] as const).map((page) => <a key={page} href={deskHref(page, selectedId)} aria-current={route === page ? "page" : undefined} onClick={(event) => follow(event, page)}>{page === "architecture" ? "Overview" : PAGE_LABEL[page]}</a>)}</nav>
+          <nav className="section-nav" aria-label="System pages">{(["architecture", "experiments", "metrics", "operate"] as const).map((page) => <a key={page} href={deskHref(page, selectedId)} aria-current={route === page ? "page" : undefined} onClick={(event) => follow(event, page)}>{page === "architecture" ? "Overview" : PAGE_LABEL[page]}</a>)}</nav>
           {route === "architecture" ? <SystemOverview state={state} approvals={approvals} busy={busy} onApprove={approve} onBehind={openBehind} reads={reads} /> : null}
           {route === "operate" ? <Presenter state={state} busy={busy} selectedTicketId={selectedId} onAction={presenter} environment={config.environment} agentId={config.agentId} cliOutput={newestCli(events)} /> : null}
-          {route === "experiments" ? <Experiments arms={arms} /> : null}
+          {route === "experiments" ? <><ExperimentDemo api={api} state={state} busy={busy} onAction={presenter} boardUrl={config.airprompterBoardUrl} /><Experiments arms={arms} /></> : null}
+          {route === "metrics" ? <Metrics state={state} arms={arms} busy={busy} onAction={presenter} boardUrl={config.airprompterBoardUrl} ticketId={selectedId} /> : null}
         </div></main> : null}
         {sheet ? <CodeDrawer snippets={snippetsFor(route)} focus={sheetFocus} onClose={() => { setSheet(false); setSheetFocus(null); }} /> : null}
       </div>

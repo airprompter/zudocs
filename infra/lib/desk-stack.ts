@@ -76,6 +76,7 @@ export interface AirPrompterIds {
    */
   readonly providers: { readonly openai: string | null; readonly anthropic: string | null };
   readonly organizationId: string;
+  readonly workspaceId?: string;
   readonly agentId: string;
   readonly environment: string;
   readonly rootJwk: string;
@@ -153,7 +154,7 @@ export function readAirPrompterIds(root = repoRoot): AirPrompterIds {
   const hostedTarget = typeof file.hostedTarget === "string" && file.hostedTarget.trim() ? file.hostedTarget.trim() : "staging";
   if (!["dev", "staging", "prod"].includes(hostedTarget)) throw new Error("airprompter.config.json: hostedTarget must be dev, staging or prod");
   const providers = providersOf((file as Record<string, unknown>).providers);
-  return { baseUrl: need("baseUrl"), hostedEnvironment: hosted, rootUrl: need("rootUrl"), edgePointerUrl: pointer, hostedRunUrl, hostedTarget: hostedTarget as "dev" | "staging" | "prod", providers, organizationId: need("organizationId"), agentId: need("agentId"), environment: need("environment"), rootJwk: JSON.stringify(jwk) };
+  return { baseUrl: need("baseUrl"), hostedEnvironment: hosted, rootUrl: need("rootUrl"), edgePointerUrl: pointer, hostedRunUrl, hostedTarget: hostedTarget as "dev" | "staging" | "prod", providers, workspaceId: need("workspaceId"), organizationId: need("organizationId"), agentId: need("agentId"), environment: need("environment"), rootJwk: JSON.stringify(jwk) };
 }
 
 export class DeskStack extends cdk.Stack {
@@ -360,7 +361,7 @@ export class DeskStack extends cdk.Stack {
     new deploy.BucketDeployment(this, "DeskFiles", {
       sources: [
         deploy.Source.asset(assets.deskSite),
-        deploy.Source.jsonData("config.json", { apiUrl: this.api.apiEndpoint, region: this.region, userPoolId: site.userPool.userPoolId, clientId: site.userPoolClient.userPoolClientId, hostedUi, deskUrl: `https://${deskDomain}`, environment: airprompter.environment, agentId: airprompter.agentId }),
+        deploy.Source.jsonData("config.json", { apiUrl: this.api.apiEndpoint, region: this.region, userPoolId: site.userPool.userPoolId, clientId: site.userPoolClient.userPoolClientId, hostedUi, deskUrl: `https://${deskDomain}`, environment: airprompter.environment, agentId: airprompter.agentId, airprompterBoardUrl: airprompter.workspaceId ? `https://${airprompter.hostedEnvironment === "dev" ? "dev." : ""}airprompter.com/workspace/${airprompter.workspaceId}/agents/${airprompter.agentId}` : "" }),
       ],
       destinationBucket: bucket,
       distribution,

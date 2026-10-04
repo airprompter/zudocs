@@ -11,7 +11,7 @@
 
 import type { HostStatus, State } from "./api";
 
-export type DeskRoute = "architecture" | "agent" | "daemon" | "operate" | "database" | "experiments";
+export type DeskRoute = "architecture" | "agent" | "daemon" | "operate" | "database" | "experiments" | "compare" | "metrics";
 
 export const PAGE_LABEL: Record<DeskRoute, string> = {
   architecture: "System",
@@ -20,6 +20,8 @@ export const PAGE_LABEL: Record<DeskRoute, string> = {
   operate: "Controls",
   database: "Database",
   experiments: "Experiments",
+  compare: "Compare with AirPrompter",
+  metrics: "Metrics",
 };
 
 const PATH: Record<DeskRoute, string> = {
@@ -29,6 +31,8 @@ const PATH: Record<DeskRoute, string> = {
   operate: "/system/controls",
   database: "/database",
   experiments: "/system/experiments",
+  compare: "/database/compare",
+  metrics: "/system/metrics",
 };
 
 /** Exact match. A trailing slash is a different path and is not the callback. */
@@ -52,6 +56,8 @@ export function parseDeskRoute(pathname: string): DeskRoute {
     case "/system/controls":
       return "operate";
     case "/database": return "database";
+    case "/database/compare": return "compare";
+    case "/system/metrics": return "metrics";
     case "/system/experiments": return "experiments";
     default:
       return "agent";

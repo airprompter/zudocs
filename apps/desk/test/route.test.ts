@@ -74,5 +74,9 @@ test("database and system pages retain selected tickets and accept existing book
   }
   assert.equal(parseDeskRoute("/database/"), "database");
   assert.equal(parseDeskRoute("/system/experiments"), "experiments");
+  assert.equal(parseDeskRoute("/database/compare/"), "compare");
+  assert.equal(parseDeskRoute("/system/metrics"), "metrics");
+  assert.equal(deskHref("compare", "T-1052"), "/database/compare?ticket=T-1052");
+  assert.equal(deskHref("metrics", "T-1052"), "/system/metrics?ticket=T-1052");
   assert.equal(deskHref("database", "T-1052"), "/database?ticket=T-1052");
 });

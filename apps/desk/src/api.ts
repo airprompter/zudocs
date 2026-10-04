@@ -61,7 +61,7 @@ export const isHostedRun = (run: AnyRun): run is HostedRun => run.kind === "host
 export interface ArmSummary { tag: string; arm: string; versionId: string; model: string; runs: number; hosts: Record<string, number>; judgeMean: number | null; judged: number; costMeanUsd: number | null; costed: number; checksPassed: number; checksFailed: number; latencyMeanMs: number | null; errors: number; feedback: { up: number; down: number; accepted: number; edited: number } }
 export interface Stickiness { customerId: string; tag: string; generation: number | null; arms: Record<string, string>; consistent: boolean }
 export interface Ramp { experimentId: string; tag: string | null; arms: string[]; weightBps: number[]; step: number; nextStepAt: string | null; plan: Array<{ notBefore: string; weightBps: number[] }>; readBy?: string }
-export interface Arms { arms: ArmSummary[]; stickiness: Stickiness[]; ramps: Ramp[]; readAt: string; runsRead: number }
+export interface Arms { arms: ArmSummary[]; stickiness: Stickiness[]; ramps: Ramp[]; readAt: string; runsRead: number; window?: { since: string | null; until: string } }
 export interface HostStatus {
   /** A fresh SDK report from /state, rather than the persisted fleet row; writtenAt is its last sync time. */
   reportSource?: "live";
@@ -103,6 +103,10 @@ export interface TimelineEvent { at: string; kind: string; host: string; id?: st
 export type ApprovalDecision = "pending" | "approved" | "activated" | "superseded" | "failed";
 export interface Approval { approvalId: string; hostId: string; generation: number; releaseDigest: string | null; stagedAt: string; unlockRequest: { requestedBy: string; requestedAt: string; expiresAt: string; note?: string } | null; decision: ApprovalDecision; decidedBy: string | null; decidedAt: string | null; activatedAt: string | null; outcome: string | null; updatedAt: string; ramps?: Ramp[] }
 
+export interface ReleaseFacts { generation: number | null; versionId: string | null; arm: string | null; model: string | null; inference: Record<string, unknown> | null }
+export interface RecordComparison { runId: string; checkedAt: string; generation: number; releaseDigest: string; steps: Array<{ step: string; tag: string; saved: ReleaseFacts; current: ReleaseFacts | null; text: string | null; reason: string | null; matches: { version: boolean; generation: boolean; arm: boolean; model: boolean; settings: boolean; prompt: boolean | null } | null }> }
+export interface AssignmentPreview { checkedAt: string; generation: number; experimentId: string | null; mode: "published" | "what_if" | "illustration"; weights: Array<{ arm: string; weightBps: number }>; rows: Array<{ visitor: string; arm: string }>; counts: Record<string, number> }
+
 export interface Api {
   tickets(): Promise<{ tickets: Ticket[] }>;
   ticket(ticketId: string): Promise<{ ticket: Ticket; runs: AnyRun[] }>;
@@ -111,7 +115,9 @@ export interface Api {
   escalateTicket(ticketId: string): Promise<{ run: Run; cap: State["cap"] }>;
   /** Hosted staging: the record comes back with the route's refusals inside it (a 502 still carries the record). */
   hostedRun(ticketId: string): Promise<{ run: HostedRun }>;
-  arms(): Promise<Arms>;
+  arms(since?: string): Promise<Arms>;
+  comparison(runId: string): Promise<RecordComparison>;
+  preview(percentage?: number): Promise<AssignmentPreview>;
   feedback(runId: string, step: string, signals: Record<string, unknown>): Promise<{ filed: boolean; message: string }>;
   state(): Promise<State>;
   events(since: string | null): Promise<{ events: TimelineEvent[] }>;
@@ -175,7 +181,9 @@ export function createApi(baseUrl: string, tokenOf: () => Promise<string | null>
     runTicket: (ticketId, provider) => runOrRecord<{ run: Run; cap: State["cap"] }>(`/tickets/${encodeURIComponent(ticketId)}/run`, provider ? { provider } : {}),
     escalateTicket: (ticketId) => runOrRecord<{ run: Run; cap: State["cap"] }>(`/tickets/${encodeURIComponent(ticketId)}/escalate`),
     hostedRun: (ticketId) => runOrRecord<{ run: HostedRun }>(`/tickets/${encodeURIComponent(ticketId)}/hosted-run`),
-    arms: () => call("GET", "/arms"),
+    arms: (since) => call("GET", `/arms${since ? `?since=${encodeURIComponent(since)}` : ""}`),
+    comparison: (runId) => call("GET", `/comparison/${encodeURIComponent(runId)}`),
+    preview: (percentage) => call("POST", "/presenter/assignment_preview", percentage === undefined ? {} : { percentage }),
     feedback: (runId, step, signals) => call("POST", `/runs/${encodeURIComponent(runId)}/feedback`, { step, signals }),
     state: () => call("GET", "/state"),
     events: (since) => call("GET", `/events${since ? `?since=${encodeURIComponent(since)}` : ""}`),

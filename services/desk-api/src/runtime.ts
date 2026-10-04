@@ -27,6 +27,8 @@ import { DecryptCommand, EncryptCommand, KMSClient } from "@aws-sdk/client-kms";
 import { GetParameterCommand, SSMClient } from "@aws-sdk/client-ssm";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { AirPrompterAgent, SDK_NAME, SDK_VERSION, customKeyProvider } from "@airprompter/agent-sdk";
+import { publishedReader } from "./integration.js";
+import type { LoadedRelease } from "@airprompter/agent-sdk";
 import { createCallers, createGoldenCaller, type Callers } from "./bedrock.js";
 import { readEnv, type DeskEnv } from "./env.js";
 import { createHostedClient, type HostedClient } from "./hosted.js";
@@ -54,6 +56,8 @@ export interface RunHost {
 }
 
 export interface Host extends RunHost {
+  /** Independent authenticated origin read through the SDK; no release is applied. */
+  publishedRelease?: () => Promise<LoadedRelease>;
   readonly env: DeskEnv;
   readonly startedAt: string;
   readonly sdk: string;
@@ -175,6 +179,7 @@ async function startHost(): Promise<Host> {
   const direct = createDirectCallers(ap, env.providers, env.region);
   const hosted = env.hosted.runKeyParameter && env.hosted.runUrl ? createHostedClient({ env: { hosted: env.hosted, hostId: env.hostId, region: env.region, agentId: env.airprompter.agentId }, store }) : null;
   const host: Host = {
+    publishedRelease: publishedReader(env.airprompter, apiKey),
     env,
     ap,
     store,

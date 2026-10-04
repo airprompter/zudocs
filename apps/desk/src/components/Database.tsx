@@ -4,6 +4,7 @@
  * @example
  * <Database tickets={tickets} runs={runs} selectedId={id} onSelect={select} state={state} approvals={approvals} events={events} reads={reads} runsReady={true} runsUnavailable={false} onRefresh={refresh} />
  */
+import { deskHref } from "../route";
 import { useState } from "react";
 import { isHostedRun, type AnyRun, type Approval, type HostStatus, type State, type Ticket, type TimelineEvent } from "../api";
 import { ago, clock, modelLabel } from "../format";
@@ -85,6 +86,7 @@ export function Database({ tickets, runs, selectedId, onSelect, state, approvals
     : state ? [{ id: state.cap.day, title: `${state.cap.used.toLocaleString()} runs today`, detail: `${state.cap.day} UTC · limit ${state.cap.cap.toLocaleString()}`, content: <Fields value={state.cap} /> }] : [];
   return <div className="page-content database">
     <header className="page-heading"><div><p className="eyebrow">Zudocs records</p><h1>Database</h1><p className="muted">Inspect the records behind the ticket and integration.</p></div><button type="button" className="chip-button" onClick={onRefresh}>Refresh records</button></header>
+    <nav className="section-nav" aria-label="Database pages"><a href={deskHref("database", selectedId)} aria-current="page">Records</a><a href={deskHref("compare", selectedId)}>Compare with AirPrompter</a></nav>
     <div className="database-tools"><label>Collection<select value={collection} onChange={(event) => { setCollection(event.target.value as Collection); setPicked(null); }}>{COLLECTIONS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
       {collection === "replies" ? <label>Ticket<select value={selectedId ?? ""} onChange={(event) => { setPicked(null); onSelect(event.target.value); }}>{tickets.map((ticket) => <option key={ticket.ticketId} value={ticket.ticketId}>{ticket.ticketId} · {ticket.customer?.name ?? ticket.customerId}</option>)}</select></label> : null}</div>
     <p className="fine muted">{chosen[2]} {read.at ? `Last successful read ${ago(read.at)}.` : ""}</p>

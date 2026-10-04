@@ -430,3 +430,26 @@ select { font: inherit; color: var(--ink); background: var(--card); border: 1px 
   .page-heading { flex-wrap: wrap; } .record-row { padding: 14px; } .record-row strong { font-size: 13px; } .record-open { font-size: 11px; } .database-tools label { width: 100%; }
   .section-nav { gap: 20px; } .letter { padding: 18px; } .reply-comparison-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Release comparison, clearly separated previews, and transport evidence. */
+.route-compare .columns, .route-metrics .columns { grid-template-columns: minmax(0, 1fr); }
+.evidence-page { display: flex; flex-direction: column; gap: 20px; }
+.section-title { font-size: 19px; text-transform: none; color: var(--ink); letter-spacing: -0.02em; margin-bottom: 6px; }
+.external-link { color: var(--accent); text-decoration: none; font-size: 12px; white-space: nowrap; align-self: center; }
+.external-link:hover { text-decoration: underline; }
+.evidence-padding { padding: 0 18px 14px; }
+.evidence-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.evidence-table th, .evidence-table td { padding: 12px 10px; border-bottom: 1px solid var(--rule-soft); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.evidence-table th { color: var(--muted); font-weight: 500; }
+.evidence-table td { min-width: 80px; }
+.demo-card { background: var(--card); border: 1px solid var(--rule); border-radius: 10px; padding: 20px; }
+.preview-dial { display: grid; grid-template-columns: 1fr auto; gap: 14px; font-size: 13px; }
+.preview-dial strong { color: var(--accent); }
+.preview-dial input { width: 100%; grid-column: 1 / -1; accent-color: var(--accent); }
+.preview-result { border-top: 1px solid var(--rule); padding-top: 14px; margin-top: 16px; }
+.visitor-grid { display: grid; grid-template-columns: repeat(20, minmax(0,1fr)); gap: 4px; margin-block: 14px; }
+.visitor { display: block; height: 14px; border-radius: 3px; }
+.visitor-control { background: #b9c9c2; }
+.visitor-candidate { background: var(--accent); }
+.visitor-refused { background: #ad5252; }
+@media (max-width: 640px) { .visitor-grid { grid-template-columns: repeat(10,minmax(0,1fr)); } .evidence-table th, .evidence-table td { padding: 10px 6px; } .demo-card { padding: 16px; } }

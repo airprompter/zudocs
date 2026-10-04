@@ -26,8 +26,9 @@ export function integrationSnapshot(host: HostStatus, runs: AnyRun[]) {
 
 export function settingLabel(key: string, value: unknown): { label: string; value: string } {
   if (key === "temperatureMilli" && typeof value === "number") return { label: "Temperature", value: String(value / 1000) };
+  if (key === "topPBps" && typeof value === "number") return { label: "Top-p", value: String(value / 10000) };
   if (key === "topPMilli" && typeof value === "number") return { label: "Top-p", value: String(value / 1000) };
-  const labels: Record<string, string> = { maxOutputTokens: "Max output tokens", temperature: "Temperature", topP: "Top-p", reasoningEffort: "Reasoning effort", stop: "Stop sequences" };
+  const labels: Record<string, string> = { maxOutputTokens: "Max output tokens", temperature: "Temperature", topP: "Top-p", reasoningEffort: "Reasoning effort", stop: "Stop sequences", stopSequences: "Stop sequences" };
   return { label: labels[key] ?? key.replace(/([A-Z])/g, " $1"), value: Array.isArray(value) ? value.join(" · ") : String(value) };
 }
 

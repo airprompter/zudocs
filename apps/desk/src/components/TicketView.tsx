@@ -45,7 +45,7 @@ export function routeRefusal(route: Route, availability: RouteAvailability): str
   return null;
 }
 
-export function TicketView({ ticket, runs, busy, frozen, routes, enqueue, elsewhere, hosts, events, emptyNote, onBehind, onRun, onEscalate, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; routes: Record<Route, RouteAvailability>; enqueue: { label: string; disabled: boolean; note: string | null; onEnqueue: () => void } | null; elsewhere: { href: string; label: string; onClick: (event: { preventDefault: () => void; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; button: number }) => void } | null; hosts: HostStatus[]; events: TimelineEvent[]; emptyNote: string; onBehind?: (id: string) => void; onRun: (provider?: DirectProvider) => void; onEscalate: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
+export function TicketView({ ticket, runs, busy, frozen, routes, enqueue, hosts, events, emptyNote, onBehind, onRun, onEscalate, onFeedback }: { ticket: Ticket; runs: AnyRun[]; busy: string | null; frozen: { frozen: boolean; reason: string | null } | null; routes: Record<Route, RouteAvailability>; enqueue: { label: string; disabled: boolean; note: string | null; onEnqueue: () => void } | null; hosts: HostStatus[]; events: TimelineEvent[]; emptyNote: string; onBehind?: (id: string) => void; onRun: (provider?: DirectProvider) => void; onEscalate: () => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
   const isFrozen = frozen?.frozen ?? false;
   const disabled = busy !== null;
   const blocked = routeRefusal("bedrock", routes.bedrock);
@@ -77,7 +77,7 @@ export function TicketView({ ticket, runs, busy, frozen, routes, enqueue, elsewh
         <p className="eyebrow thread-from">From the customer</p>
         <blockquote className="ticket-body">{ticket.body}</blockquote>
       </section>
-      {latest ? (isHostedRun(latest) ? <HostedPanel run={latest} /> : <RunPanel run={latest} busy={busy} elsewhere={elsewhere} hosts={hosts} events={events} enqueueNote={enqueue?.note ?? null} onBehind={onBehind} onFeedback={onFeedback} />) : <p className="muted centre-note">{emptyNote}</p>}
+      {latest ? (isHostedRun(latest) ? <HostedPanel run={latest} /> : <RunPanel run={latest} busy={busy} hosts={hosts} events={events} enqueueNote={enqueue?.note ?? null} onBehind={onBehind} onFeedback={onFeedback} />) : <p className="muted centre-note">{emptyNote}</p>}
       <div className="ticket-inspect">
         {replyPair(runs) ? <button type="button" className="link" onClick={() => setPanel("comparison")}>Compare release changes</button> : null}
         {earlier.length ? <button type="button" className="link" onClick={() => setPanel("history")}>Earlier replies · {earlier.length}</button> : null}
@@ -85,7 +85,7 @@ export function TicketView({ ticket, runs, busy, frozen, routes, enqueue, elsewh
       {panel === "comparison" ? <SlideOut title="Release comparison" wide onClose={() => setPanel(null)}><ReplyComparison runs={runs} /></SlideOut> : null}
       {panel === "history" ? (
         <SlideOut title="Earlier replies" onClose={() => setPanel(null)}>
-          {earlier.map((run) => (isHostedRun(run) ? <HostedPanel key={run.runId} run={run} /> : <RunPanel key={run.runId} run={run} busy={busy} elsewhere={null} hosts={hosts} events={events} enqueueNote={null} onBehind={onBehind} onFeedback={onFeedback} />))}
+          {earlier.map((run) => (isHostedRun(run) ? <HostedPanel key={run.runId} run={run} /> : <RunPanel key={run.runId} run={run} busy={busy} hosts={hosts} events={events} enqueueNote={null} onBehind={onBehind} onFeedback={onFeedback} />))}
         </SlideOut>
       ) : null}
       <CompareTable runs={runs} />
@@ -230,7 +230,7 @@ function HostedPanel({ run }: { run: HostedRun }) {
   );
 }
 
-function RunPanel({ run, busy, elsewhere, hosts, events, enqueueNote, onBehind, onFeedback }: { run: Run; busy: string | null; elsewhere: { href: string; label: string; onClick: (event: { preventDefault: () => void; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; button: number }) => void } | null; hosts: HostStatus[]; events: TimelineEvent[]; enqueueNote: string | null; onBehind?: (id: string) => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
+function RunPanel({ run, busy, hosts, events, enqueueNote, onBehind, onFeedback }: { run: Run; busy: string | null; hosts: HostStatus[]; events: TimelineEvent[]; enqueueNote: string | null; onBehind?: (id: string) => void; onFeedback: (runId: string, step: string, signals: Record<string, unknown>) => void }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const step = (name: Step["step"]) => run.steps.find((s) => s.step === name) ?? null;
   const reply = step("reply");
@@ -268,7 +268,6 @@ function RunPanel({ run, busy, elsewhere, hosts, events, enqueueNote, onBehind, 
           {reply ? <FeedbackRow run={run} step="reply" busy={busy} onFeedback={onFeedback} /> : null}
           {handoff ? <FeedbackRow run={run} step="handoff" busy={busy} onFeedback={onFeedback} /> : null}
           {enqueueNote ? <p className="muted">{enqueueNote}</p> : null}
-          {elsewhere ? <p><a href={elsewhere.href} onClick={elsewhere.onClick}>{elsewhere.label}</a></p> : null}
           {onBehind ? <p className="behind-row"><Behind id="run-step" onOpen={onBehind} title={TOOLTIPS.version}>how this reply is written</Behind></p> : null}
         </div>
       </SlideOut> : null}

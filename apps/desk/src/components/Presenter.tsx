@@ -1,6 +1,5 @@
 /**
- * The presenter panel: what the owner presses during a session so nothing waits for a timer — replay N runs on
- * this host, a heartbeat / upload / sync now, a re-seed of the inbox, "run this ticket on eu-west now" (the other
+ * The system controls: a heartbeat / sync now, a re-seed of the inbox, "run this ticket on eu-west now" (the other
  * host's queue), the wire: cut (the eu-west host loses AirPrompter and Bedrock, keeps the desk's tables; a rule
  * restores it in 15 minutes whatever happens) and restore — and the nudge: one message on the fleet's queue, so the
  * puller reads the origin now instead of on its schedule. Phase 6 adds the drills: the operator's CLI on the eu-west
@@ -8,8 +7,8 @@
  * the timeline and the newest answer is shown below the buttons), this host's own apply policy (an operator's act on
  * the SDK — the one loosening in the fleet; the daemon host's policy is its unit's flag), the golden set run now, and
  * the reset's clearing step. Phase 8 adds the steady state: **Wake the fleet** and **Sleep** (the eu-west host started
- * and stopped at EC2; the card reads waking / asleep since) and the **demo mode** switch (the eu-west workers' ticket
- * cadence: two minutes for four hours, then back to an hour on its own).
+ * and stopped at EC2; the card reads waking / asleep since). Traffic controls live on Experiments;
+ * upload controls live on Metrics.
  * Every button is an API call; the result lands as a notice and on the timeline. The day's cap is read from the counter.
  *
  * @example
@@ -18,7 +17,6 @@
  * ```
  */
 import type { State } from "../api";
-import { useState } from "react";
 import { Fold } from "./Fold";
 import { TOOLTIPS, clock } from "../format";
 
@@ -26,7 +24,7 @@ export interface CliOutput { command: string; summary: string; document: unknown
 
 export function Presenter({ state, busy, selectedTicketId, onAction, environment, agentId, cliOutput }: { state: State | null; busy: string | null; selectedTicketId: string | null; onAction: (action: string, body?: Record<string, unknown>) => void; environment: string; agentId: string; cliOutput: CliOutput | null }) {
   const cap = state?.cap;
-  const [batch, setBatch] = useState(5);
+
   const disabled = busy !== null || state === null;
   // "Run this ticket there now" is for hosts that run tickets: the daemon host. The puller pulls; the air-gapped host has no model.
   const others = (state?.hosts ?? []).filter((h) => h.kind === "daemon").map((h) => h.hostId);
@@ -34,10 +32,8 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
   const nudge = state?.features?.nudge ?? false;
   const hostCli = state?.features?.hostCli ?? false;
   const power = state?.features?.power ?? false;
-  const demoMode = state?.features?.demoMode ?? false;
   const euPower = (state?.hosts ?? []).find((h) => h.kind === "daemon")?.powerView ?? null;
   const asleep = euPower !== null && euPower.phase !== "awake";
-  const mode = state?.demoMode ?? null;
   const policy = state?.host.status?.applyPolicy as { effective?: string; source?: string } | undefined;
   // Phase 9: the direct doors this deployment has keys for — each with its switch and what it has spent of its line.
   const doors = (["openai", "anthropic"] as const).filter((p) => state?.providers?.[p]?.configured);
@@ -46,12 +42,7 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
       <div className="pane-title"><h2>Controls</h2><span className="muted" title={TOOLTIPS.cap}>{cap ? `${cap.used.toLocaleString()} / ${cap.cap.toLocaleString()} runs today` : "—"}</span></div>
       <Fold title="US desk function">
       <div className="button-row">
-        <label className="control-select">Batch size <select value={batch} onChange={(event) => setBatch(Number(event.target.value))}>{[5, 12, 30].map((n) => <option key={n} value={n}>{n} tickets</option>)}</select></label>
-        <button type="button" className="button secondary" disabled={disabled} onClick={() => onAction("replay", { n: batch })}>Run batch</button>
-      </div>
-      <div className="button-row">
         <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("heartbeat")}>Heartbeat now</button>
-        <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("upload")}>Upload now</button>
         <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("sync")}>Sync now</button>
       </div>
       {doors.length ? (
@@ -89,20 +80,13 @@ export function Presenter({ state, busy, selectedTicketId, onAction, environment
           <button type="button" className="chip-button" disabled={disabled} onClick={() => onAction("restore_wire")}>Restore the wire</button>
         </div>
       ) : null}
-      {power || demoMode ? (
+      {power ? (
         <div className="button-row" title={TOOLTIPS.power}>
           {power ? (
             <>
               <button type="button" className={`chip-button${asleep ? " done" : ""}`} disabled={disabled} onClick={() => onAction("wake_host")}>Wake the fleet</button>
               <button type="button" className="chip-button" disabled={disabled} onClick={() => { if (confirm("Put the eu-west host to sleep? Its daemon and workers stop (a ticket in flight there is lost); only its volume bills until you wake it. The nightly schedule does this by itself.")) onAction("sleep_host"); }}>Sleep</button>
               <span className="muted fine">eu-west: {euPower ? euPower.label : "—"}{euPower && euPower.phase !== "awake" && euPower.since ? ` since ${clock(euPower.since)}` : ""}</span>
-            </>
-          ) : null}
-          {demoMode ? (
-            <>
-              <span className="muted fine" title={TOOLTIPS.demoMode}>· demo mode {mode ? mode.mode : "—"}{mode?.mode === "on" && mode.until ? ` until ${clock(mode.until)}` : ""}{mode?.reason && mode.reason !== "absent" ? ` (${mode.reason})` : ""}:</span>
-              <button type="button" className={`chip-button${mode?.mode === "on" ? " done" : ""}`} disabled={disabled || mode?.mode === "on"} title={TOOLTIPS.demoMode} onClick={() => onAction("demo_mode", { value: "on" })}>on</button>
-              <button type="button" className="chip-button" disabled={disabled || mode?.mode !== "on"} title={TOOLTIPS.demoMode} onClick={() => onAction("demo_mode", { value: "off" })}>off</button>
             </>
           ) : null}
         </div>

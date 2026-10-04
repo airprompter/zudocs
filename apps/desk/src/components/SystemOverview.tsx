@@ -32,6 +32,7 @@ export function SystemOverview({ state, approvals, busy, onApprove, onBehind, re
     </section>
     {!reads.approvals.at ? <p className="fine muted">{reads.approvals.error ? "Approval records unavailable. Open Database to retry." : "Reading approval records…"}</p> : pending.length ? <Approvals approvals={pending} busy={busy} onApprove={onApprove} /> : <p className="fine muted">No pending approvals in the loaded records.</p>}
     {reads.approvals.error && reads.approvals.at ? <p className="problem">Approvals could not be refreshed. Previously loaded records remain visible.</p> : null}
+    {state ? <Fold title="Integration identity"><dl className="integration-settings"><div><dt>Environment</dt><dd>{state.airprompter.environment}</dd></div><div><dt>AirPrompter agent</dt><dd>{state.airprompter.agentId}</dd></div><div><dt>SDK</dt><dd>{state.host.sdk}</dd></div></dl></Fold> : null}
     <Fold title="Approval history"><Approvals approvals={approvals.filter((row) => row.decision !== "pending" && row.decision !== "approved")} busy={busy} onApprove={onApprove} /></Fold>
     {host ? <SlideOut title={`${host.region} · ${host.kind}`} onClose={() => setPicked(null)}><HostDetail host={host} onBehind={onBehind} /></SlideOut> : null}
   </>;

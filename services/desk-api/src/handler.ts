@@ -32,6 +32,8 @@
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyResultV2, Context } from "aws-lambda";
 import { normalizeFeedback } from "@airprompter/agent-sdk";
+import { compareRun, previewAssignments } from "./integration.js";
+import type { RunRecord } from "./run.js";
 import { foldArms } from "./arms.js";
 import { HOST_CLI_COMMANDS, documentOf, isHostCliCommand, type HostCliCommand } from "./hostCli.js";
 import { needsReconcile, powerView, type PowerMarker } from "./hostPower.js";
@@ -240,11 +242,25 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       const record = await hostedRun({ ports: { env: { hosted: env.hosted, hostId: env.hostId, region: env.region, agentId: env.airprompter.agentId }, store }, client: host.hosted, ticket, customer, by });
       return { statusCode: record.ok ? 200 : 502, body: { run: record } };
     }
+    case "comparison": {
+      const run = await store.getRun(params.runId!);
+      if (!run) return { statusCode: 404, body: { error: "no_such_run" } };
+      if (run.kind === "hosted") return { statusCode: 409, body: { error: "hosted_comparison_unavailable" } };
+      if (!host.publishedRelease) return { statusCode: 501, body: { error: "comparison_unavailable" } };
+      try {
+        const release = await host.publishedRelease();
+        return { statusCode: 200, body: compareRun(run as unknown as RunRecord, release, Date.now()) };
+      } catch { return { statusCode: 503, body: { error: "published_release_unavailable", message: "The published release could not be verified. Saved records remain available; try again." } }; }
+    }
     case "arms": {
       const [runs, feedback] = await Promise.all([store.listRuns(), store.listAllFeedback()]);
-      const folded = foldArms(runs, feedback);
+      const since = event.queryStringParameters?.since;
+      const windowStart = typeof since === "string" && Number.isFinite(Date.parse(since)) ? new Date(since).toISOString() : null;
+      const until = new Date().toISOString();
+      const scoped = windowStart ? runs.filter((r) => typeof r.at === "string" && r.at >= windowStart && r.at <= until) : runs;
+      const folded = foldArms(scoped, feedback);
       const ramps = (ap.status().ramps ?? []).map((r) => ({ experimentId: r.experimentId, tag: r.tag, arms: r.arms, weightBps: r.weightBps, step: r.step, nextStepAt: r.nextStepAt, plan: r.plan }));
-      return { statusCode: 200, body: { ...folded, ramps, readAt: new Date().toISOString(), runsRead: runs.length } };
+      return { statusCode: 200, body: { ...folded, ramps, readAt: new Date().toISOString(), runsRead: scoped.length, window: { since: windowStart, until } } };
     }
     case "feedback": {
       const run = await store.getRun(params.runId!);
@@ -383,6 +399,15 @@ async function presenter(host: Host, action: string, body: Record<string, unknow
   const { ap, store, env } = host;
   const at = () => new Date().toISOString();
   switch (action) {
+    case "assignment_preview": {
+      const pct = body.percentage === undefined ? null : body.percentage;
+      if (pct !== null && (typeof pct !== "number" || !Number.isInteger(pct) || pct < 0 || pct > 100)) return { statusCode: 400, body: { error: "invalid_percentage" } };
+      if (!host.publishedRelease) return { statusCode: 501, body: { error: "preview_unavailable" } };
+      try {
+        const result = previewAssignments(await host.publishedRelease(), pct as number | null, Date.now());
+        return { statusCode: "error" in result ? 409 : 200, body: result };
+      } catch { return { statusCode: 503, body: { error: "published_release_unavailable", message: "The published release could not be verified; no preview was created." } }; }
+    }
     case "heartbeat": {
       await ap.invoke(async () => ap.heartbeatNow());
       const heartbeat = ap.status().heartbeat;

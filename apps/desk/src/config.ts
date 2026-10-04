@@ -19,6 +19,7 @@ export interface DeskConfig {
   deskUrl: string;
   environment: string;
   agentId: string;
+  airprompterBoardUrl?: string;
 }
 
 const FIELDS: Array<keyof DeskConfig> = ["apiUrl", "region", "userPoolId", "clientId", "hostedUi", "deskUrl", "environment", "agentId"];
@@ -31,6 +32,8 @@ export function parseConfig(raw: unknown): DeskConfig {
     if (typeof value !== "string" || !value.trim()) throw new Error(`config.json: ${field} is missing`);
     config[field] = value.trim().replace(/\/+$/, "");
   }
+  const board = record.airprompterBoardUrl;
+  if (typeof board === "string" && /^https:\/\/(?:dev\.)?airprompter\.com\/workspace\/[A-Za-z0-9-]+\/agents\/[A-Za-z0-9_]+$/.test(board)) config.airprompterBoardUrl = board;
   return config;
 }
 

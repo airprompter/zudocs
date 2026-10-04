@@ -9,7 +9,8 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PAGE_LABEL, deskHref, isSignInCallback, litPath, mismatchRoute, newestHost, parseDeskRoute, releaseHostId, ticketParam } from "../src/route";
+import { PAGE_LABEL, deskHref, isSignInCallback, litPath, mismatchRoute, newestHost, parseDeskRoute, releaseHostId, supportHostSnapshot, ticketParam } from "../src/route";
+import type { HostStatus, State } from "../src/api";
 
 test("callback is exact, and the pages ignore one trailing slash and the query", () => {
   assert.equal(isSignInCallback("/callback"), true);
@@ -47,4 +48,19 @@ test("release path follows the visible Inbox reply but the Europe page stays wit
   assert.equal(releaseHostId("agent", "us-east-1/lambda", "us-east-1/lambda", "eu-west-1/ec2"), "us-east-1/lambda");
   assert.equal(releaseHostId("agent", "unknown", "us-east-1/lambda", "eu-west-1/ec2"), "us-east-1/lambda");
   assert.equal(releaseHostId("daemon", "us-east-1/lambda", "us-east-1/lambda", "eu-west-1/ec2"), "eu-west-1/ec2");
+});
+
+test("the Inbox uses the fresh SDK check while Europe retains its own database report", () => {
+  const checkedAt = "2026-10-04T02:00:00Z";
+  const live: State["host"] = { hostId: "us-east-1/lambda", region: "us-east-1", sdk: "agent-sdk-ts/0.3.0", instanceId: "new", startedAt: checkedAt, coldStart: false, invocations: 1, status: { generation: 87, lastSyncAt: checkedAt, ramps: [] }, healthz: {}, models: [], stateDir: "/tmp" };
+  const saved = (hostId: string): HostStatus => ({ hostId, region: hostId.split("/")[0]!, kind: "daemon", sdk: "sdk", writtenAt: "2026-10-04T01:00:00Z", status: { generation: 86 }, healthz: {}, container: { instanceId: "old", coldStart: false, startedAt: checkedAt, invocations: 0 } });
+  const europe = saved("eu-west-1/ec2");
+  const state = { host: live, hosts: [saved(live.hostId), europe] };
+  const inbox = supportHostSnapshot(state, live.hostId)!;
+  assert.equal(inbox.status.generation, 87);
+  assert.equal(inbox.reportSource, "live");
+  assert.equal(inbox.writtenAt, checkedAt);
+  assert.equal(inbox.container.instanceId, "new");
+  assert.equal(supportHostSnapshot(state, europe.hostId), europe);
+  assert.equal(supportHostSnapshot(state, "unknown"), null);
 });

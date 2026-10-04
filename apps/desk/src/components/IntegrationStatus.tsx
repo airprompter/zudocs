@@ -7,6 +7,7 @@
 import { isHostedRun, type AnyRun, type HostStatus, type Ramp } from "../api";
 import { ago, armLabel, clock, effectiveApplyState, modelLabel } from "../format";
 import { Fold } from "./Fold";
+import { useId, useState } from "react";
 
 export function integrationSnapshot(host: HostStatus, runs: AnyRun[]) {
   const generation = Number(host.status.generation ?? 0);
@@ -31,21 +32,27 @@ export function settingLabel(key: string, value: unknown): { label: string; valu
 }
 
 export function IntegrationStatus({ host, runs }: { host: HostStatus; runs: AnyRun[] }) {
+  const [tab, setTab] = useState("prompt");
+  const id = useId();
   const { generation, current, latest, ramps } = integrationSnapshot(host, runs);
   const active = effectiveApplyState(host.status) === "active";
   const settings = current?.reply.rendered?.inference;
   return <div className="integration-status" aria-label="AirPrompter status and settings">
-    <section>
+    <div className="integration-tabs" role="group" aria-label="AirPrompter evidence">
+      {([["prompt", "Prompt sync"], ["rollout", "Rollout dial"], ["settings", "Reply settings"]] as const).map(([key, label]) =>
+        <button key={key} type="button" id={`${id}-${key}-tab`} aria-controls={`${id}-${key}`} aria-pressed={tab === key} className={`chip-button${tab === key ? " done" : ""}`} onClick={() => setTab(key)}>{label}</button>)}
+    </div>
+    <section id={`${id}-prompt`} aria-labelledby={`${id}-prompt-tab`} hidden={tab !== "prompt"}>
       <h3>Prompt in Zudocs</h3>
       <p><strong>Release #{generation || "—"} · {active ? "active locally" : effectiveApplyState(host.status) ?? "state unreported"}</strong></p>
       <p>Last release check: {host.status.lastSyncAt ? `${clock(host.status.lastSyncAt)} · ${ago(host.status.lastSyncAt)}` : "not reported"}. Result: {host.status.lastSyncOutcome ?? "not reported"}.</p>
-      <p>{latest ? <>Desk database: saved reply {latest.reply.versionId ?? "version unreported"} from release #{latest.reply.generation ?? "—"} at {clock(latest.run.at)}{latest.reply.generation !== generation ? " · this is an earlier release" : ""}.</> : "Desk database: no reply recorded for this ticket on this host."}</p>
+      <p>{latest ? <>Desk database: saved reply {latest.reply.versionId ?? "version unreported"} from release #{latest.reply.generation ?? "—"} at {clock(latest.run.at)}{latest.reply.generation !== generation ? " · different from this host’s active release" : ""}.</> : "Desk database: no reply recorded for this ticket on this host."}</p>
       <Fold title="Where Zudocs stores this">
         <p>{host.status.source === "store" ? "Loaded from the SDK’s local release cache." : `Release source: ${host.status.source ?? "not reported"}.`} Cache protection: {host.status.storageProtection === "kms" ? "encrypted; key protected by KMS" : host.status.storageProtection ?? "not reported"}.</p>
         <p className="muted fine">The SDK stores the release locally. The desk database stores reply records and host reports, including the version and settings used. This report does not independently read the latest AirPrompter release.</p>
       </Fold>
     </section>
-    <section>
+    <section id={`${id}-rollout`} aria-labelledby={`${id}-rollout-tab`} hidden={tab !== "rollout"}>
       <h3>Reply rollout</h3>
       {ramps === null ? <p>Rollout not reported by this host.</p> : ramps.length === 0 ? <><p><strong>100% published version</strong></p><p>A/B test off on this host’s active release.</p></> : ramps.map((r) => <div key={r.experimentId}>
         <p><strong>{r.arms.map((arm, i) => `${armLabel(arm)} ${((r.weightBps[i] ?? 0) / 100).toLocaleString()}%`).join(" · ")}</strong></p>
@@ -55,7 +62,7 @@ export function IntegrationStatus({ host, runs }: { host: HostStatus; runs: AnyR
       {current ? <p>This ticket’s saved reply: {current.reply.arm && current.reply.arm !== "none" ? `${armLabel(current.reply.arm)} group` : "published version"}, {current.reply.versionId ?? "version unreported"}.</p> : <p>Draft a reply to record this ticket’s assignment on release #{generation}.</p>}
       <p className="muted fine">Percentages come from this host’s active release. Customer assignment is recorded with the reply.</p>
     </section>
-    <section>
+    <section id={`${id}-settings`} aria-labelledby={`${id}-settings-tab`} hidden={tab !== "settings"}>
       <h3>Settings used for this reply</h3>
       {current ? <>
         <p><strong>{current.reply.model ? modelLabel(current.reply.model) : "Model unreported"}</strong> · {current.reply.versionId ?? "version unreported"}</p>

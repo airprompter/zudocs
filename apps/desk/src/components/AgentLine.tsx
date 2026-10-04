@@ -17,7 +17,7 @@ export function AgentLine({ host, events, label, expanded, onJourney }: { host: 
         const candidate = r.arms.indexOf("candidate");
         return candidate >= 0 ? `A/B ${((r.weightBps[candidate] ?? 0) / 100).toLocaleString()}% new reply` : "A/B test active";
       }).join(" · ") : "100% published version"}</span> : null}
-      {applied ? <span> · applied {ago(applied.at)}</span> : host ? <span> · last reported {ago(host.writtenAt)}</span> : null}
+      {applied ? <span> · applied {ago(applied.at)}</span> : host ? <span> · {host.reportSource === "live" ? "checked" : "last reported"} {ago(host.writtenAt)}</span> : null}
       {host ? <button type="button" className="link journey-toggle" aria-expanded={expanded} onClick={onJourney}>{expanded ? "Hide AirPrompter status" : "AirPrompter status & settings"}</button> : null}
     </p>
   );

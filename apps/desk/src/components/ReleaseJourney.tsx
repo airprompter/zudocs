@@ -50,18 +50,19 @@ export function ReleaseJourney({ host, approvals, events, runs, ticketId, onClos
   return (
     <section className="release-journey" aria-label="Release path">
       <div className="release-journey-head">
-        <div><span className="eyebrow">From AirPrompter to Zudocs</span><h2>{journey ? `Release #${journey.generation} · status, rollout and settings on ${host.region}` : `Waiting for a release on ${host.region}`}</h2></div>
+        <div><span className="eyebrow">From AirPrompter to Zudocs</span><h2>{journey ? `Status, rollout and settings · ${host.region}` : `Waiting for a release on ${host.region}`}</h2></div>
         <button type="button" className="link" onClick={onClose}>Close</button>
       </div>
       {journey ? <>
         <IntegrationStatus host={host} runs={runs} />
+        <h3 className="fine">Release #{journey.generation} path</h3>
         <ol className="journey-steps">
           {journey.phases.map((phase) => <li key={phase.title} className={`journey-${phase.state}`}>
             <span className="journey-mark" aria-hidden="true">{phase.state === "done" ? "✓" : phase.state === "waiting" ? "…" : "?"}</span>
             <div><strong>{phase.title}</strong><p>{phase.detail}</p>{phase.at ? <small>{clock(phase.at)} · {ago(phase.at)}</small> : null}</div>
           </li>)}
         </ol>
-        <p className="journey-asof">{journey.fresh ? "Host report" : "Last known host report"} from {ago(host.writtenAt)}. {host.kind === "lambda" ? "This function checks for a new release when the next ticket runs." : "The Europe workers check for new releases in the background."} Times come from host and desk records; an event outside the recent timeline has no shown time.</p>
+        <p className="journey-asof">{host.reportSource === "live" ? "Live SDK check" : journey.fresh ? "Host report" : "Last known host report"} from {ago(host.writtenAt)}. {host.kind === "lambda" ? "This function checks for a new release when the desk refreshes its status or runs a ticket." : "The Europe workers check for new releases in the background."} Times come from host and desk records; an event outside the recent timeline has no shown time.</p>
       </> : <p className="muted">The host has not reported a signed release yet.</p>}
     </section>
   );

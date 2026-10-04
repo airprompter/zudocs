@@ -9,7 +9,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PAGE_LABEL, deskHref, isSignInCallback, litPath, mismatchRoute, newestHost, parseDeskRoute, ticketParam } from "../src/route";
+import { PAGE_LABEL, deskHref, isSignInCallback, litPath, mismatchRoute, newestHost, parseDeskRoute, releaseHostId, ticketParam } from "../src/route";
 
 test("callback is exact, and the pages ignore one trailing slash and the query", () => {
   assert.equal(isSignInCallback("/callback"), true);
@@ -40,4 +40,11 @@ test("the lit path follows the newest run's host, and a mismatch names the other
   assert.equal(mismatchRoute("daemon", "us-east-1/lambda", "us-east-1/lambda", "eu-west-1/ec2"), "agent");
   assert.equal(mismatchRoute("agent", "us-east-1/lambda", "us-east-1/lambda", "eu-west-1/ec2"), null);
   assert.equal(newestHost([{ host: "a", at: "2026-01-01T00:00:00Z" }, { host: "b", at: "2026-01-02T00:00:00Z" }]), "b");
+});
+
+test("release path follows the visible Inbox reply but the Europe page stays with its daemon", () => {
+  assert.equal(releaseHostId("agent", "eu-west-1/ec2", "us-east-1/lambda", "eu-west-1/ec2"), "eu-west-1/ec2");
+  assert.equal(releaseHostId("agent", "us-east-1/lambda", "us-east-1/lambda", "eu-west-1/ec2"), "us-east-1/lambda");
+  assert.equal(releaseHostId("agent", "unknown", "us-east-1/lambda", "eu-west-1/ec2"), "us-east-1/lambda");
+  assert.equal(releaseHostId("daemon", "us-east-1/lambda", "us-east-1/lambda", "eu-west-1/ec2"), "eu-west-1/ec2");
 });

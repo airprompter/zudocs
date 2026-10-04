@@ -96,3 +96,10 @@ export function newestHost(runs: readonly { host: string; at: string }[]): strin
   const newest = [...runs].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))[0];
   return newest ? newest.host : null;
 }
+
+/** The Inbox traces the visible reply; Europe traces its daemon approval host. */
+export function releaseHostId(route: DeskRoute, runHost: string | null, lambdaHostId: string | null, daemonHostId: string | null): string | null {
+  if (route === "daemon") return daemonHostId;
+  if (route === "agent" && (runHost === lambdaHostId || runHost === daemonHostId)) return runHost;
+  return lambdaHostId;
+}

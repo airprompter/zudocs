@@ -44,6 +44,15 @@ test("journey keeps a reply written before a daemon restart", () => {
   assert.match(snapshot.phases[3]!.detail, /rev-3; 1\/1 checks passed/);
 });
 
+test("journey names a reply that predates this approval without claiming it proves activation", () => {
+  const earlier = "2026-10-02T12:00:00.000Z";
+  const active = journeySnapshot(host(87, null), [approval("activated")], [], [run(87, earlier)], "T-1041", Date.parse(at) + 1000)!;
+  assert.equal(active.phases[3]?.state, "waiting");
+  assert.equal(active.phases[3]?.at, earlier);
+  assert.match(active.phases[3]!.detail, /earlier reply from release #87/);
+  assert.match(active.phases[3]!.detail, /predates this approval/);
+});
+
 test("reply comparison requires two releases on the same ticket host and route", () => {
   const before = run(86, "2026-10-03T12:00:00.000Z");
   const after = run(87, "2026-10-03T13:00:00.000Z");

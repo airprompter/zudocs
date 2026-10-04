@@ -19,9 +19,12 @@ export function journeySnapshot(host: HostStatus, approvals: Approval[], events:
   const serving = active === generation && effectiveApplyState(host.status ?? {}) === "active";
   // A daemon restart does not erase the reply's recorded release provenance.
   const proofSince = approval?.stagedAt ?? null;
-  const run = [...runs].filter((item) => !isHostedRun(item) && item.kind === "run" && item.host === host.hostId && item.generation === generation && (!proofSince || item.at >= proofSince))
-    .sort((a, b) => b.at.localeCompare(a.at))[0];
+  const matchingRuns = [...runs].filter((item) => !isHostedRun(item) && item.kind === "run" && item.host === host.hostId && item.generation === generation)
+    .sort((a, b) => b.at.localeCompare(a.at));
+  const run = matchingRuns.find((item) => !proofSince || item.at >= proofSince);
   const reply = run && !isHostedRun(run) ? run.steps.find((step) => step.step === "reply") : null;
+  const earlier = !run ? matchingRuns[0] : null;
+  const earlierReply = earlier && !isHostedRun(earlier) ? earlier.steps.find((step) => step.step === "reply") : null;
   const passed = reply?.checks.filter((check) => check.verdict === "pass").length ?? 0;
   const phases: JourneyPhase[] = [
     { title: "AirPrompter release", detail: `Signed release #${generation} is present in this host's report.`, at: null, state: "done" },
@@ -35,8 +38,9 @@ export function journeySnapshot(host: HostStatus, approvals: Approval[], events:
   phases.push({ title: "Customer reply", detail: serving && reply?.output
     ? `${ticketId} was answered with ${reply.tag.replace(/^support\./, "")} ${reply.versionId ?? "an unreported version"}; ${passed}/${reply.checks.length} checks passed.`
     : !serving ? `This host still serves release #${active || "none"}. Run the ticket after activation to see the new reply.`
+      : earlierReply?.output ? `${ticketId} has an earlier reply from release #${generation} on this host. It predates this approval; draft again to show this activation reaching the ticket.`
       : ticketId ? `Run ${ticketId} on this host to see a reply from release #${generation}.` : "Select a ticket to see its reply.",
-  at: serving ? run?.at ?? null : null, state: serving && reply?.output ? "done" : "waiting" });
+  at: serving ? run?.at ?? earlier?.at ?? null : null, state: serving && reply?.output ? "done" : "waiting" });
   return { generation, active, fresh, phases };
 }
 

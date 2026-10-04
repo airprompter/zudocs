@@ -26,7 +26,7 @@ import { ReleaseJourney } from "./components/ReleaseJourney";
 import { TicketView, routeRefusal, type RouteAvailability } from "./components/TicketView";
 import { Timeline } from "./components/Timeline";
 import { ROUTES, abTitle, mergeEvents } from "./format";
-import { PAGE_LABEL, deskHref, mismatchRoute, newestHost, parseDeskRoute, ticketParam, type DeskRoute } from "./route";
+import { PAGE_LABEL, deskHref, mismatchRoute, newestHost, parseDeskRoute, releaseHostId, ticketParam, type DeskRoute } from "./route";
 import { AIRGAP_START, CLIENT_RUN, DAEMON_START, ENQUEUE_CALL, LAMBDA_START, POLICY_LINE, RUN_STEP, TELEMETRY_DAEMON, type Snippet } from "./snippets";
 
 export interface Notice { tone: "info" | "warn" | "error"; text: string }
@@ -271,9 +271,8 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   const lambdaHostId = state?.host?.hostId ?? null;
   const daemonHost = state?.hosts?.find((h) => h.kind === "daemon") ?? null;
   const daemonHostId = daemonHost?.hostId ?? null;
-  const lambdaHost = state?.hosts?.find((h) => h.hostId === lambdaHostId) ?? null;
-  const supportHost = route === "daemon" ? daemonHost : lambdaHost;
   const runHost = newestHost(runs);
+  const supportHost = state?.hosts?.find((h) => h.hostId === releaseHostId(route, runHost, lambdaHostId, daemonHostId)) ?? null;
   const other = (route === "agent" || route === "daemon") && runHost ? mismatchRoute(route, runHost, lambdaHostId, daemonHostId) : null;
   const selected = tickets.find((t) => t.ticketId === selectedId) ?? null;
   const missing = missingId !== null && missingId === selectedId;

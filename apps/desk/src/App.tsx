@@ -330,9 +330,9 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
           <header className="page-heading"><div><p className="eyebrow">AirPrompter integration</p><h1>System</h1><p className="muted">Deployment status, approvals and controls.</p></div></header>
           <nav className="section-nav" aria-label="System pages">{(["architecture", "experiments", "metrics", "operate"] as const).map((page) => <a key={page} href={deskHref(page, selectedId)} aria-current={route === page ? "page" : undefined} onClick={(event) => follow(event, page)}>{page === "architecture" ? "Overview" : PAGE_LABEL[page]}</a>)}</nav>
           {route === "architecture" ? <SystemOverview state={state} approvals={approvals} busy={busy} onApprove={approve} onBehind={openBehind} reads={reads} /> : null}
-          {route === "operate" ? <Presenter state={state} busy={busy} selectedTicketId={selectedId} onAction={presenter} environment={config.environment} agentId={config.agentId} cliOutput={newestCli(events)} /> : null}
+          {route === "operate" ? <Presenter state={state} busy={busy} onAction={presenter} environment={config.environment} agentId={config.agentId} cliOutput={newestCli(events)} /> : null}
           {route === "experiments" ? <><ExperimentDemo api={api} state={state} busy={busy} onAction={presenter} boardUrl={config.airprompterBoardUrl} /><Experiments arms={arms} /></> : null}
-          {route === "metrics" ? <Metrics state={state} arms={arms} busy={busy} onAction={presenter} boardUrl={config.airprompterBoardUrl} ticketId={selectedId} /> : null}
+          {route === "metrics" ? <Metrics events={events} state={state} arms={arms} busy={busy} onAction={presenter} boardUrl={config.airprompterBoardUrl} ticketId={selectedId} /> : null}
         </div></main> : null}
         {sheet ? <CodeDrawer snippets={snippetsFor(route)} focus={sheetFocus} onClose={() => { setSheet(false); setSheetFocus(null); }} /> : null}
       </div>

@@ -134,8 +134,8 @@ export const AIRGAP_START: Snippet = {
 
 export const ENQUEUE_CALL: Snippet = {
   "id": "enqueue-call",
-  "file": "apps/desk/src/components/Presenter.tsx",
-  "caption": "This page",
-  "text": "onAction(\"enqueue\", { ticketId: selectedTicketId, host: hostId })",
+  "file": "apps/desk/src/components/Metrics.tsx",
+  "caption": "A bounded Europe metrics test",
+  "text": "onAction(\"enqueue\", {ticketId,host:eu!.hostId})",
   "marks": []
 };

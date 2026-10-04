@@ -26,6 +26,12 @@ const COLLECTIONS: [Collection, string, string][] = [
   ["events", "Activity", "Recent saved events: initially up to 100 for the current UTC day, then new events as they arrive."],
   ["usage", "Daily usage", "The current UTC day's run counter and configured daily limit."],
 ];
+/** Dates and clock times share UTC, even when the browser is in a different day. */
+export function recordTime(at: string) {
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return at;
+  return `${date.toISOString().slice(0, 10)} · ${clock(at)}`;
+}
 export function runFields(run: AnyRun) {
   if (isHostedRun(run)) return { runId: run.runId, ticketId: run.ticketId, customerId: run.customerId, at: run.at, by: run.by, host: run.host, kind: run.kind, ok: run.ok, durationMs: run.durationMs,
     result: run.stream.result ? { versionId: run.stream.result.versionId, generation: run.stream.result.generation, arm: run.stream.result.arm, model: run.stream.result.model, usage: run.stream.result.usage, latencyMs: run.stream.result.latencyMs } : null, feedback: run.feedback?.accepted ?? null };
@@ -70,12 +76,12 @@ export function Database({ tickets, runs, selectedId, onSelect, state, approvals
   const rows: { id: string; title: string; detail: string; content: React.ReactNode }[] =
     collection === "replies" ? [...runs].sort((a, b) => b.at.localeCompare(a.at)).map((run) => {
       const reply = !isHostedRun(run) ? run.steps.find((step) => step.step === "reply") ?? run.steps[0] : null;
-      return { id: run.runId, title: `${reply?.versionId ?? (isHostedRun(run) ? run.stream.result?.versionId : null) ?? run.kind} · release #${isHostedRun(run) ? run.catalogue.generation : run.generation}`, detail: `${clock(run.at)} · ${run.host} · ${run.ok ? "answered" : "incomplete"}`, content: <SavedRun run={run} /> };
+      return { id: run.runId, title: `${reply?.versionId ?? (isHostedRun(run) ? run.stream.result?.versionId : null) ?? run.kind} · release #${isHostedRun(run) ? run.catalogue.generation : run.generation}`, detail: `${recordTime(run.at)} · ${run.host} · ${run.ok ? "answered" : "incomplete"}`, content: <SavedRun run={run} /> };
     }) : collection === "tickets" ? tickets.map((ticket) => ({ id: ticket.ticketId, title: ticket.subject, detail: `${ticket.ticketId} · ${ticket.customer?.name ?? ticket.customerId}`, content: <><Fields value={{ ticketId: ticket.ticketId, customerId: ticket.customerId, receivedAt: ticket.receivedAt, channel: ticket.channel, subject: ticket.subject, lastRun: ticket.lastRun }} /><Fold title="Saved customer message"><ReplyText text={ticket.body} /></Fold></> }))
     : collection === "customers" ? [...new Map(tickets.flatMap((ticket) => ticket.customer ? [[ticket.customer.customerId, ticket.customer] as const] : [])).values()].map((customer) => ({ id: customer.customerId, title: customer.name, detail: `${customer.tier} · ${customer.seats} seats`, content: <Fields value={customer} /> }))
     : collection === "hosts" ? (state?.hosts ?? []).map((host) => ({ id: host.hostId, title: `${host.region} · ${host.kind}`, detail: `Release #${host.status?.generation ?? "—"} · saved ${ago(host.writtenAt)}`, content: <><p className="fine muted">Persisted report written at {host.writtenAt}. Selected status fields shown below.</p><Fields value={hostFields(host)} /></> }))
-    : collection === "approvals" ? approvals.map((row) => ({ id: row.approvalId, title: `Release #${row.generation} · ${row.decision}`, detail: `${row.hostId} · ${clock(row.stagedAt)}`, content: <Fields value={{ approvalId: row.approvalId, hostId: row.hostId, generation: row.generation, releaseDigest: row.releaseDigest, stagedAt: row.stagedAt, decision: row.decision, decidedBy: row.decidedBy, decidedAt: row.decidedAt, activatedAt: row.activatedAt, outcome: row.outcome, updatedAt: row.updatedAt }} /> }))
-    : collection === "events" ? [...events].reverse().map((event, index) => ({ id: event.id ?? `${event.at}-${index}`, title: describeEvent(event), detail: `${clock(event.at)} · ${event.host}`, content: <Fields value={eventFields(event)} /> }))
+    : collection === "approvals" ? approvals.map((row) => ({ id: row.approvalId, title: `Release #${row.generation} · ${row.decision}`, detail: `${row.hostId} · ${recordTime(row.stagedAt)}`, content: <Fields value={{ approvalId: row.approvalId, hostId: row.hostId, generation: row.generation, releaseDigest: row.releaseDigest, stagedAt: row.stagedAt, decision: row.decision, decidedBy: row.decidedBy, decidedAt: row.decidedAt, activatedAt: row.activatedAt, outcome: row.outcome, updatedAt: row.updatedAt }} /> }))
+    : collection === "events" ? [...events].reverse().map((event, index) => ({ id: event.id ?? `${event.at}-${index}`, title: describeEvent(event), detail: `${recordTime(event.at)} · ${event.host}`, content: <Fields value={eventFields(event)} /> }))
     : state ? [{ id: state.cap.day, title: `${state.cap.used.toLocaleString()} runs today`, detail: `${state.cap.day} UTC · limit ${state.cap.cap.toLocaleString()}`, content: <Fields value={state.cap} /> }] : [];
   return <div className="page-content database">
     <header className="page-heading"><div><p className="eyebrow">Zudocs records</p><h1>Database</h1><p className="muted">Inspect the records behind the ticket and integration.</p></div><button type="button" className="chip-button" onClick={onRefresh}>Refresh records</button></header>

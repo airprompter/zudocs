@@ -452,3 +452,15 @@ test("a deployment that names no switch parameter reads every direct door closed
   assert.equal(parse(refused).reason, "absent");
   assert.equal((await handler(event("POST", "/presenter/provider_door", { provider: "anthropic", state: "on" })) as { statusCode: number }).statusCode, 501);
 });
+
+test("normal state polling persists the synced SDK report without a release action", async () => {
+  const host = fakeHost();
+  let written = 0;
+  host.writeStatus = async () => { written += 1; };
+  const handler = createHandler(async () => host);
+  const result = await handler(event("GET", "/state"));
+  assert.equal((result as { statusCode: number }).statusCode, 200);
+  assert.equal(written, 1);
+  assert.equal(host.ap.status().generation, 1);
+  assert.equal(host.store.events.filter(e => e.kind === "approval_decided" || e.kind === "policy_set").length, 0);
+});

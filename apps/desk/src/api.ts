@@ -121,10 +121,35 @@ export interface Api {
 }
 
 export function createApi(baseUrl: string, tokenOf: () => Promise<string | null>, fetchImpl: typeof fetch = fetch): Api {
+  // A desk opens several panels at once; leave capacity for model actions on the five-concurrency host.
+  let activeReads = 0;
+  const waitingReads: Array<() => void> = [];
+  const acquireRead = () => new Promise<void>((resolve) => {
+    if (activeReads < 3) { activeReads += 1; resolve(); }
+    else waitingReads.push(resolve);
+  });
+  const releaseRead = () => {
+    const next = waitingReads.shift();
+    if (next) next();
+    else activeReads -= 1;
+  };
   const call = async <T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> => {
     const token = await tokenOf();
     if (!token) throw new ApiError(401, "signed_out", "sign in to use the desk", {});
-    const response = await fetchImpl(`${baseUrl}${path}`, { method, headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+    const request = () => fetchImpl(`${baseUrl}${path}`, { method, headers: { authorization: `Bearer ${token}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+    const read = async () => {
+      await acquireRead();
+      try {
+        for (let attempt = 0; ; attempt += 1) {
+          const response = await request();
+          if (response.status !== 503 || attempt >= 2) return response;
+          await response.body?.cancel().catch(() => undefined);
+          await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+        }
+      } finally { releaseRead(); }
+    };
+    // Retrying a read is safe; model actions and approvals are always one request.
+    const response = method === "GET" ? await read() : await request();
     const text = await response.text();
     let parsed: Record<string, unknown> = {};
     try {

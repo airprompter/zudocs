@@ -11,7 +11,7 @@ export function AgentLine({ host, events, label, expanded, onJourney }: { host: 
   return (
     <p className="agent-line">
       <strong>{label}</strong>
-      {active > 0 ? <span> · release #{active} on {host?.region}</span> : <span> · waiting for a release</span>}
+      {active > 0 ? <span> · release #{active} on {host?.region}</span> : <span> · {host ? "waiting for a release" : "reading AirPrompter status"}</span>}
       {staged > active ? <span className="staged"> · update #{staged} waiting for approval</span> : null}
       {active > 0 && replyRamps ? <span> · {replyRamps.length ? replyRamps.map((r) => {
         const candidate = r.arms.indexOf("candidate");

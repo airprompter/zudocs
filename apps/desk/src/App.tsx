@@ -71,6 +71,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
   const [pickedId, setPickedId] = useState<string | null>(null);
   const selectedId = urlTicket ?? pickedId;
   const [runs, setRuns] = useState<AnyRun[]>([]);
+  const [runsUnavailable, setRunsUnavailable] = useState(false);
   const [missingId, setMissingId] = useState<string | null>(null);
   const [arms, setArms] = useState<Arms | null>(null);
 
@@ -128,12 +129,13 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
       const { runs: next } = await api.ticket(ticketId);
       if (!Array.isArray(next)) return;
       setRuns(next);
+      setRunsUnavailable(false);
       setMissingId((current) => (current === ticketId ? null : current));
     } catch (error) {
       if (error instanceof ApiError && error.error === "no_such_ticket") {
         setRuns([]);
         setMissingId(ticketId);
-      } else failed(error);
+      } else { setRunsUnavailable(true); failed(error); }
     }
   }, [api, failed]);
   const loadState = useCallback(async () => {
@@ -331,7 +333,7 @@ export function App({ api, config, who, onSignOut }: { api: Api; config: DeskCon
                       note: daemonHostId === null ? "no daemon host has reported" : powerNote,
                       onEnqueue: () => { if (daemonHostId) presenter("enqueue", { ticketId: selected.ticketId, host: daemonHostId }); },
                     } : null}
-                    emptyNote="No reply yet — Draft reply writes one from the docs."
+                    emptyNote={runsUnavailable ? "Saved replies could not be loaded. Refresh to try again." : "No reply yet — Draft reply writes one from the docs."}
                     onBehind={openBehind}
                     onRun={(provider) => run(selected.ticketId, "run", provider)}
                     onEscalate={() => run(selected.ticketId, "escalate")}

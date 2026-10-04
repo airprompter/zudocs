@@ -286,6 +286,8 @@ async function dispatch(host: Host, name: string, params: Record<string, string>
       // A sync pass first (on_invoke: one pointer read when nothing changed): several containers stay warm behind the
       // API, and the one answering this poll must know the freeze, the generation and the ramp the others do.
       await ap.invoke(async () => undefined);
+      // Persist this same SDK snapshot during normal polling, so database evidence stays current without a manual sync.
+      await host.writeStatus();
       const day = dayOf(new Date().toISOString());
       const [hosts, used, demoMode, doors, providerUsed] = await Promise.all([
         store.listStatus(),

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { eventFields, runFields } from "../src/components/Database";
+import { eventFields, recordTime, runFields } from "../src/components/Database";
 import type { Run } from "../src/api";
 
 test("record summaries retain saved provenance and settings without prompt content or run references", () => {
@@ -17,4 +17,9 @@ test("record summaries retain saved provenance and settings without prompt conte
 test("activity inspector only accepts known metadata fields", () => {
   assert.deepEqual(eventFields({ id: "e", at: "now", kind: "ticket_run", host: "us-east-1/lambda", generation: 87, versionId: "rev-42", stdout: "UNEXPECTED_PAYLOAD", arbitrary: "UNEXPECTED_PAYLOAD" }),
     { id: "e", at: "now", kind: "ticket_run", host: "us-east-1/lambda", generation: 87, versionId: "rev-42" });
+});
+
+test("record dates stay in UTC at a local date boundary", () => {
+  assert.equal(recordTime("2026-10-04T00:01:00Z"), "2026-10-04 · 00:01:00Z");
+  assert.equal(recordTime("2026-10-03T23:59:00Z"), "2026-10-03 · 23:59:00Z");
 });

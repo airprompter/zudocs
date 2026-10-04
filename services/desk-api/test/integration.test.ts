@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { publicJwkOf, releaseDigest, type Experiment, type LoadedRelease } from "@airprompter/agent-sdk";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AirPrompterAgent, publicJwkOf, releaseDigest, type Experiment, type LoadedRelease } from "@airprompter/agent-sdk";
 import { FakeControlPlane } from "@airprompter/agent-sdk/testing";
-import { compareRun, previewAssignments, publishedReader } from "../src/integration.js";
+import { compareRun, previewAssignments, publishedReader, publishedRollout } from "../src/integration.js";
 import type { RunRecord } from "../src/run.js";
 
 function fixture(experiment = false) {
@@ -75,4 +78,52 @@ test("instance assignment refuses visitor what-if and comparison without origina
   assert.deepEqual(previewAssignments(release,50,Date.now()),{error:'preview_requires_request_assignment'});
   const saved={runId:'run_fixture',customerId:'customer_fixture',steps:[{step:'reply',tag:'support.reply'}]} as unknown as RunRecord;
   assert.equal(compareRun(saved,release,Date.now()).steps[0]?.reason,'original_instance_not_recorded');
+});
+
+test("published metadata walks the signed schedule without rewriting a release", () => {
+  const {release}=fixture(true);
+  const now=Date.now();
+  release.manifest.payload.experiments![0]!.ramp=[{notBefore:new Date(now+3_600_000).toISOString(),weightBps:[5000,5000]},{notBefore:new Date(now+7_200_000).toISOString(),weightBps:[0,10000]}];
+  const before=JSON.stringify(release);
+  const first=publishedRollout(release,now);
+  assert.deepEqual(first.weights.map(w=>w.weightBps),[9000,1000]);
+  assert.deepEqual(publishedRollout(release,now+3_600_000).weights.map(w=>w.weightBps),[5000,5000]);
+  assert.deepEqual(publishedRollout(release,now+7_200_000).weights.map(w=>w.weightBps),[0,10000]);
+  assert.equal(JSON.stringify(release),before);
+  assert.ok(!JSON.stringify(first).includes('salt'));
+  assert.ok(!JSON.stringify(first).includes('contentHash'));
+});
+
+test("real SDK syncs a published release automatically and runs its cached scheduled percentage", async () => {
+  const {plane}=fixture(true);
+  const stateDir=mkdtempSync(join(tmpdir(),"zudocs-auto-"));
+  let now=Date.now();
+  const ap=await AirPrompterAgent.start({...plane.scope,apiKey:plane.apiKey,baseUrl:'https://api.test',stateDir,root:{pinned:publicJwkOf(plane.rootKey),hostedEnvironment:'dev'},sync:{mode:'resident',pollSeconds:3600,rootUrl:'https://edge.test/roots/dev/root.json'},apply:{policy:'auto'},fetch:plane.fetch(),telemetry:{sink:'memory',upload:false},now:()=>now});
+  try {
+    assert.equal(ap.generation,1);
+    const release=fixture(true).release;
+    const experiment=release.manifest.payload.experiments![0]!;
+    const slot=plane.slot({tag:'support.reply',text:'{{ticket}}',versionId:'rev-next',variables:[{name:'ticket',required:true,trust:'end_user'}]});
+    experiment.arms[1]!.overrides=[slot];
+    experiment.arms[1]!.releaseDigest=releaseDigest([slot]);
+    experiment.ramp=[{notBefore:new Date(now+3_600_000).toISOString(),weightBps:[5000,5000]},{notBefore:new Date(now+7_200_000).toISOString(),weightBps:[0,10000]}];
+    plane.promote([slot],{applyPolicy:'auto',experiments:[experiment],leaseSeconds:10800});
+    await ap.syncNow();
+    assert.equal(ap.generation,2,JSON.stringify({reason:ap.status().lastRefusal,outcome:ap.status().lastSyncOutcome}));
+    assert.equal(ap.status().stagedGeneration,null);
+    const requests=plane.requests.length;
+    now+=3_600_000;
+    assert.deepEqual(ap.status().ramps[0]?.weightBps,[5000,5000]);
+    now+=3_600_000;
+    assert.deepEqual(ap.status().ramps[0]?.weightBps,[0,10000]);
+    const rendered=ap.prompt('support.reply',{subject:'same-customer'}).render({ticket:'fixture'});
+    assert.equal(rendered.arm,'candidate');
+    assert.equal(rendered.versionId,'rev-next');
+    assert.equal(plane.requests.length,requests,"cached schedule advances without another platform request");
+    plane.promote([slot],{applyPolicy:'unlock_required',leaseSeconds:10800});
+    await ap.syncNow();
+    assert.equal(ap.generation,2,"automatic sync does not bypass signed policy tightening");
+    assert.equal(ap.status().stagedGeneration,3);
+    assert.equal(ap.status().applyPolicy.effective,'unlock_required');
+  } finally {await ap.stop();rmSync(stateDir,{recursive:true,force:true});}
 });

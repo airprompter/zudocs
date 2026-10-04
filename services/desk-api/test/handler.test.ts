@@ -145,7 +145,7 @@ function fakeHost(): Host & { store: ReturnType<typeof fakeStore>; calls: string
     },
     hosted: null,
     providerSwitch: fakeSwitch() as unknown as Host["providerSwitch"],
-    hostCli: async (command) => { calls.push(`host_cli:${command}`); return { command, line: `zudocs-cli ${command} --json`, status: "Success" as const, instanceId: "i-eu", document: command === "policy show" ? { via: "daemon", applyPolicy: { effective: "unlock_required", source: "local", manifestSaid: "auto" } } : command === "rollback" ? { generation: 3, forced: true, outcome: "rolled_back" } : { ok: true }, stdout: "{}", stderr: "", durationMs: 1200 }; },
+    hostCli: async (command) => { calls.push(`host_cli:${command}`); return { command, line: `zudocs-cli ${command} --json`, status: "Success" as const, instanceId: "i-eu", document: command === "policy show" ? { via: "daemon", applyPolicy: { effective: "unlock_required", source: "local", manifestSaid: "auto" } } : { ok: true }, stdout: "{}", stderr: "", durationMs: 1200 }; },
     startedAt: "2026-09-18T10:00:00Z",
     sdk: "agent-sdk-ts/test",
     invocations: 0,
@@ -207,26 +207,16 @@ test("the cap: the third run of a two-run day is refused with 429 and its reason
   assert.ok(!("day" in refusal));
 });
 
-test("approvals: listed with the pending count; approved exactly once by the signed-in owner with an event; a repeat answers 200 with the row as it stands and no second event; unknown ids 404", async () => {
+test("legacy approval and policy writes are refused without changing records or SDK policy", async () => {
   const host = fakeHost();
   const handler = createHandler(async () => host);
-  const row: ApprovalRow = { approvalId: "eu-west-1-ec2-g2", hostId: "eu-west-1/ec2", storeId: "i-store", generation: 2, releaseDigest: null, stagedAt: "2026-09-18T15:00:00.000Z", unlockRequest: null, decision: "pending", decidedBy: null, decidedAt: null, activatedAt: null, outcome: null, updatedAt: "2026-09-18T15:00:00.000Z" };
-  await host.store.openApproval(row);
-  const listed = parse(await handler(event("GET", "/approvals")));
-  assert.equal(listed.pending, 1);
-  assert.equal(listed.approvals[0].approvalId, "eu-west-1-ec2-g2");
-  const first = parse(await handler(event("POST", "/approvals/eu-west-1-ec2-g2/approve")));
-  assert.equal(first.already, false);
-  assert.equal(first.approval.decision, "approved");
-  assert.equal(first.approval.decidedBy, "seth@zudocs.com", "the JWT's e-mail, not a body field");
-  assert.match(first.message, /release #2 approved for eu-west-1\/ec2/);
-  const second = parse(await handler(event("POST", "/approvals/eu-west-1-ec2-g2/approve")));
-  assert.equal(second.already, true);
-  assert.equal(second.approval.decidedBy, "seth@zudocs.com");
-  assert.match(second.message, /already approved/);
-  assert.deepEqual(host.store.events.filter((e) => e.kind === "approval_decided").length, 1, "one decision, one event");
-  assert.equal((await handler(event("POST", "/approvals/nope/approve")) as { statusCode: number }).statusCode, 404);
-  assert.equal(parse(await handler(event("GET", "/approvals"))).pending, 0);
+  for (const [path, body] of [["/approvals/legacy/approve", {}], ["/presenter/policy", {value:"auto"}], ["/presenter/policy", {value:"unlock_required"}]] as const) {
+    const answer = await handler(event("POST", path, body));
+    assert.equal((answer as {statusCode:number}).statusCode, 409);
+    assert.equal(parse(answer).error, "airprompter_managed");
+  }
+  assert.equal(host.store.events.filter((e) => e.kind === "approval_decided" || e.kind === "policy_set").length, 0);
+  assert.equal(host.ap.status().applyPolicy.effective, "auto");
 });
 
 test("the presenter's enqueue puts a ticket on another host's queue (never this host's) and the wire buttons are refused until the eu-west stack exists", async () => {

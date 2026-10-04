@@ -13,7 +13,7 @@ are the product's brain and none of them are in this repository.
    │  SDK on_invoke, auto   │          │  airprompterd (daemon)   │           │  pullToDatastore         │
    │  KMS store key         │          │  Node worker (Luna, wrap)│           │                          │
    │  key from SSM at start │          │  Python worker (LiteLLM) │           │  → exchange bucket (S3)  │
-   │  tee sink → AP + EMF   │          │  unlock_required, file_key│          └────────────┬─────────────┘
+   │  tee sink → AP + EMF   │          │  auto, file_key│          └────────────┬─────────────┘
    │  approvals: desk grants  │
    └──────────┬─────────────┘          │  imports airgap exports  │                        │ S3 gateway endpoint
               │                        └──────────────────────────┘           ┌────────────▼─────────────┐
@@ -82,8 +82,10 @@ CloudFormation leaves, with the commands; its dry run is the reviewed form. `npm
   pushes a document to the exchange bucket and the puller mirrors it — a host with no route out cannot reach a table
   in another region; its only inbound is port 22 from the Instance Connect Endpoint's own group).
 - A host that cannot call a model does not pretend to: the air-gapped host's observations are refusals.
-- The console stages; the customer activates. Under `unlock_required` a release goes live only through the desk's
-  Approvals page (the owner) or an operator's `unlock` on the host — never through AirPrompter.
+- AirPrompter owns release approval and rollout plans. SDK workers verify and automatically apply published
+  releases under `auto`, evaluate signed scheduled percentages locally and save resulting assignments in Zudocs.
+  Signed policy tightening, disable directives, signature and lease checks remain enforced by the SDK.
+  The desk has no local release approval, unlock, rollback or policy override controls.
 - Reset means advance: generations are monotonic, a rollback is a forced downgrade held back until something newer
   is promoted, a tightened policy is loosened only on the host. `npm run demo:reset` is that rule as a script.
 - The one bundle in git is the `zudocs-ci` Agent's placeholder (`vendored/`, `scripts/check-vendored.mjs`); the

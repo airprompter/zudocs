@@ -92,3 +92,24 @@ export function previewAssignments(release: LoadedRelease, pct: number | null, n
   return { checkedAt: new Date(nowMs).toISOString(), generation: release.generation, experimentId: experiment?.experimentId ?? null, mode: live ? "published" : experiment ? "what_if" : "illustration", weights, rows,
     counts: Object.fromEntries([...new Set(rows.map((r) => r.arm))].map((arm) => [arm, rows.filter((r) => r.arm === arm).length])) };
 }
+
+/** Only metadata from the independently verified AirPrompter release; never payloads or experiment salts. */
+export function publishedRollout(release: LoadedRelease, nowMs: number) {
+  const runtime = resolver(release, nowMs);
+  const experiment = runtime.experimentFor("support.reply");
+  const resolved = runtime.resolve("support.reply", "zudocs-rollout-status");
+  const arms = runtime.arms("support.reply");
+  const plan = experiment?.ramp ?? [];
+  const slot = release.manifest.payload.slots.find((s) => s.tag === "support.reply");
+  return {
+    checkedAt: new Date(nowMs).toISOString(), generation: release.generation,
+    releaseDigest: release.manifest.payload.releaseDigest, applyPolicy: release.manifest.payload.applyPolicy,
+    tag: "support.reply", experimentId: experiment?.experimentId ?? null, subjectKey: experiment?.subjectKey ?? null,
+    disabled: !resolved.ok, nextStepAt: plan.find((s) => Date.parse(s.notBefore) > nowMs)?.notBefore ?? null,
+    plan: plan.map((s) => ({ notBefore: s.notBefore, weightBps: s.weightBps })),
+    weights: experiment ? (arms ?? []).map((a) => {
+      const version = a.overrides.find((s) => s.tag === "support.reply") ?? slot;
+      return { arm: a.arm, weightBps: a.weightBps, versionId: version?.versionId ?? null, model: version?.model ?? null, inference: version?.inference ?? null };
+    }) : resolved.ok ? [{ arm: "none", weightBps: 10000, versionId: resolved.slot.versionId, model: resolved.slot.model, inference: resolved.slot.inference ?? null }] : [],
+  };
+}

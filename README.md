@@ -67,7 +67,7 @@ SECURITY.md        how to report a vulnerability, and what is committed on purpo
 - **The prompts live in AirPrompter, not here.** One Agent, four slots (triage, reply, a two-step escalation), variables,
   declared output checks, a golden set, settings sealed on the version — `docs/PROMPTS.md` is the contract; the text is not in git.
 - **Three shapes of host, one signed release.** A Lambda in `on_invoke` mode (`docs/DESK.md`), a daemon host with attached
-  Node and Python workers under `unlock_required` (`docs/EU-WEST.md`), a puller feeding an air-gapped host by sealed
+  Node and Python workers under `auto` (`docs/EU-WEST.md`), a puller feeding an air-gapped host by sealed
   exchange (`docs/FLEET.md`). A promotion reaches all of them without a deploy; the owner activates where the policy says so.
 - **What a run looks like.** Every number on the desk's run panel is the SDK's own: the render, the observation, the
   per-check verdicts, the judge, the feedback — nothing simulated, every refusal in the platform's words.
@@ -183,9 +183,9 @@ npm run eu:proof              # with ZUDOCS_PROOF_PASSWORD: the row, then status
 ```
 
 The first boot takes about ten minutes (the Python worker's dependencies), and a fresh host — this one, and every
-replacement — starts with the current release **staged**: the daemon pins `unlock_required`, so the desk's Approvals
-section shows it and the owner approves it before the host serves anything. `docs/EU-WEST.md` has the proof flags
-(`--approve`, `--enqueue`, `--cli`, `--wire`). Bedrock in a fresh account needs, per model, an agreement (`CreateFoundationModelAgreement`,
+replacement — verifies and automatically applies the current signed AirPrompter release. Approval and rollout
+percentages are managed in AirPrompter; Zudocs only observes them. `docs/EU-WEST.md` has the proof flags
+(`--enqueue`, `--cli`, `--wire`). Bedrock in a fresh account needs, per model, an agreement (`CreateFoundationModelAgreement`,
 which the console's "model access" page does) and an account verification AWS runs in the background; until both are
 done the desk shows the refusal on the run panel — it never simulates a model. `npm run desk:proof` (with
 `ZUDOCS_PROOF_PASSWORD` in the environment) runs one ticket end to end and checks the status row, the timeline and

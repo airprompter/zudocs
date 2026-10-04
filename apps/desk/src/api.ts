@@ -8,7 +8,6 @@
  * const api = createApi(config.apiUrl, () => auth.idToken());
  * const { tickets } = await api.tickets();
  * const { run } = await api.runTicket("T-1041");      // throws ApiError { status: 429, error: "daily_cap", … }
- * const { approval, already } = await api.approve("eu-west-1-ec2-g2");   // the owner's decision, recorded once
  * ```
  */
 
@@ -107,6 +106,13 @@ export interface ReleaseFacts { generation: number | null; versionId: string | n
 export interface RecordComparison { runId: string; checkedAt: string; generation: number; releaseDigest: string; steps: Array<{ step: string; tag: string; saved: ReleaseFacts; current: ReleaseFacts | null; text: string | null; reason: string | null; matches: { version: boolean; generation: boolean; arm: boolean; model: boolean; settings: boolean; prompt: boolean | null } | null }> }
 export interface AssignmentPreview { checkedAt: string; generation: number; experimentId: string | null; mode: "published" | "what_if" | "illustration"; weights: Array<{ arm: string; weightBps: number }>; rows: Array<{ visitor: string; arm: string }>; counts: Record<string, number> }
 
+export interface PublishedRollout {
+  checkedAt: string; generation: number; releaseDigest: string; applyPolicy: string; tag: string;
+  experimentId: string | null; subjectKey: string | null; disabled: boolean; nextStepAt: string | null;
+  plan: Array<{ notBefore: string; weightBps: number[] }>;
+  weights: Array<{ arm: string; weightBps: number; versionId: string | null; model: string | null; inference: Record<string, unknown> | null }>;
+}
+
 export interface Api {
   tickets(): Promise<{ tickets: Ticket[] }>;
   ticket(ticketId: string): Promise<{ ticket: Ticket; runs: AnyRun[] }>;
@@ -118,11 +124,11 @@ export interface Api {
   arms(since?: string): Promise<Arms>;
   comparison(runId: string): Promise<RecordComparison>;
   preview(percentage?: number): Promise<AssignmentPreview>;
+  rollout(): Promise<PublishedRollout>;
   feedback(runId: string, step: string, signals: Record<string, unknown>): Promise<{ filed: boolean; message: string }>;
   state(): Promise<State>;
   events(since: string | null): Promise<{ events: TimelineEvent[] }>;
   approvals(): Promise<{ approvals: Approval[]; pending: number }>;
-  approve(approvalId: string): Promise<{ approval: Approval; already: boolean; message: string }>;
   presenter(action: string, body?: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
@@ -182,13 +188,13 @@ export function createApi(baseUrl: string, tokenOf: () => Promise<string | null>
     escalateTicket: (ticketId) => runOrRecord<{ run: Run; cap: State["cap"] }>(`/tickets/${encodeURIComponent(ticketId)}/escalate`),
     hostedRun: (ticketId) => runOrRecord<{ run: HostedRun }>(`/tickets/${encodeURIComponent(ticketId)}/hosted-run`),
     arms: (since) => call("GET", `/arms${since ? `?since=${encodeURIComponent(since)}` : ""}`),
+    rollout: () => call("GET", "/rollout"),
     comparison: (runId) => call("GET", `/comparison/${encodeURIComponent(runId)}`),
     preview: (percentage) => call("POST", "/presenter/assignment_preview", percentage === undefined ? {} : { percentage }),
     feedback: (runId, step, signals) => call("POST", `/runs/${encodeURIComponent(runId)}/feedback`, { step, signals }),
     state: () => call("GET", "/state"),
     events: (since) => call("GET", `/events${since ? `?since=${encodeURIComponent(since)}` : ""}`),
     approvals: () => call("GET", "/approvals"),
-    approve: (approvalId) => call("POST", `/approvals/${encodeURIComponent(approvalId)}/approve`, {}),
     presenter: (action, body = {}) => call("POST", `/presenter/${encodeURIComponent(action)}`, body),
   };
 }

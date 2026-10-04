@@ -159,9 +159,11 @@ test("hosted: an unreadable run key parameter is a start refusal that names the 
 
 test("host CLI: the allowlist is closed, the JSON line is the last stdout line, polling ends on a terminal status", async () => {
   assert.equal(isHostCliCommand("policy show"), true);
-  assert.equal(isHostCliCommand("policy set auto"), false, "the worker pins unlock_required locally: not a drill");
+  assert.equal(isHostCliCommand("policy set auto"), false, "release policy cannot be overridden through the desk");
   assert.equal(isHostCliCommand("policy show; rm -rf /"), false);
   assert.equal(isHostCliCommand("constructor"), false, "prototype names are not commands");
+  assert.equal(isHostCliCommand("unlock"), false);
+  assert.equal(isHostCliCommand("rollback"), false);
   assert.equal(isHostCliCommand("apply"), false, "apply --force is a laptop drill, never a one-click");
   for (const line of Object.values(HOST_CLI_COMMANDS)) assert.match(line, /^zudocs-cli [a-z ]+ --json$/, line);
   assert.deepEqual(documentOf('policy: unlock_required\n{"via":"daemon","applyPolicy":{"effective":"unlock_required"}}\n'), { via: "daemon", applyPolicy: { effective: "unlock_required" } });
@@ -347,7 +349,7 @@ test("handler: a frozen host refuses a run inside the invoke (after the sync), t
   assert.deepEqual(frozenOf(fakeHost()), { frozen: false, reason: null });
 });
 
-test("handler: host_cli takes the allowlist only and runs as a job whose answer lands on the timeline; policy goes through setApplyPolicy, golden reports counts, reset clears", async () => {
+test("handler: host_cli takes the allowlist only and runs as a job whose answer lands on the timeline; policy overrides are refused, golden reports counts, reset clears", async () => {
   const host = fakeHost();
   const handler = createHandler(async () => host);
   const bad = parse(await handler(event("POST", "/presenter/host_cli", { command: "policy show && cat /etc/passwd" })));
@@ -364,14 +366,12 @@ test("handler: host_cli takes the allowlist only and runs as a job whose answer 
   assert.equal(row.summary, "in force unlock_required (local); the console says auto — advisory here");
   assert.equal((row.document as any).applyPolicy.manifestSaid, "auto", "the CLI's own document rides on the row");
   assert.deepEqual(host.calls.filter((c) => c.startsWith("host_cli")), ["host_cli:policy show"]);
-  const policy = parse(await handler(event("POST", "/presenter/policy", { value: "auto" })));
-  assert.equal(policy.status, 200);
-  assert.match(policy.body.message, /already auto/);
-  assert.equal(host.calls.filter((c) => c.startsWith("setApplyPolicy")).at(-1), "setApplyPolicy:auto:seth@zudocs.com");
-  const tightened = parse(await handler(event("POST", "/presenter/policy", { value: "unlock_required" })));
-  assert.match(tightened.body.message, /auto → unlock_required \(operator\)/);
-  const badPolicy = parse(await handler(event("POST", "/presenter/policy", { value: "whatever" })));
-  assert.equal(badPolicy.status, 400);
+  for (const value of ["auto", "unlock_required", "whatever"]) {
+    const policy = parse(await handler(event("POST", "/presenter/policy", { value })));
+    assert.equal(policy.status, 409);
+    assert.equal(policy.body.error, "airprompter_managed");
+  }
+  assert.equal(host.calls.filter((c) => c.startsWith("setApplyPolicy")).length, 0);
   const golden = parse(await handler(event("POST", "/presenter/golden", { tag: "support.triage" })));
   assert.equal(golden.status, 200);
   assert.equal(golden.body.reports[0].passed, 1);
@@ -470,32 +470,6 @@ test("approvalStaleness: a newer row on the same host and store, or the host's l
   assert.equal(approvalStaleness(g7, [g7], [status("2026-09-19T00:12:00Z", 6, null)]).stale, false, "nothing staged and an older generation live: a store the row does not describe; the watcher decides");
 });
 
-test("handler: approving a row the host has moved past answers 409 approval_stale with the row and records no decision; a current row is approved once", async () => {
-  const host = fakeHost();
-  const mk = (id: string, generation: number): any => ({ approvalId: id, hostId: "eu-west-1/ec2", storeId: "s", generation, releaseDigest: null, stagedAt: "2026-09-19T00:10:00Z", unlockRequest: null, decision: "pending", decidedBy: null, decidedAt: null, activatedAt: null, outcome: null, updatedAt: "2026-09-19T00:10:00Z" });
-  host.store.approvals.set("g7", mk("g7", 7));
-  host.store.approvals.set("g8", mk("g8", 8));
-  const approved: string[] = [];
-  host.store.approve = async (id: string, by: string, at: string) => { const r = host.store.approvals.get(id); if (!r || r.decision !== "pending") return { ok: false, row: r ?? null }; approved.push(id); Object.assign(r, { decision: "approved", decidedBy: by, decidedAt: at }); return { ok: true, row: r }; };
-  const handler = createHandler(async () => host);
-  const stale = parse(await handler(event("POST", "/approvals/g7/approve")));
-  assert.equal(stale.status, 409);
-  assert.equal(stale.body.error, "approval_stale");
-  assert.match(stale.body.message, /release #7 is no longer what eu-west-1\/ec2 holds staged: #8 was staged in its place/);
-  assert.equal(stale.body.approval.decision, "pending", "the row is handed back as it is; the host settles it");
-  assert.deepEqual(approved, [], "no decision recorded");
-  assert.equal(host.store.events.filter((e) => e.kind === "approval_decided").length, 0);
-  const fresh = parse(await handler(event("POST", "/approvals/g8/approve")));
-  assert.equal(fresh.status, 200);
-  assert.equal(fresh.body.already, false);
-  assert.deepEqual(approved, ["g8"]);
-  assert.equal(host.store.events.at(-1)?.kind, "approval_decided");
-  const again = parse(await handler(event("POST", "/approvals/g8/approve")));
-  assert.equal(again.status, 200);
-  assert.equal(again.body.already, true, "a settled or decided row is never re-checked for staleness, only answered as it stands");
-  const missing = parse(await handler(event("POST", "/approvals/nope/approve")));
-  assert.equal(missing.status, 404);
-});
 
 test("startWithRetry: SDK #52's fresh-store signature is retried once and logged; any other failure, or a second failure, is thrown as it is", async () => {
   const race = Object.assign(new Error("no verified release in the store, no usable vendored bundle, and the control plane at https://api-dev.airprompter.com could not be reached: slot A failed verification: unknown_signing_key"), { name: "AgentStartError", code: "no_verified_release" });

@@ -36,7 +36,7 @@ export function DaemonSummary({ host, onBehind }: { host: HostStatus | null; onB
         <div><dt title={TOOLTIPS.storage}>store key</dt><dd><span className={`chip protection-${protection}`}>{protection}</span></dd></div>
         <div><dt>workers</dt><dd>{node} · {python}</dd></div>
       </dl>
-      {onBehind ? <p className="behind-row"><Behind id="policy-line" onOpen={onBehind} title={TOOLTIPS.approval}>why this host waits</Behind></p> : null}
+      {onBehind ? <p className="behind-row"><Behind id="policy-line" onOpen={onBehind} title={TOOLTIPS.approval}>automatic release sync</Behind></p> : null}
     </article>
   );
 }

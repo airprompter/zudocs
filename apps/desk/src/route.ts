@@ -9,6 +9,8 @@
  * ```
  */
 
+import type { HostStatus, State } from "./api";
+
 export type DeskRoute = "architecture" | "agent" | "daemon" | "operate";
 
 export const PAGE_LABEL: Record<DeskRoute, string> = {
@@ -102,4 +104,17 @@ export function releaseHostId(route: DeskRoute, runHost: string | null, lambdaHo
   if (route === "daemon") return daemonHostId;
   if (route === "agent" && (runHost === lambdaHostId || runHost === daemonHostId)) return runHost;
   return lambdaHostId;
+}
+
+/** The inbox's fresh sync result supersedes its periodic database row; other hosts use their own saved reports. */
+export function supportHostSnapshot(state: Pick<State, "host" | "hosts"> | null, hostId: string | null): HostStatus | null {
+  if (!state || !hostId) return null;
+  if (hostId !== state.host.hostId) return state.hosts.find((host) => host.hostId === hostId) ?? null;
+  const live = state.host;
+  return {
+    hostId, region: live.region, kind: "lambda", sdk: live.sdk, reportSource: "live",
+    writtenAt: typeof live.status.lastSyncAt === "string" ? live.status.lastSyncAt : live.startedAt,
+    status: live.status, healthz: live.healthz,
+    container: { instanceId: live.instanceId, coldStart: live.coldStart, startedAt: live.startedAt, invocations: live.invocations },
+  };
 }

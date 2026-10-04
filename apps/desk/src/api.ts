@@ -63,6 +63,8 @@ export interface Stickiness { customerId: string; tag: string; generation: numbe
 export interface Ramp { experimentId: string; tag: string | null; arms: string[]; weightBps: number[]; step: number; nextStepAt: string | null; plan: Array<{ notBefore: string; weightBps: number[] }>; readBy?: string }
 export interface Arms { arms: ArmSummary[]; stickiness: Stickiness[]; ramps: Ramp[]; readAt: string; runsRead: number }
 export interface HostStatus {
+  /** A fresh SDK report from /state, rather than the persisted fleet row; writtenAt is its last sync time. */
+  reportSource?: "live";
   hostId: string;
   region: string;
   kind: string;

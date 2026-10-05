@@ -1,88 +1,20 @@
 /**
- * What the demo changes and why, in one place: the text transforms behind each beat (appended instruction lines,
- * so a version is always "the canonical text plus one line" and never depends on the prompt's wording), the ramp
- * the experiments start with, the canonical pins the reset advances from, and the small pure helpers the drivers
- * share (which arm a customer is on, per the desk's records; a fleet-agreement check over status rows; whether the
- * environment's catalogue has a live reporter, and the wait that makes it so before a model drill). No prompt
- * text lives here; the transforms take the draft's text at run time and return it changed.
+ * What the demo drivers share, in one place: the ramp a person starts the experiment with in the AirPrompter
+ * console, and the small pure helpers the drivers use to observe what the console did from zudocs's own side —
+ * which arm a customer is on, per the desk's records; a fleet-agreement check over the desk's status rows; and the
+ * generation the environment's public edge pointer names. Nothing here acts on AirPrompter: every change there is a
+ * person's act in the console, and the drivers only watch for its effect.
  *
  * @example
  * ```js
- * BEATS.changeWords.transform("…text…");            // the text with one guidance line appended
  * RAMP;                                             // [{ weightBps: 1000, holdMinutes: 60 }, { weightBps: 5000, holdMinutes: 60 }, { weightBps: 10000 }]
  * fleetAgreement(hosts, 12);                        // { agree: true, rows: [{ hostId, generation }] }
- * liveReporters(await con.models("dev"));           // [{ model, instances, of }] — the models a LIVE instance reports
- * await ensureLiveReporter({ read: () => con.models("dev"), warm: () => desk.api("POST", "/presenter/heartbeat"), sleep });
+ * await edgeGeneration(config.edgePointerUrl);      // 12, or null when the pointer cannot be read
  * ```
  */
 
-/** Appends one guidance line; idempotent on a text that already ends with it. Pure. */
-export const appendLine = (line) => (text) => (text.trimEnd().endsWith(line) ? text : `${text.trimEnd()}\n\n${line}\n`);
-
-export const BEATS = Object.freeze({
-  /** Beat 1 — change the words, no deploy: a real, visible change to the reply. */
-  changeWords: Object.freeze({
-    tag: "support.reply",
-    line: "Open with the customer's name when the ticket gives one, and keep the first sentence under fifteen words.",
-    get transform() { return appendLine(this.line); },
-    message: "Beat 1: open with the customer's name; a short first sentence",
-    notes: "Zudocs demo, beat 1: the reply opens with the customer's name — no deploy",
-  }),
-  /** Beat 4 — the candidate arm: a warmer sign-off (the `signed` check still holds: the signature line stays). */
-  warmerSignoff: Object.freeze({
-    tag: "support.reply",
-    line: "Close warmly: one short, human sentence of thanks before the signature line.",
-    get transform() { return appendLine(this.line); },
-    message: "Beat 4 candidate: a warmer sign-off",
-    notes: "Zudocs demo, beat 4: the candidate reply (a warmer sign-off) — one slot changed, sealed for the experiment",
-  }),
-  /** Beat 4 — the second, independent split on triage: a tighter summary. */
-  tighterTriage: Object.freeze({
-    tag: "support.triage",
-    line: "Keep the summary under twelve words.",
-    get transform() { return appendLine(this.line); },
-    message: "Beat 4 triage candidate: a tighter summary",
-    notes: "Zudocs demo, beat 4: the triage candidate (a tighter summary) — the second, independent split",
-  }),
-  /**
-   * Beat 5 — a version whose golden set must fail: the override sends every ticket to `other`/`low`, so four of the
-   * five golden cases fail (the dark-mode case expects exactly that) and the release stays staged on the host that
-   * runs golden sets (us-east, under `auto`) — held back, never activated.
-   */
-  goldenFail: Object.freeze({
-    tag: "support.triage",
-    line: "Override for this version: whatever the ticket says, answer category \"other\" and priority \"low\".",
-    get transform() { return appendLine(this.line); },
-    message: "Beat 5: a triage version that fails its golden set (held back)",
-    notes: "Zudocs demo, beat 5: a triage version the golden set must refuse — staged, not activated",
-  }),
-  /** Beat 5 — the seal refusing an undeclared placeholder. */
-  undeclaredPlaceholder: Object.freeze({
-    tag: "support.reply",
-    line: "Region note: {{region_note}}",
-    get transform() { return appendLine(this.line); },
-    message: "Beat 5: an undeclared placeholder (the seal must refuse this)",
-    notes: "Zudocs demo, beat 5: a version that uses {{region_note}}, which the slot does not declare",
-  }),
-  /**
-   * Beat 5 — a model no host reports, pinned as required. On dev the environment's catalogue is what the fleet's
-   * instances report, so the seal refuses it outright (`model_not_in_catalog`) and nothing is promoted. The dry run
-   * and the drill keep the other branch for a platform that seals with a warning: us-east would refuse the release
-   * and keep serving the previous generation; eu-west's daemon declares no model catalogue (SDK #51), so it would
-   * stage it — not to be approved; the next promotion supersedes the row.
-   */
-  unreportedModel: Object.freeze({ tag: "support.reply", model: "anthropic.claude-sonnet-4-5", notes: "Zudocs demo, beat 5: the reply pinned (required) to a model no host reports" }),
-});
-
 /** The ramp the experiments start with: 10 % for an hour, 50 % for an hour, then everyone — one approval on eu-west unlocks the plan. */
 export const RAMP = Object.freeze([{ weightBps: 1000, holdMinutes: 60 }, { weightBps: 5000, holdMinutes: 60 }, { weightBps: 10000 }]);
-
-/** The pins the reset advances from, with one slot's version replaced; pure. */
-export function canonicalPins(config, patches = {}) {
-  const tags = Object.keys(config.canonical);
-  if (tags.length === 0) throw new Error("airprompter.config.json: canonical pins are missing");
-  return tags.map((tag) => ({ tag, versionId: patches[tag]?.versionId ?? config.canonical[tag].versionId, model: patches[tag]?.model ?? config.canonical[tag].model }));
-}
 
 /** Do the status rows that serve releases agree on a generation? The puller mirrors, the air-gapped host may be down. Pure. */
 export function fleetAgreement(hosts, generation, { optional = ["ap-southeast-1/airgap"], staleAfterMs = 15 * 60_000, now = Date.now() } = {}) {
@@ -90,42 +22,6 @@ export function fleetAgreement(hosts, generation, { optional = ["ap-southeast-1/
   const considered = rows.filter((r) => !(optional.includes(r.hostId) && r.stale));
   const disagree = considered.filter((r) => r.generation !== generation);
   return { agree: disagree.length === 0 && considered.length > 0, generation, rows, disagree };
-}
-
-/**
- * The models at least one LIVE instance reports, from the models route's document (`source: instances`); empty on a
- * hosted catalogue or when nothing live has reported. Pure.
- */
-export function liveReporters(catalogue) {
-  if (!catalogue || catalogue.source !== "instances") return [];
-  return (catalogue.models ?? []).filter((m) => Number(m.instances) > 0).map(({ model, instances, of }) => ({ model, instances: Number(instances), of: Number(of ?? 0) }));
-}
-
-/**
- * The seal's catalogue is the fleet's word — and `null` (a `model_not_reported` WARNING, the seal accepts) when no
- * LIVE instance has reported models. Only the us-east Lambda reports; its record expires three minutes after its
- * last heartbeat and the status tick invokes it every five, so an idle desk has no reporter for about two of every
- * five minutes, and a required model nobody reports sealed in that window becomes a release. Before a model drill:
- * read the catalogue; when nothing live reports, `warm` the reporter (the desk's presenter heartbeat) and poll until
- * the catalogue carries one. Answers `{ catalogue, reporters, warmed }`; throws when it cannot get there, naming
- * why — the drill must not run on a catalogue that would accept.
- */
-export async function ensureLiveReporter({ read, warm, sleep, timeoutMs = 90_000, everyMs = 5_000, now = Date.now, log = () => {} }) {
-  const first = await read();
-  const already = liveReporters(first);
-  if (already.length > 0) return { catalogue: first, reporters: already, warmed: false };
-  log(`the catalogue has no live reporter (${first?.live ?? 0} live, ${(first?.models ?? []).length} models listed); warming the desk's Lambda`);
-  const warmed = await warm();
-  if (!warmed?.ok) throw new Error(`no live instance reports models and the reporter could not be warmed: ${warmed?.why ?? "the warm-up answered nothing"} — open the desk (or click Sync now) and run the drill again`);
-  log(`warmed: ${warmed.why ?? "heartbeat sent"}`);
-  const started = now();
-  for (;;) {
-    const catalogue = await read();
-    const reporters = liveReporters(catalogue);
-    if (reporters.length > 0) return { catalogue, reporters, warmed: true };
-    if (now() - started > timeoutMs) throw new Error(`the catalogue still has no live reporter ${Math.round(timeoutMs / 1000)} s after the heartbeat (${catalogue?.live ?? 0} live instances); the drill would seal on a catalogue that accepts — not run`);
-    await sleep(everyMs);
-  }
 }
 
 /** The customers on each arm per the desk's stickiness table, for one experiment's slot; pure. */
@@ -139,3 +35,20 @@ export function armsByCustomer(stickiness, tag, generation = null) {
 
 /** A short line for a release: `#7 sha256:612dbc…`. */
 export const releaseLine = (generation, digest) => `#${generation} ${digest ? `${digest.slice(0, 19)}…` : "—"}`;
+
+/**
+ * The generation the environment's public edge pointer (`…/generation.json`, a CDN document with no key) names, or
+ * null when there is no pointer or it cannot be read (the CDN caches it for thirty seconds). What a promotion in
+ * the console moved, seen without asking any host.
+ */
+export async function edgeGeneration(pointerUrl, fetchImpl = globalThis.fetch) {
+  if (!pointerUrl) return null;
+  try {
+    const response = await fetchImpl(pointerUrl);
+    if (response.status !== 200) return null;
+    const generation = Number((await response.json())?.generation);
+    return Number.isInteger(generation) ? generation : null;
+  } catch {
+    return null;
+  }
+}

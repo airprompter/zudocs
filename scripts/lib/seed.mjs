@@ -1,13 +1,13 @@
 /**
- * The seed as two pure steps: `planSeed` reads the environment's promoted release from AirPrompter through a
- * caller-supplied `api(path)` and returns every file to write; `writeSeed` replaces a registry directory with that
- * plan. Split so the plan can be tested against a fake API and the write against a temporary directory, and so
- * nothing is written until every read succeeded.
+ * The seed as three steps: `pullRelease` pulls the environment's promoted release through the public SDK
+ * (`pullBundle` with an Agent key, the pinned root and the root document — the same call the puller makes),
+ * `planSeed` turns the verified bundle into every file to write, and `writeSeed` replaces a registry directory with
+ * that plan. Split so the plan can be tested against a hand-built bundle and the write against a temporary
+ * directory, and so nothing is written until the pull and every check succeeded.
  *
- * The routes read are the console's workspace API (`…/board`, `…/releases/{env}/{digest}`,
- * `/team/prompts/{id}/versions/{v}`, `…/slots/{tag}/golden`) — what the app's own pages call, with no
- * compatibility promise of their own — so every field this depends on is checked by name and a rename fails here,
- * not as a corrupt file.
+ * The bundle is plaintext (`distributionPublicKey: null`), which the SDK permits for the dev target only, so the seed
+ * refuses any other environment before it asks. The SDK has already verified the chain and every payload's hash;
+ * `planSeed` checks the hash again on the bytes it writes, so a file on disk is always the release's bytes.
  *
  * The write replaces a registry, never an arbitrary directory: a non-empty target must carry a registry marker
  * (`.gitkeep`, `.airprompter-dev/`, or a `release.json` of this seed's own shape), hold nothing but registry-shaped
@@ -16,12 +16,15 @@
  *
  * @example
  * ```js
- * const plan = await planSeed({ api, config });          // { files: [{ path, text, summary }], releaseJson, summary }
- * writeSeed({ outDir: "./prompts", plan });              // refuses a directory that holds anything but a registry
+ * const result = await pullRelease({ config, apiKey, rootJwk });   // the SDK's PullBundleResult
+ * const plan = planSeed({ result, config });                        // { files: [{ path, text, summary }], releaseJson, summary }
+ * writeSeed({ outDir: "./prompts", plan });                         // refuses a directory that holds anything but a registry
  * ```
  */
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { SyncClient, pullBundle, trustedRootFromPinnedKey } from "@airprompter/agent-sdk";
 import { fileFor } from "./promptFiles.mjs";
 
 /**
@@ -36,60 +39,108 @@ const KEPT = new Set([".gitkeep", ".airprompter-dev"]);
 /** Finder and editors leave these; they are deleted with the stale files rather than refused. */
 const NOISE = new Set([".DS_Store", "Thumbs.db"]);
 
-function field(object, name, where, meaning = "the console API changed; update scripts/lib/seed.mjs") {
+function field(object, name, where) {
   const value = object?.[name];
-  if (value === undefined || value === null) throw new Error(`${where}: the response carried no ${name} (${meaning})`);
+  if (value === undefined || value === null) throw new Error(`${where}: the bundle carried no ${name} (the SDK's bundle shape changed; update scripts/lib/seed.mjs)`);
   return value;
 }
 
-export async function planSeed({ api, config }) {
-  const agentPath = `/workspace/${config.workspaceId}/agents/${config.agentId}`;
-  const board = field(await api(`${agentPath}/board`), "board", "board");
-  const environment = field(field(board, "environments", "board"), config.environment, "board.environments");
-  if (!environment.releaseDigest) throw new Error(`${config.environment}: nothing is promoted yet (generation ${environment.generation ?? 0})`);
-  const policy = field(environment, "policy", `board.environments.${config.environment}`, "the environment has no policy record yet: open it in the console once, or promote again");
-  const applyPolicy = field(policy, "applyPolicy", "policy");
-  const leaseSeconds = field(policy, "leaseSeconds", "policy");
-  if (applyPolicy !== "auto" && applyPolicy !== "unlock_required") throw new Error(`policy.applyPolicy is ${JSON.stringify(applyPolicy)}, not auto or unlock_required`);
-  if (!Number.isInteger(leaseSeconds) || leaseSeconds < 60) throw new Error(`policy.leaseSeconds is ${JSON.stringify(leaseSeconds)}`);
+/**
+ * One plaintext pull of the environment's promoted release. Refuses a non-dev environment before any request (the
+ * SDK writes plaintext for dev only). `pull` and `fetchImpl` are the SDK's and the platform's; a test passes fakes.
+ */
+export async function pullRelease({ config, apiKey, rootJwk, fetchImpl = globalThis.fetch, pull = pullBundle, now = () => new Date().toISOString() }) {
+  if (config.environment !== "dev") throw new Error(`the seed pulls a plaintext bundle, which the SDK allows for dev only; ${config.environment} bundles are sealed to a fleet key — seed from dev`);
+  if (!apiKey) throw new Error("an Agent key is required");
+  if (rootJwk?.d !== undefined) throw new Error("the pinned root carries a private member; keys/ holds public JWKs only");
+  const client = new SyncClient({ baseUrl: config.baseUrl, agentId: config.agentId, target: config.environment, apiKey, fetch: fetchImpl, userAgent: "zudocs-seed/0.1.0" });
+  const trustedRoot = trustedRootFromPinnedKey({ purpose: "platform", environment: config.hostedEnvironment, pinnedRoot: { kty: "EC", crv: "P-256", x: rootJwk.x, y: rootJwk.y } });
+  const fetchRoot = async () => {
+    const response = await fetchImpl(config.rootUrl, { headers: { "user-agent": "zudocs-seed/0.1.0" } });
+    return response.status === 200 ? response.json() : null;
+  };
+  return pull({ client, scope: { organizationId: config.organizationId, agentId: config.agentId, target: config.environment }, trustedRoot, fetchRoot, now, distributionPublicKey: null, skipPointer: true });
+}
 
-  const release = field(await api(`${agentPath}/releases/${config.environment}/${environment.releaseDigest}`), "release", "release");
-  const pins = field(release, "pins", "release");
-  const prompts = pins.filter((pin) => pin.kind === "prompt");
-  const skipped = pins.filter((pin) => pin.kind !== "prompt").map((pin) => pin.tag);
+/** Why a pull gave no bundle, in words a developer can act on. */
+function pullRefusal(result, environment) {
+  if (result?.status === "nothing_promoted") return `${environment}: nothing is promoted yet`;
+  if (result?.status === "unavailable" && result.reason === "unauthorized") return "the Agent key was not accepted (AIRPROMPTER_AGENT_KEY: the zudocs-support Agent's key for this environment)";
+  if (result?.status === "unavailable") return `AirPrompter did not answer the pull: ${result.reason}${result.detail ? ` (${String(result.detail).slice(0, 200)})` : ""}`;
+  if (result?.status === "refused") return `the SDK refused the release: ${result.reason}${result.detail ? ` (${String(result.detail).slice(0, 200)})` : ""}`;
+  return `the pull answered ${JSON.stringify(result?.status ?? null)}, not a bundle`;
+}
+
+/** Every payload by content hash, its bytes decoded (base64url, as the SDK writes them) and hashed again. */
+function payloadsOf(contents) {
+  const out = new Map();
+  for (const entry of field(contents, "payloads", "bundle")) {
+    const bytes = Buffer.from(field(entry, "bytes", "payload"), "base64url");
+    const hash = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    if (hash !== entry.contentHash || bytes.length !== entry.byteLength) throw new Error(`payload ${String(entry.contentHash).slice(0, 19)}…: the bytes do not hash to their content hash`);
+    out.set(hash, bytes);
+  }
+  return out;
+}
+
+/** The files a verified plaintext bundle seeds: one per prompt slot, a golden set where one is pinned, release.json. Pure. */
+export function planSeed({ result, config }) {
+  if (result?.status !== "ok") throw new Error(pullRefusal(result, config.environment));
+  const bundle = field(result, "bundle", "pull");
+  if (bundle.encryption?.scheme !== "none") throw new Error(`the bundle is sealed (${bundle.encryption?.scheme}); the seed reads plaintext dev bundles only`);
+  const contents = field(bundle.encryption, "contents", "bundle");
+  const payload = field(field(contents, "manifest", "bundle"), "payload", "manifest");
+  for (const [name, want] of [["organizationId", config.organizationId], ["agentId", config.agentId], ["target", config.environment]]) {
+    if (payload[name] !== want) throw new Error(`the manifest's ${name} is ${JSON.stringify(payload[name])}, not ${JSON.stringify(want)}`);
+  }
+  const applyPolicy = field(payload, "applyPolicy", "manifest");
+  const leaseSeconds = field(payload, "leaseSeconds", "manifest");
+  if (applyPolicy !== "auto" && applyPolicy !== "unlock_required") throw new Error(`manifest.applyPolicy is ${JSON.stringify(applyPolicy)}, not auto or unlock_required`);
+  if (!Number.isInteger(leaseSeconds) || leaseSeconds < 60) throw new Error(`manifest.leaseSeconds is ${JSON.stringify(leaseSeconds)}`);
+  const payloads = payloadsOf(contents);
+  const bytesOf = (hash, where) => {
+    const bytes = payloads.get(hash);
+    if (!bytes) throw new Error(`${where}: the bundle carries no payload ${String(hash).slice(0, 19)}…`);
+    return bytes;
+  };
+
+  const slots = field(payload, "slots", "manifest");
+  for (const slot of slots) {
+    const kind = field(slot, "kind", `manifest.slots[${slot.tag ?? "?"}]`);
+    if (kind !== "prompt" && kind !== "workflow") throw new Error(`manifest.slots[${slot.tag ?? "?"}]: kind ${JSON.stringify(kind)} is not prompt or workflow (update scripts/lib/seed.mjs)`);
+  }
+  const prompts = slots.filter((slot) => slot.kind === "prompt");
+  const skipped = slots.filter((slot) => slot.kind !== "prompt").map((slot) => slot.tag);
+  if (prompts.length === 0) throw new Error(`${config.environment}: the promoted release names no prompt slot (${slots.length} slots) — nothing to seed`);
 
   const files = [];
-  for (const pin of pins) {
-    const kind = field(pin, "kind", `release.pins[${pin.tag ?? "?"}]`);
-    if (kind !== "prompt" && kind !== "workflow") throw new Error(`release.pins[${pin.tag ?? "?"}]: kind ${JSON.stringify(kind)} is not prompt or workflow (the console API changed; update scripts/lib/seed.mjs)`);
-  }
-  if (prompts.length === 0) throw new Error(`${config.environment}: the promoted release names no prompt slot (${pins.length} pins) — nothing to seed`);
-  for (const pin of prompts) {
-    for (const name of ["tag", "artifactId", "versionId", "model"]) field(pin, name, `release.pins[${pin.tag ?? "?"}]`);
-    const version = await api(`/team/prompts/${pin.artifactId}/versions/${pin.versionId}`);
-    const content = field(version, "content", `${pin.tag} ${pin.versionId}`);
-    if (typeof content !== "string") throw new Error(`${pin.tag}: the version's content is not text`);
-    // The pin's own block, in the wire's integers (temperatureMilli, topPBps): what the runtime applies.
-    const file = fileFor({ tag: pin.tag, model: pin.model, versionId: pin.versionId, variables: pin.variables ?? [], checks: pin.outputChecks ?? [], inference: pin.inference ?? null, text: content });
-    files.push({ ...file, summary: `${pin.tag} ${pin.versionId} ${pin.model} · ${pin.variables?.length ?? 0} variables · ${pin.outputChecks?.length ?? 0} checks · ${Buffer.byteLength(content, "utf8")} bytes` });
-    if (pin.goldenSet) {
-      // The slot's current set, checked against what the release pinned: an edit after the seal is not the pin.
-      const golden = await api(`${agentPath}/slots/${pin.tag}/golden`);
-      const set = field(golden, "set", `${pin.tag} golden`, "the slot's golden set was removed after this release was sealed; seal and promote again");
-      const ref = field(golden, "ref", `${pin.tag} golden`);
-      const pinnedHash = field(pin.goldenSet, "contentHash", `${pin.tag} goldenSet`);
-      if (field(ref, "contentHash", `${pin.tag} golden ref`) !== pinnedHash) throw new Error(`${pin.tag}: the slot's golden set (${ref.setId}) is not the one the release pinned (${pin.goldenSet.setId}); seal and promote again, or seed after reverting the edit`);
-      const cases = field(set, "cases", `${pin.tag} golden set`);
-      const minPassBps = field(set, "minPassBps", `${pin.tag} golden set`);
-      files.push({ path: `golden/${pin.tag}.json`, text: `${JSON.stringify(set, null, 2)}\n`, summary: `golden set ${set.setId}: ${cases.length} cases, floor ${minPassBps / 100}%` });
+  for (const slot of prompts) {
+    for (const name of ["tag", "versionId", "model", "contentHash"]) field(slot, name, `manifest.slots[${slot.tag ?? "?"}]`);
+    const text = bytesOf(slot.contentHash, slot.tag).toString("utf8");
+    // The slot's own block, in the wire's integers (temperatureMilli, topPBps): what the runtime applies.
+    const file = fileFor({ tag: slot.tag, model: slot.model, versionId: slot.versionId, variables: slot.variables ?? [], checks: slot.outputChecks ?? [], inference: slot.inference ?? null, text });
+    files.push({ ...file, summary: `${slot.tag} ${slot.versionId} ${slot.model} · ${slot.variables?.length ?? 0} variables · ${slot.outputChecks?.length ?? 0} checks · ${Buffer.byteLength(text, "utf8")} bytes` });
+    if (slot.goldenSet) {
+      // The set the release pinned, from the bundle itself: there is no later edit to drift from.
+      const ref = slot.goldenSet;
+      let set;
+      try {
+        set = JSON.parse(bytesOf(field(ref, "contentHash", `${slot.tag} goldenSet`), `${slot.tag} golden set`).toString("utf8"));
+      } catch (error) {
+        throw new Error(`${slot.tag}: the golden set payload is not JSON (${error.message.slice(0, 80)})`);
+      }
+      const cases = field(set, "cases", `${slot.tag} golden set`);
+      const minPassBps = field(set, "minPassBps", `${slot.tag} golden set`);
+      files.push({ path: `golden/${slot.tag}.json`, text: `${JSON.stringify(set, null, 2)}\n`, summary: `golden set ${set.setId ?? ref.setId}: ${cases.length} cases, floor ${minPassBps / 100}%` });
     }
   }
-  const releaseJson = { applyPolicy, leaseSeconds, ...(policy.onLeaseExpiry ? { onLeaseExpiry: policy.onLeaseExpiry } : {}) };
+  const releaseJson = { applyPolicy, leaseSeconds, ...(payload.onLeaseExpiry ? { onLeaseExpiry: payload.onLeaseExpiry } : {}) };
+  const experiments = (payload.experiments ?? (payload.experiment ? [payload.experiment] : [])).length;
   return {
     files,
     releaseJson,
     skipped,
-    summary: `agent ${config.agentId} · ${config.environment} · generation ${environment.generation} · release ${String(environment.releaseDigest).slice(0, 19)}… · policy ${applyPolicy}`,
+    summary: `agent ${config.agentId} · ${config.environment} · generation ${payload.generation} · release ${String(payload.releaseDigest).slice(0, 19)}… · policy ${applyPolicy}${experiments ? ` · ${experiments} experiment(s): the control slots are seeded` : ""}`,
   };
 }
 

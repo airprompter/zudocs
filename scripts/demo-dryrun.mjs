@@ -1,34 +1,39 @@
 #!/usr/bin/env node
 /**
- * Every panel of the desk and every console act, performed against the live deployment in order, with every presenter click and console
- * act made for real and what the desk shows asserted: the badge flips, the eu-west approval lands and
- * activates, the fleet agrees, the freeze refuses every Run (the button stays clickable; the refusal is the beat), the arms split and stick per customer on two hosts, the
- * ramp plan shows on the approval, the safety nets refuse in the platform's own words, the variables come from the
- * desk's table, the wire cut degrades and the restore recovers, the windows leave the host. Prints a transcript with
- * timings (ids, generations, codes, counts — never prompt text, never a key) and exits 1 when a claim fails. This is
- * the plan's gate: "a full dry run of the nine beats, twice in a row from a reset".
+ * Every panel of the desk, exercised against the live deployment in order, with every presenter click made for real
+ * and what the desk shows asserted: the badge flips, eu-west takes each release on its own, the fleet agrees, the
+ * freeze refuses every Run (the button stays clickable; the refusal is the beat), the arms split and stick per
+ * customer on two hosts, the ramp plan reaches the hosts, the golden set holds a release back, the variables come
+ * from the desk's table, the wire cut degrades and the restore recovers, the windows leave the host. Prints a
+ * transcript with timings (ids, generations, codes, counts — never prompt text, never a key) and exits 1 when a
+ * claim fails. This is the plan's gate: "a full dry run of the nine beats, twice in a row from a reset".
  *
- * Needs the session token (`AIRPROMPTER_SESSION_TOKEN`), the proof password (`ZUDOCS_PROOF_PASSWORD`) and the owner's
- * AWS profile (CloudWatch, the stack outputs). ~25 minutes; the wire beat is the slow one (`--skip-wire` for a
+ * What happens in AirPrompter (a new version, a seal, a promotion, an experiment, a dial, the winner, a freeze) is
+ * a person's act in the console, never this script's: at each such beat it prints one plain instruction and waits,
+ * bounded (ten minutes), until zudocs sees the effect on its own side — the environment's public edge pointer
+ * naming a newer generation, or the hosts' status rows reporting it. A refusal the console itself shows (the seal
+ * refusing a placeholder or a model) is named for the person and not observed here. `--skip-console-beats` skips
+ * every beat that needs the console, with a line saying so: a rehearsal of the zudocs side alone.
+ *
+ * Needs the proof password (`ZUDOCS_PROOF_PASSWORD`) and the owner's AWS profile (CloudWatch, the stack outputs);
+ * no AirPrompter credential. ~25 minutes plus the console acts; the wire beat is the slow one (`--skip-wire` for a
  * rehearsal), `--hosted` runs beat 1's hosted-staging step, `--airgap` expects the air-gapped host to be up
  * (`npm run airgap:up` first), `--strips` records the CLI strips at the end, `--UNSAFE-promote-hosts-must-refuse`
- * takes beat 5's model drill down the other platform's path (promote the unreported model and let the hosts refuse
- * it) instead of requiring the seal's refusal — never in a session.
+ * takes beat 5's model drill down the other platform's path (the person promotes the unreported model and the hosts
+ * must refuse it) instead of the seal's refusal — never in a session.
  *
  * @example
  * ```sh
- * eval "$(.bin/airprompter login --email you@zudocs.com --base-url https://api-dev.airprompter.com)"
  * export AWS_PROFILE=zudocs ZUDOCS_PROOF_PASSWORD='…'
  * npm run demo:dryrun -- --hosted --airgap --strips          # the full gate, then `npm run demo:reset`, then again
- * npm run demo:dryrun -- --skip-wire                         # a rehearsal
+ * npm run demo:dryrun -- --skip-wire --skip-console-beats    # a rehearsal of the zudocs side
  * ```
  */
 import { spawnSync } from "node:child_process";
 import { CloudWatchClient, ListMetricsCommand } from "@aws-sdk/client-cloudwatch";
-import { readConfig, secretFromEnv } from "./lib/config.mjs";
-import { createConsole, withPin } from "./lib/console.mjs";
-import { BEATS, RAMP, armsByCustomer, canonicalPins, ensureLiveReporter, fleetAgreement, releaseLine } from "./lib/demo.mjs";
-import { connectDesk, repoRootOf, sleep } from "./lib/desk.mjs";
+import { readConfig } from "./lib/config.mjs";
+import { RAMP, armsByCustomer, edgeGeneration, fleetAgreement, releaseLine } from "./lib/demo.mjs";
+import { connectDesk, repoRootOf } from "./lib/desk.mjs";
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
@@ -43,16 +48,16 @@ const stamp = () => `${String(Math.floor((Date.now() - t0) / 60000)).padStart(2,
 const beat = (n, title) => say(`\n[${stamp()}] Beat ${n} — ${title}`);
 
 let config;
-let token;
 try {
   config = readConfig();
-  token = secretFromEnv("AIRPROMPTER_SESSION_TOKEN", "the session token `airprompter login` prints");
 } catch (error) {
   console.log(error.message);
   process.exit(2);
 }
 const ENV = config.environment;
-const con = createConsole({ config, token, log: (e) => e.event === "platform_5xx_retry" && gap(`the platform answered ${e.status} on ${e.method} ${e.path}; retried once`) });
+const skipConsole = flag("--skip-console-beats");
+/** How long a person has for one console act before the beat's claim fails (the run goes on). */
+const CONSOLE_WAIT_MS = 10 * 60_000;
 const desk = await connectDesk();
 const EAST = "us-east-1/lambda";
 const EU = "eu-west-1/ec2";
@@ -73,6 +78,27 @@ async function hostCli(command, { timeoutMs = 150_000 } = {}) {
   if (queued.status !== 202) return { status: `HTTP ${queued.status}`, summary: queued.json.message ?? JSON.stringify(queued.json).slice(0, 200), document: null };
   return desk.waitFor(`zudocs-cli ${command} to answer`, async () => (await eventsOfKind(since, "host_cli", EAST)).find((e) => e.command === command) ?? null, { timeoutMs, everyMs: 5_000 });
 }
+
+/** The newest generation zudocs sees without a credential: the public edge pointer, else what us-east serves after a sync. */
+const currentGeneration = async () => (await edgeGeneration(config.edgePointerUrl)) ?? Number((await syncEast()).generation);
+/**
+ * A beat that needs AirPrompter: a person does `act` in the console; this prints it and waits, bounded, until
+ * `observe` (zudocs's own systems, or the public edge pointer) sees the effect. Null when skipped
+ * (`--skip-console-beats`) or not seen in time — the latter a failed claim.
+ */
+async function inConsole(act, what, observe, { timeoutMs = CONSOLE_WAIT_MS, everyMs = 10_000 } = {}) {
+  if (skipConsole) { say(`    ⏭ needs the console: ${act} (skipped: --skip-console-beats)`); return null; }
+  say(`    → In AirPrompter: ${act}`);
+  const seen = await desk.waitFor(what, observe, { timeoutMs, everyMs }).catch(() => null);
+  if (seen === null) fail(`${what}: not seen within ${timeoutMs / 60_000} min — was it done in the console?`);
+  return seen;
+}
+/** A console act that moves the environment (a promotion, an experiment, a dial — each is a generation): the newer generation, or null. */
+const newGeneration = (act, after) => inConsole(act, `a generation newer than #${after}`, async () => { const g = await currentGeneration(); return g > after ? g : null; });
+/** What only the console shows (a seal's refusal, its own pages): named for the person; nothing here observes it. */
+const showInConsole = (what) => say(skipConsole ? `    ⏭ needs the console: ${what} (skipped: --skip-console-beats)` : `    → In AirPrompter: ${what}`);
+const BOARD = `the zudocs-support agent's board (${ENV})`;
+const RAMP_WORDS = RAMP.map((step) => `${step.weightBps / 100} %${step.holdMinutes ? ` for ${step.holdMinutes} min` : ""}`).join(" → ");
 
 /** Observe automatic SDK activation on both Europe workers; never approve or unlock locally. */
 async function waitForEuWest(generation, { timeoutMs = 180_000 } = {}) {
@@ -124,17 +150,16 @@ check(r0?.generation === gen0, `the badge names the release the host serves (#${
 // --- Beat 1: change the words, no deploy ------------------------------------------------------------------------------
 beat(1, "change the words, no deploy");
 const since1 = new Date().toISOString();
-const v1 = await con.newVersion({ tag: BEATS.changeWords.tag, transform: BEATS.changeWords.transform, message: BEATS.changeWords.message });
-const sealed1 = await con.seal({ environment: ENV, pins: withPin(await con.pins(ENV), BEATS.changeWords.tag, { versionId: v1.versionId }), notes: BEATS.changeWords.notes });
-check(sealed1.release !== null, `sealed ${sealed1.release?.releaseDigest.slice(0, 20)}… with reply ${v1.versionId}${sealed1.blocked ? ` — BLOCKED ${JSON.stringify(sealed1.blocked)}` : ""}`);
-const p1 = await con.promote({ environment: ENV, releaseDigest: sealed1.release.releaseDigest, notes: BEATS.changeWords.notes });
-ok(`promoted: dev at generation ${p1.generation} at ${p1.updatedAt}`);
-await landEverywhere(p1.generation);
-const run1 = await runTicket(TICKET);
-const r1 = replyStep(run1.json.run);
-check(r1?.versionId === v1.versionId && r1?.generation === p1.generation, `re-run: the badge flipped to ${badge(r1)}`);
-const changed = await eventsOfKind(since1, "release_changed", EAST);
-check(changed.some((e) => e.generation === p1.generation), `the timeline shows release #${p1.generation} landing on us-east (${changed.length} row(s))`);
+const g1 = await newGeneration(`on ${BOARD}, save a new support.reply version with a visible change (open with the customer's name), seal the ${ENV} release with it and promote it`, gen0);
+if (g1 !== null) {
+  ok(`AirPrompter promoted ${ENV} to generation ${g1}`);
+  await landEverywhere(g1);
+  const run1 = await runTicket(TICKET);
+  const r1 = replyStep(run1.json.run);
+  check(r1?.versionId !== r0?.versionId && r1?.generation === g1, `re-run: the badge flipped to ${badge(r1)} (was ${r0?.versionId ?? "?"})`);
+  const changed = await eventsOfKind(since1, "release_changed", EAST);
+  check(changed.some((e) => e.generation === g1), `the timeline shows release #${g1} landing on us-east (${changed.length} row(s))`);
+}
 if (flag("--hosted")) {
   const hosted = await desk.api("POST", `/tickets/${TICKET}/hosted-run`);
   const h = hosted.json.run;
@@ -171,26 +196,23 @@ else say(`    (air-gapped host ${rows2[AIRGAP] ? `row written ${rows2[AIRGAP].wr
 beat(3, "you activate, not us — and the freeze");
 ok("the approval was the beat-1 approval above (staged → Approve → live with timestamps)");
 const since3 = new Date().toISOString();
-const frozen = await con.freeze({ environment: ENV, frozen: true, notes: "Zudocs demo, beat 3: freeze" });
-ok(`frozen from the console (generation ${frozen.pointer.generation} carries the directive)`);
-await syncEast();
-const stateF = await desk.waitFor("us-east to report frozen", async () => { const s = await desk.state(); return s.frozen?.frozen ? s : null; }, { timeoutMs: 60_000, everyMs: 3_000 });
-ok(`release bar: FROZEN — ${stateF.frozen.reason}`);
-const runF = await runTicket("T-1042");
-check(runF.status === 423 && runF.json.error === "frozen", `Run refused: HTTP ${runF.status} ${runF.json.error} — ${runF.json.message}`);
-const euFrozen = await desk.waitFor("Europe to honour the signed freeze", async () => {
-  const r = await desk.hostRow(EU); return r?.status?.disabled?.agent ? r : null;
-}, { timeoutMs: 150_000, everyMs: 10_000 }).catch(() => null);
-check(euFrozen !== null, "Europe applied the signed freeze without a local approval");
-const unfrozen = await con.freeze({ environment: ENV, frozen: false, notes: "Zudocs demo, beat 3: unfreeze" });
-await syncEast();
-const stateU = await desk.waitFor("us-east to report unfrozen", async () => { const s = await desk.state(); return !s.frozen?.frozen ? s : null; }, { timeoutMs: 60_000, everyMs: 3_000 });
-ok(`unfrozen (generation ${unfrozen.pointer.generation}); the Run buttons are back`);
-const runU = await runTicket("T-1042");
-check(runU.status === 200, `T-1042 runs again: ${badge(replyStep(runU.json.run))}`);
-const euUnfrozen = await desk.waitFor("eu-west to lift the freeze", async () => { const r = await desk.hostRow(EU); return r && !r.status?.disabled?.agent ? r : null; }, { timeoutMs: 150_000, everyMs: 10_000 }).catch(() => null);
-check(euUnfrozen !== null, "Europe automatically applied the signed unfreeze");
-{
+const stateF = await inConsole(`freeze ${ENV} on ${BOARD}`, "us-east to report frozen", async () => { await syncEast(); const s = await desk.state(); return s.frozen?.frozen ? s : null; });
+if (stateF) {
+  ok(`release bar: FROZEN — ${stateF.frozen.reason} (generation ${stateF.host.status.generation} carries the directive)`);
+  const runF = await runTicket("T-1042");
+  check(runF.status === 423 && runF.json.error === "frozen", `Run refused: HTTP ${runF.status} ${runF.json.error} — ${runF.json.message}`);
+  const euFrozen = await desk.waitFor("Europe to honour the signed freeze", async () => {
+    const r = await desk.hostRow(EU); return r?.status?.disabled?.agent ? r : null;
+  }, { timeoutMs: 150_000, everyMs: 10_000 }).catch(() => null);
+  check(euFrozen !== null, "Europe applied the signed freeze without a local approval");
+  const stateU = await inConsole(`lift the freeze on ${ENV}`, "us-east to report unfrozen", async () => { await syncEast(); const s = await desk.state(); return !s.frozen?.frozen ? s : null; });
+  if (stateU) {
+    ok(`unfrozen (generation ${stateU.host.status.generation}); the Run buttons are back`);
+    const runU = await runTicket("T-1042");
+    check(runU.status === 200, `T-1042 runs again: ${badge(replyStep(runU.json.run))}`);
+    const euUnfrozen = await desk.waitFor("eu-west to lift the freeze", async () => { const r = await desk.hostRow(EU); return r && !r.status?.disabled?.agent ? r : null; }, { timeoutMs: 150_000, everyMs: 10_000 }).catch(() => null);
+    check(euUnfrozen !== null, "Europe automatically applied the signed unfreeze");
+  }
   const refused = await eventsOfKind(since3, "run_refused", EAST);
   check(refused.length >= 1, `the timeline shows ${refused.length} refused run(s) while frozen`);
 }
@@ -198,161 +220,145 @@ check(euUnfrozen !== null, "Europe automatically applied the signed unfreeze");
 // --- Beat 4: measure --------------------------------------------------------------------------------------------------------------
 beat(4, "measure: a 10 % candidate, sticky per customer, a second split, dial, winner");
 const since4 = new Date().toISOString();
-const vC = await con.newVersion({ tag: BEATS.warmerSignoff.tag, transform: BEATS.warmerSignoff.transform, message: BEATS.warmerSignoff.message });
-const sealedC = await con.seal({ environment: ENV, pins: withPin(await con.pins(ENV), BEATS.warmerSignoff.tag, { versionId: vC.versionId }), notes: BEATS.warmerSignoff.notes });
-check(sealedC.release !== null, `candidate sealed: reply ${vC.versionId} (${sealedC.release?.releaseDigest.slice(0, 20)}…)`);
-const exp = await con.experiments.start({ environment: ENV, candidateReleaseDigest: sealedC.release.releaseDigest, ramp: [...RAMP], notes: BEATS.warmerSignoff.notes });
-const e1 = exp.experiment;
-check(e1.weightBps === 1000 && (e1.plan?.length ?? 0) === 3, `experiment ${e1.experimentId} on ${e1.tag}: control ${e1.control.versionId} vs candidate ${e1.candidate.versionId} at ${e1.weightBps / 100} %, plan ${(e1.plan ?? []).map((s) => `${s.weightBps / 100} %`).join(" → ")}, generation ${exp.pointer.generation}`);
-const sync4 = await syncEast();
-check(sync4.generation === exp.pointer.generation, `us-east took the split on its next invoke (#${sync4.generation})`);
-const synced4 = await waitForEuWest(exp.pointer.generation);
-check((synced4.status.ramps ?? []).some((r) => r.tag === e1.tag && r.plan.length === 3), "the Europe SDK reports the signed ramp plan");
-const sinceReplay1 = new Date().toISOString();
-const replay = await desk.api("POST", "/presenter/replay", { n: 30 });
-check(replay.status === 202, `Replay 30 on us-east: ${replay.json.message}`);
-for (const id of ["T-1041", "T-1043", "T-1044", "T-1045"]) {
-  const q = await desk.api("POST", "/presenter/enqueue", { ticketId: id, host: EU });
-  if (q.status !== 202) fail(`enqueue ${id} on eu-west: ${q.json.message}`);
+const gExp = await newGeneration(`on ${BOARD}, save a candidate support.reply version (a warmer sign-off), seal it, and start an experiment of it against the control with the ramp ${RAMP_WORDS}`, await currentGeneration());
+if (gExp !== null) {
+  const sync4 = await syncEast();
+  check(sync4.generation === gExp, `us-east took the split on its next invoke (#${sync4.generation})`);
+  const synced4 = await waitForEuWest(gExp);
+  const replyRamp = (synced4.status.ramps ?? []).find((r) => r.tag === "support.reply");
+  check(replyRamp?.plan?.length === RAMP.length, `the Europe SDK reports the signed ramp plan on support.reply (${replyRamp?.plan?.length ?? 0} steps)`);
+  const sinceReplay1 = new Date().toISOString();
+  const replay = await desk.api("POST", "/presenter/replay", { n: 30 });
+  check(replay.status === 202, `Replay 30 on us-east: ${replay.json.message}`);
+  for (const id of ["T-1041", "T-1043", "T-1044", "T-1045"]) {
+    const q = await desk.api("POST", "/presenter/enqueue", { ticketId: id, host: EU });
+    if (q.status !== 202) fail(`enqueue ${id} on eu-west: ${q.json.message}`);
+  }
+  ok("four tickets queued on eu-west (its worker takes the queue within ten seconds)");
+  const replayDone = await desk.waitFor("the replay to finish", async () => (await eventsOfKind(sinceReplay1, "replay_done", EAST))[0] ?? null, { timeoutMs: 330_000, everyMs: 10_000 });
+  check(replayDone.done >= 12, `replay done: ${replayDone.done}/${replayDone.requested} runs`);
+  await desk.waitFor("eu-west to run its queue", async () => ((await eventsOfKind(since4, "ticket_run", EU)).length >= 4 ? true : null), { timeoutMs: 240_000, everyMs: 10_000 }).catch(() => fail("eu-west ran fewer than four queued tickets in four minutes"));
+  const arms4 = (await desk.api("GET", "/arms")).json;
+  const replyArms = arms4.arms.filter((a) => a.tag === "support.reply" && a.arm !== "none");
+  // The candidate's version, as the runs recorded it: what the winner must serve to everyone at the end of the beat.
+  const candidateVersion = replyArms.find((a) => a.arm === "candidate")?.versionId ?? null;
+  // One stickiness row per customer, slot and release (the weights in force): the counts here are for the split's own generation.
+  const sticky4 = arms4.stickiness.filter((s) => s.tag === "support.reply" && s.generation === gExp);
+  const candidateCustomers = sticky4.filter((s) => Object.values(s.arms).includes("candidate")).length;
+  const seenCustomers = sticky4.length;
+  ok(`per-arm results on the desk: ${replyArms.map((a) => `${a.arm} ${a.versionId}: ${a.runs} runs (${Object.entries(a.hosts).map(([h, n]) => `${h.split("/")[0]} ${n}`).join(", ")}), judge ${a.judgeMean ?? "—"}, cost ${a.costMeanUsd?.toFixed(5) ?? "—"}, 👍${a.feedback.up} 👎${a.feedback.down}`).join(" · ")}`);
+  ok(`at 10 %, ${candidateCustomers} of ${seenCustomers} customers landed on the candidate (a share of customers, not of runs)`);
+  const both = sticky4.filter((s) => Object.keys(s.arms).length >= 2);
+  check(both.length >= 2 && both.every((s) => s.consistent), `sticky across hosts on the weights in force (#${gExp}): ${both.length} customers seen on both us-east and eu-west, ${both.filter((s) => s.consistent).length} on the same arm on both (${both.map((s) => `${s.customerId} ${Object.values(s.arms)[0]}`).join(", ")})`);
+  if (flag("--airgap")) {
+    const ag = await desk.hostRow(AIRGAP);
+    if (ag?.airgap?.renders?.last?.arm) ok(`the air-gapped host's last probe (${ag.airgap.renders.last.subject}) landed on arm ${ag.airgap.renders.last.arm} — computed offline from the same manifest`);
+  }
+  // The second, independent split on triage.
+  let latest = gExp;
+  const gT = await newGeneration(`save a candidate support.triage version (a tighter summary), seal it, and start a second experiment on support.triage at 50 % (ramp 50 % for 60 min → 100 %)`, latest);
+  if (gT !== null) {
+    latest = gT;
+    ok(`second experiment on support.triage at generation ${gT} — independent of the reply split`);
+    await syncEast();
+    await waitForEuWest(gT);
+    const sinceReplay2 = new Date().toISOString();
+    const replay2 = await desk.api("POST", "/presenter/replay", { n: 12 });
+    const done2 = await desk.waitFor("the second replay", async () => (await eventsOfKind(sinceReplay2, "replay_done", EAST))[0] ?? null, { timeoutMs: 240_000, everyMs: 10_000 });
+    ok(`Replay 12 (${replay2.status}): ${done2.done} runs`);
+    const armsT = (await desk.api("GET", "/arms")).json;
+    const triageArms = armsT.arms.filter((a) => a.tag === "support.triage" && a.arm !== "none");
+    const byCustomer = armsByCustomer(armsT.stickiness, "support.triage", gT);
+    const replyBy = armsByCustomer(armsT.stickiness, "support.reply", gT);
+    const combos = new Set(Object.keys(byCustomer).filter((c) => replyBy[c]).map((c) => `${Object.values(replyBy[c].arms)[0]}/${Object.values(byCustomer[c].arms)[0]}`));
+    check(triageArms.length === 2, `triage arms on the desk: ${triageArms.map((a) => `${a.arm} ${a.versionId}: ${a.runs}`).join(" · ")}`);
+    check(combos.size >= 2, `independent splits: reply/triage combinations seen ${[...combos].join(", ")}`);
+  }
+  // AirPrompter's own rollout page is the person's to show; the desk's per-arm numbers above are zudocs's.
+  showInConsole("open the reply experiment's rollout page: per-arm runs, quality and the promote verdict for the step in force");
+  // Dial to 50 %, then the winner.
+  const gDial = await newGeneration("dial the reply experiment to 50 %", latest);
+  if (gDial !== null) {
+    latest = gDial;
+    ok(`dialled (generation ${gDial})`);
+    await syncEast();
+    await waitForEuWest(gDial);
+    const sinceReplay3 = new Date().toISOString();
+    const replay3 = await desk.api("POST", "/presenter/replay", { n: 12 });
+    await desk.waitFor("the third replay", async () => (await eventsOfKind(sinceReplay3, "replay_done", EAST))[0] ?? null, { timeoutMs: 240_000, everyMs: 10_000 });
+    const arms50 = (await desk.api("GET", "/arms")).json;
+    const sticky50 = arms50.stickiness.filter((s) => s.tag === "support.reply" && s.generation === gDial);
+    const cand50 = sticky50.filter((s) => Object.values(s.arms).includes("candidate")).length;
+    ok(`at 50 % (replay ${replay3.status}, #${gDial}): ${cand50} of ${sticky50.length} customers on the candidate`);
+    // A dial moves buckets by design: the rows from before it are compared on their own weights, and none reads "control+candidate".
+    const moved = arms50.stickiness.filter((s) => s.tag === "support.reply" && s.generation !== gDial && Object.keys(s.arms).length >= 2);
+    check(arms50.stickiness.every((s) => !Object.values(s.arms).some((a) => a.includes("+"))) && [...sticky50, ...moved].filter((s) => Object.keys(s.arms).length >= 2).every((s) => s.consistent), `stickiness after the dial: ${sticky50.filter((s) => Object.keys(s.arms).length >= 2).length} customers on both hosts at #${gDial} agree, ${moved.length} earlier rows kept on their own weights — no host reads control+candidate`);
+  }
+  const gWin = await newGeneration("promote the reply experiment's candidate as the winner", latest);
+  if (gWin !== null) {
+    await syncEast();
+    await waitForEuWest(gWin);
+    const runW = await runTicket(TICKET);
+    check(candidateVersion !== null && replyStep(runW.json.run)?.versionId === candidateVersion && replyStep(runW.json.run)?.arm === "none", `the winner serves everyone: ${badge(replyStep(runW.json.run))} (the candidate was ${candidateVersion ?? "not seen"})`);
+  }
 }
-ok("four tickets queued on eu-west (its worker takes the queue within ten seconds)");
-const replayDone = await desk.waitFor("the replay to finish", async () => (await eventsOfKind(sinceReplay1, "replay_done", EAST))[0] ?? null, { timeoutMs: 330_000, everyMs: 10_000 });
-check(replayDone.done >= 12, `replay done: ${replayDone.done}/${replayDone.requested} runs`);
-await desk.waitFor("eu-west to run its queue", async () => ((await eventsOfKind(since4, "ticket_run", EU)).length >= 4 ? true : null), { timeoutMs: 240_000, everyMs: 10_000 }).catch(() => fail("eu-west ran fewer than four queued tickets in four minutes"));
-const arms4 = (await desk.api("GET", "/arms")).json;
-const replyArms = arms4.arms.filter((a) => a.tag === "support.reply" && a.arm !== "none");
-// One stickiness row per customer, slot and release (the weights in force): the counts here are for the split's own generation.
-const sticky4 = arms4.stickiness.filter((s) => s.tag === "support.reply" && s.generation === exp.pointer.generation);
-const candidateCustomers = sticky4.filter((s) => Object.values(s.arms).includes("candidate")).length;
-const seenCustomers = sticky4.length;
-ok(`per-arm results on the desk: ${replyArms.map((a) => `${a.arm} ${a.versionId}: ${a.runs} runs (${Object.entries(a.hosts).map(([h, n]) => `${h.split("/")[0]} ${n}`).join(", ")}), judge ${a.judgeMean ?? "—"}, cost ${a.costMeanUsd?.toFixed(5) ?? "—"}, 👍${a.feedback.up} 👎${a.feedback.down}`).join(" · ")}`);
-ok(`at 10 %, ${candidateCustomers} of ${seenCustomers} customers landed on the candidate (a share of customers, not of runs)`);
-const both = sticky4.filter((s) => Object.keys(s.arms).length >= 2);
-check(both.length >= 2 && both.every((s) => s.consistent), `sticky across hosts on the weights in force (#${exp.pointer.generation}): ${both.length} customers seen on both us-east and eu-west, ${both.filter((s) => s.consistent).length} on the same arm on both (${both.map((s) => `${s.customerId} ${Object.values(s.arms)[0]}`).join(", ")})`);
-if (flag("--airgap")) {
-  const ag = await desk.hostRow(AIRGAP);
-  if (ag?.airgap?.renders?.last?.arm) ok(`the air-gapped host's last probe (${ag.airgap.renders.last.subject}) landed on arm ${ag.airgap.renders.last.arm} — computed offline from the same manifest`);
-}
-// The second, independent split on triage.
-const vT = await con.newVersion({ tag: BEATS.tighterTriage.tag, transform: BEATS.tighterTriage.transform, message: BEATS.tighterTriage.message });
-const sealedT = await con.seal({ environment: ENV, pins: withPin(await con.pins(ENV), BEATS.tighterTriage.tag, { versionId: vT.versionId }), notes: BEATS.tighterTriage.notes });
-let expT = null;
-try {
-  expT = await con.experiments.start({ environment: ENV, candidateReleaseDigest: sealedT.release.releaseDigest, ramp: [{ weightBps: 5000, holdMinutes: 60 }, { weightBps: 10000 }], notes: BEATS.tighterTriage.notes });
-  ok(`second experiment ${expT.experiment.experimentId} on ${expT.experiment.tag} at ${expT.experiment.weightBps / 100} %, generation ${expT.pointer.generation} — independent of the reply split`);
-  await syncEast();
-  await waitForEuWest(expT.pointer.generation);
-  const sinceReplay2 = new Date().toISOString();
-  const replay2 = await desk.api("POST", "/presenter/replay", { n: 12 });
-  const done2 = await desk.waitFor("the second replay", async () => (await eventsOfKind(sinceReplay2, "replay_done", EAST))[0] ?? null, { timeoutMs: 240_000, everyMs: 10_000 });
-  ok(`Replay 12 (${replay2.status}): ${done2.done} runs`);
-  const armsT = (await desk.api("GET", "/arms")).json;
-  const triageArms = armsT.arms.filter((a) => a.tag === "support.triage" && a.arm !== "none");
-  const byCustomer = armsByCustomer(armsT.stickiness, "support.triage", expT.pointer.generation);
-  const replyBy = armsByCustomer(armsT.stickiness, "support.reply", expT.pointer.generation);
-  const combos = new Set(Object.keys(byCustomer).filter((c) => replyBy[c]).map((c) => `${Object.values(replyBy[c].arms)[0]}/${Object.values(byCustomer[c].arms)[0]}`));
-  check(triageArms.length === 2, `triage arms on the desk: ${triageArms.map((a) => `${a.arm} ${a.versionId}: ${a.runs}`).join(" · ")}`);
-  check(combos.size >= 2, `independent splits: reply/triage combinations seen ${[...combos].join(", ")}`);
-} catch (error) {
-  fail(`the second split was refused: ${error.message.slice(0, 300)}`);
-}
-// AirPrompter's own rollout page.
-{
-  // The page reads the step's window once the step has held long enough (the platform's rule, minutes); two minutes
-  // in it can honestly say "not yet" — the claim is that it answers for this experiment, and what it says is printed.
-  const doc = await con.experiments.read({ environment: ENV, experimentId: e1.experimentId });
-  const line = `AirPrompter's rollout page: control ${doc.arms.control.runs} runs / candidate ${doc.arms.candidate.runs} runs (window ${doc.window.usageSource}); quality ${doc.arms.control.quality ? `${doc.arms.control.quality.signal} ${doc.arms.control.quality.valueBps / 100} %` : "—"} vs ${doc.arms.candidate.quality ? `${doc.arms.candidate.quality.valueBps / 100} %` : "—"}; evaluation ${doc.evaluation?.decision ?? "none yet"}; promote: ${doc.promote.reason}`;
-  check(doc.experiment?.experimentId === e1.experimentId && !!doc.arms?.control && !!doc.arms?.candidate, line);
-  if (doc.arms.control.runs + doc.arms.candidate.runs === 0) gap("the rollout page has no window for this step yet (the step must hold before it reads one); in a session the read comes minutes after the start");
-}
-// Dial to 50 %, then the winner.
-const dialed = await con.experiments.weights({ environment: ENV, experimentId: e1.experimentId, action: "set", weightBps: 5000, notes: "Zudocs demo, beat 4: dialled to 50 %" });
-check(dialed.experiment.weightBps === 5000, `dialled to ${dialed.experiment.weightBps / 100} % (generation ${dialed.pointer.generation})`);
-await syncEast();
-await waitForEuWest(dialed.pointer.generation);
-const sinceReplay3 = new Date().toISOString();
-const replay3 = await desk.api("POST", "/presenter/replay", { n: 12 });
-await desk.waitFor("the third replay", async () => (await eventsOfKind(sinceReplay3, "replay_done", EAST))[0] ?? null, { timeoutMs: 240_000, everyMs: 10_000 });
-const arms50 = (await desk.api("GET", "/arms")).json;
-const sticky50 = arms50.stickiness.filter((s) => s.tag === "support.reply" && s.generation === dialed.pointer.generation);
-const cand50 = sticky50.filter((s) => Object.values(s.arms).includes("candidate")).length;
-ok(`at 50 % (replay ${replay3.status}, #${dialed.pointer.generation}): ${cand50} of ${sticky50.length} customers on the candidate`);
-// A dial moves buckets by design: the rows from before it are compared on their own weights, and none reads "control+candidate".
-const moved = arms50.stickiness.filter((s) => s.tag === "support.reply" && s.generation !== dialed.pointer.generation && Object.keys(s.arms).length >= 2);
-check(arms50.stickiness.every((s) => !Object.values(s.arms).some((a) => a.includes("+"))) && [...sticky50, ...moved].filter((s) => Object.keys(s.arms).length >= 2).every((s) => s.consistent), `stickiness after the dial: ${sticky50.filter((s) => Object.keys(s.arms).length >= 2).length} customers on both hosts at #${dialed.pointer.generation} agree, ${moved.length} earlier rows kept on their own weights — no host reads control+candidate`);
-const winner = await con.promote({ environment: ENV, releaseDigest: e1.candidate.releaseDigest, notes: "Zudocs demo, beat 4: the candidate promoted as the winner" });
-const afterWin = await con.experiments.read({ environment: ENV, experimentId: e1.experimentId });
-check(afterWin.experiment.status === "promoted", `winner promoted: generation ${winner.generation}; the experiment is ${afterWin.experiment.status}`);
-await syncEast();
-await waitForEuWest(winner.generation);
-const runW = await runTicket(TICKET);
-check(replyStep(runW.json.run)?.versionId === vC.versionId && replyStep(runW.json.run)?.arm === "none", `the winner serves everyone: ${badge(replyStep(runW.json.run))}`);
 
 // --- Beat 5: safety nets ------------------------------------------------------------------------------------------------------
 beat(5, "safety nets");
-{
-  const vP = await con.newVersion({ tag: BEATS.undeclaredPlaceholder.tag, transform: BEATS.undeclaredPlaceholder.transform, message: BEATS.undeclaredPlaceholder.message });
-  const sealedP = await con.seal({ environment: ENV, pins: withPin(await con.pins(ENV), BEATS.undeclaredPlaceholder.tag, { versionId: vP.versionId }), notes: BEATS.undeclaredPlaceholder.notes });
-  const blocker = sealedP.blocked?.blockers.find((b) => b.code === "variable_undeclared");
-  check(!!blocker, `the seal refused ${vP.versionId}: ${blocker ? `${blocker.code} — ${blocker.detail}` : `NOT refused (${JSON.stringify(sealedP.blocked ?? sealedP.release?.releaseDigest).slice(0, 200)})`}`);
-}
+showInConsole("on support.reply, save a version that uses {{region_note}} (a placeholder the slot does not declare) and try to seal it: the seal refuses it (variable_undeclared) and nothing reaches the hosts");
 {
   // The seal refuses `model_not_in_catalog` only while a live instance reports models (the catalogue is the fleet's
-  // word, and null — a warning — when nothing live has reported): the reporter is warmed and required first, so a
-  // seal that accepts here is the platform's fault, never an idle desk's.
-  const unsafe = flag("--UNSAFE-promote-hosts-must-refuse");
-  const gen5 = (await con.pointer(ENV)).generation;
-  const live = await ensureLiveReporter({ read: () => con.models(ENV), warm: async () => { const r = await desk.api("POST", "/presenter/heartbeat"); return { ok: r.status === 200, why: r.status === 200 ? `presenter heartbeat at ${r.json.heartbeat?.lastAt ?? "now"}` : `HTTP ${r.status}` }; }, sleep, log: (line) => say(`    ${line}`) }).catch((error) => ({ error: error.message }));
-  check(!live.error, live.error ? `no live reporter for the model drill: ${live.error}` : `the catalogue has a live reporter${live.warmed ? " (the desk's Lambda was warmed first)" : ""}: ${live.reporters.map((m) => `${m.model} on ${m.instances}/${m.of}`).join(", ")}`);
-  const pins = withPin(await con.pins(ENV), BEATS.unreportedModel.tag, { model: BEATS.unreportedModel.model });
-  const sealedM = await con.seal({ environment: ENV, pins, notes: BEATS.unreportedModel.notes, modelRequired: [BEATS.unreportedModel.tag] });
-  const notInCatalog = sealedM.blocked?.blockers.find((b) => b.code === "model_not_in_catalog") ?? null;
-  const genAfterSeal = (await con.pointer(ENV)).generation;
-  if (!unsafe) {
-    check(!!notInCatalog && genAfterSeal === gen5, notInCatalog
-      ? `the seal refused a required model no host reports (the environment's catalogue is what the fleet reports; nothing to advance past): ${notInCatalog.code}${notInCatalog.detail ? ` (${notInCatalog.detail})` : ""}; ${ENV} stays at #${genAfterSeal}`
-      : sealedM.blocked ? `the seal refused, but not with model_not_in_catalog: ${sealedM.blocked.blockers.map((b) => b.code).join(", ") || "no blocker"}` : `the seal ACCEPTED the unreported model with a live reporter in the catalogue (warnings ${sealedM.warnings.map((w) => w.code).join(", ") || "none"}); nothing promoted, ${ENV} stays at #${genAfterSeal}`);
-  } else if (sealedM.blocked) {
-    check(false, `--UNSAFE-promote-hosts-must-refuse: the seal refused (${sealedM.blocked.blockers.map((b) => b.code).join(", ")}), so there is nothing for the hosts to refuse on this platform`);
+  // word, and a mere warning when nothing live has reported): warm the reporter — the desk's own heartbeat — first.
+  const UNREPORTED_MODEL = "anthropic.claude-sonnet-4-5";
+  const hb = await desk.api("POST", "/presenter/heartbeat");
+  check(hb.status === 200, `the us-east reporter is warm for the model drill: ${hb.status === 200 ? `presenter heartbeat at ${hb.json.heartbeat?.lastAt ?? "now"}` : `HTTP ${hb.status}`}`);
+  if (!flag("--UNSAFE-promote-hosts-must-refuse")) {
+    showInConsole(`pin support.reply to ${UNREPORTED_MODEL} as a required model (no host reports it) and try to seal: the seal refuses it (model_not_in_catalog) and nothing reaches the hosts — open the console's models page first if it lists no live reporter`);
   } else {
-    ok(`the seal accepted the unreported model with a warning (${sealedM.warnings.map((w) => w.code).join(", ")}); promoting to let the hosts refuse it (--UNSAFE-promote-hosts-must-refuse)`);
-    const pM = await con.promote({ environment: ENV, releaseDigest: sealedM.release.releaseDigest, notes: BEATS.unreportedModel.notes });
-    const syncM = await syncEast();
-    const stG = (await desk.state()).host.status;
-    const lastRefusal = String(stG.lastRefusal ?? "");
-    check(syncM.applyState === "refused" && Number(stG.generation) < pM.generation && /model_unavailable/.test(lastRefusal), `us-east refused #${pM.generation}: sync ${syncM.outcome}, applyState ${syncM.applyState}, serving #${stG.generation}, lastRefusal ${lastRefusal || "none"}`);
-    // Each worker reports and enforces its own model catalogue through the public SDK.
-    const rejected = await desk.waitFor("Europe to report the unsupported model refusal", async () => {
-      const row = await desk.hostRow(EU); return row?.status?.lastRefusal ? row : null;
-    }, { timeoutMs: 120_000 }).catch(() => null);
-    check(rejected !== null, "Europe SDK reports its unsupported model refusal");
-    const vA = await con.newVersion({ tag: "support.escalate.summary", inference: (c) => ({ ...c, maxOutputTokens: Number(c.maxOutputTokens ?? 400) + 1 }), message: "Beat 5: past the refused release" });
-    const sealedA = await con.seal({ environment: ENV, pins: canonicalPins(config, { "support.escalate.summary": { versionId: vA.versionId }, "support.reply": { versionId: vC.versionId } }), notes: "Zudocs demo, beat 5: past the refused release" });
-    const pA = await con.promote({ environment: ENV, releaseDigest: sealedA.release.releaseDigest, notes: "Zudocs demo, beat 5: advance" });
-    await landEverywhere(pA.generation);
-    ok(`advanced past it: generation ${pA.generation} live everywhere`);
+    const gen5 = await currentGeneration();
+    const gM = await newGeneration(`pin support.reply to ${UNREPORTED_MODEL} as a required model, seal it (the seal warns: no live reporter) and promote it anyway (--UNSAFE-promote-hosts-must-refuse)`, gen5);
+    if (gM !== null) {
+      const syncM = await syncEast();
+      const stG = (await desk.state()).host.status;
+      const lastRefusal = String(stG.lastRefusal ?? "");
+      check(syncM.applyState === "refused" && Number(stG.generation) < gM && /model_unavailable/.test(lastRefusal), `us-east refused #${gM}: sync ${syncM.outcome}, applyState ${syncM.applyState}, serving #${stG.generation}, lastRefusal ${lastRefusal || "none"}`);
+      // Each worker reports and enforces its own model catalogue through the public SDK.
+      const rejected = await desk.waitFor("Europe to report the unsupported model refusal", async () => {
+        const row = await desk.hostRow(EU); return row?.status?.lastRefusal ? row : null;
+      }, { timeoutMs: 120_000 }).catch(() => null);
+      check(rejected !== null, "Europe SDK reports its unsupported model refusal");
+      const gA = await newGeneration("seal and promote a release past the refused one, with support.reply back on a model the hosts report", gM);
+      if (gA !== null) {
+        await landEverywhere(gA);
+        ok(`advanced past it: generation ${gA} live everywhere`);
+      }
+    }
   }
 }
 {
   // The golden set: a version that must fail it stays staged on the host that runs golden sets — under auto.
-  const vG = await con.newVersion({ tag: BEATS.goldenFail.tag, transform: BEATS.goldenFail.transform, message: BEATS.goldenFail.message });
-  const sealedG = await con.seal({ environment: ENV, pins: withPin(await con.pins(ENV), BEATS.goldenFail.tag, { versionId: vG.versionId }), notes: BEATS.goldenFail.notes });
-  const pG = await con.promote({ environment: ENV, releaseDigest: sealedG.release.releaseDigest, notes: BEATS.goldenFail.notes });
-  const syncG = await syncEast();
-  const stG = (await desk.state()).host.status;
-  const golden = stG.golden;
-  check(syncG.stagedGeneration === pG.generation && stG.generation < pG.generation, `us-east ran the golden set before activating #${pG.generation}: ${golden ? `${golden.reports.map((r) => `${r.tag} ${r.passed}/${r.cases} (floor ${r.minPassBps / 100} %)`).join(", ")} — ${golden.met ? "met" : "below the floor"}` : "no golden report"} → staged, still serving #${stG.generation} under auto`);
-  // Europe has no activation golden hook; inspect its report without creating a local approval.
-  const euG = await desk.hostRow(EU);
-  ok(`Europe reports #${euG?.status?.generation ?? "unknown"}; golden approval belongs in AirPrompter`);
-  const goldenNow = await desk.api("POST", "/presenter/golden", { tag: "support.triage" });
-  check(goldenNow.status === 200 && goldenNow.json.reports?.[0]?.meetsThreshold === true, `Golden set now on the active release: ${goldenNow.json.message}`);
-  const vA2 = await con.newVersion({ tag: "support.escalate.summary", inference: (c) => ({ ...c, maxOutputTokens: Number(c.maxOutputTokens ?? 400) + 1 }), message: "Beat 5: past the golden-failing release" });
-  const sealedA2 = await con.seal({ environment: ENV, pins: canonicalPins(config, { "support.escalate.summary": { versionId: vA2.versionId }, "support.reply": { versionId: vC.versionId } }), notes: "Zudocs demo, beat 5: past the golden-failing release" });
-  const pA2 = await con.promote({ environment: ENV, releaseDigest: sealedA2.release.releaseDigest, notes: "Zudocs demo, beat 5: advance" });
-  await landEverywhere(pA2.generation);
-  const stA = (await desk.state()).host.status;
-  check(stA.generation === pA2.generation && stA.golden?.met === true, `advanced: #${pA2.generation} passed its golden set (${stA.golden?.reports.map((r) => `${r.passed}/${r.cases}`).join(", ")}) and is live`);
+  const genG = await currentGeneration();
+  const syncG = await inConsole(`on support.triage, save a version that answers category "other" and priority "low" whatever the ticket says, seal and promote it — its golden set must fail`, "us-east to run the golden set on a newer generation", async () => {
+    const sync = await syncEast();
+    return Number(sync.stagedGeneration) > genG || Number(sync.generation) > genG ? sync : null;
+  });
+  if (syncG !== null) {
+    const pG = Number(syncG.stagedGeneration ?? syncG.generation);
+    const stG = (await desk.state()).host.status;
+    const golden = stG.golden;
+    check(Number(syncG.stagedGeneration) === pG && stG.generation < pG, `us-east ran the golden set before activating #${pG}: ${golden ? `${golden.reports.map((r) => `${r.tag} ${r.passed}/${r.cases} (floor ${r.minPassBps / 100} %)`).join(", ")} — ${golden.met ? "met" : "below the floor"}` : "no golden report"} → staged, still serving #${stG.generation} under auto`);
+    // Europe has no activation golden hook; inspect its report without creating a local approval.
+    const euG = await desk.hostRow(EU);
+    ok(`Europe reports #${euG?.status?.generation ?? "unknown"}; golden approval belongs in AirPrompter`);
+    const goldenNow = await desk.api("POST", "/presenter/golden", { tag: "support.triage" });
+    check(goldenNow.status === 200 && goldenNow.json.reports?.[0]?.meetsThreshold === true, `Golden set now on the active release: ${goldenNow.json.message}`);
+    const gA2 = await newGeneration("seal and promote a release past the held-back one, with support.triage back on its previous version", pG);
+    if (gA2 !== null) {
+      await landEverywhere(gA2);
+      const stA = (await desk.state()).host.status;
+      check(stA.generation === gA2 && stA.golden?.met === true, `advanced: #${gA2} passed its golden set (${stA.golden?.reports.map((r) => `${r.passed}/${r.cases}`).join(", ")}) and is live`);
+    }
+  }
 }
 {
   const shown = await hostCli("policy show");
@@ -401,11 +407,7 @@ beat(8, "what leaves the host");
   const cw = new CloudWatchClient({ region: desk.region });
   const metrics = await cw.send(new ListMetricsCommand({ Namespace: "Zudocs/Desk" }));
   check((metrics.Metrics ?? []).length > 0, `CloudWatch Zudocs/Desk: ${new Set((metrics.Metrics ?? []).map((m) => m.MetricName)).size} metric names, ${(metrics.Metrics ?? []).length} series (the tee sink)`);
-  const m = await con.metrics(ENV);
-  const rowsWithArm = (m.rows ?? []).filter((r) => r.arm && r.arm !== "none");
-  check((m.rows ?? []).length > 0, `AirPrompter metrics (24 h): ${(m.rows ?? []).length} rows by tag/version/model/arm, ${rowsWithArm.length} on an arm; runs ${m.tiles?.runs ?? "—"}`);
-  const fleet = await con.fleet(ENV);
-  ok(`AirPrompter fleet page: ${fleet.summary.live} live instances, ${fleet.instances.filter((i) => i.syncMode === "offline").length} offline (export/import), generation ${fleet.generation}`);
+  showInConsole("open the zudocs-support agent's metrics (24 h, by tag, version, model and arm) and its fleet page (live instances, the offline export/import host)");
   const puller = await desk.hostRow(PULLER);
   ok(`the exchange holds #${puller?.status?.generation}; this hour ${puller?.status?.reads?.pointer ?? 0} CDN reads, ${puller?.status?.reads?.origin ?? 0} API reads`);
 }

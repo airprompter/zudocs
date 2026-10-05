@@ -10,11 +10,10 @@ name — never argv, never git, never a log, never a GitHub secret.
 
 | Secret | Lives | Written by | Read by | Rotate |
 |---|---|---|---|---|
-| Agent key, dev (`zudocs-support`) | SSM SecureString `/zudocs/dev/agent-key` in us-east-1 (`alias/zudocs-desk`), eu-west-1 and ap-southeast-1 (`alias/aws/ssm`); the owner's `~/.config/zudocs/dev.env` (0600) | `scripts/ssm-put-agent-key.sh` from the env file, per region | us-east: the desk Lambda at cold start; eu-west: `zudocs-agent-key` into `/etc/airprompter/airprompterd.env` at every daemon start; ap-southeast: the puller at cold start | mint a second key in the console (two live per target), put it in all three regions, restart the daemon (`sudo systemctl restart airprompterd` through Run Command) and bump the desk Lambda's `STATE_EPOCH` (a new container reads the new value), revoke the old one |
+| Agent key, dev (`zudocs-support`) | SSM SecureString `/zudocs/dev/agent-key` in us-east-1 (`alias/zudocs-desk`), eu-west-1 and ap-southeast-1 (`alias/aws/ssm`); the owner's `~/.config/zudocs/dev.env` (0600) | `scripts/ssm-put-agent-key.sh` from the env file, per region | us-east: the desk Lambda at cold start; eu-west: `zudocs-agent-key` into `/etc/airprompter/airprompterd.env` at every daemon start; ap-southeast: the puller at cold start; a laptop: `npm run prompts:seed` and `dev:proof` from the env file | mint a second key in the console (two live per target), put it in all three regions, restart the daemon (`sudo systemctl restart airprompterd` through Run Command) and bump the desk Lambda's `STATE_EPOCH` (a new container reads the new value), revoke the old one |
 | Staging run key (`agent_run`, staging) | SSM SecureString `/zudocs/staging/run-key` in us-east-1 (`alias/zudocs-desk`) only | the owner: mint in the console (Settings › Keys › run key, target staging), write the put-parameter document to a 0600 temp file outside any repository, `aws ssm put-parameter --cli-input-json file://…`, delete the file | the desk Lambda on the first *Run on staging* | mint, put, bump `STATE_EPOCH`, revoke |
 | Provider keys (phase 9: the desk's provider switch) | SSM SecureStrings `/zudocs/dev/openai-key` and `/zudocs/dev/anthropic-key` in us-east-1 (`alias/zudocs-desk`) only; the owner's `~/.config/zudocs/providers.env` (0600) | `ZUDOCS_SECRET=openai bash scripts/ssm-put-agent-key.sh` (reads `OPENAI_API_KEY`), `ZUDOCS_SECRET=anthropic …` (reads `ANTHROPIC_API_KEY`) — the same 0600-file path as the Agent key, never argv | the desk Lambda, by name, on the first run that names that provider; a provider absent from `airprompter.config.json › providers` is not in the function's environment or its policy, and the desk says *not configured* (501) | mint at the provider, put, bump `STATE_EPOCH` (a warm container holds the old one), revoke |
 | CI vendoring agent's key (`zudocs-ci`, dev) | the owner's `~/.config/zudocs/ci.env` (0600) only — never SSM, never CI | the console | `scripts/vendor.sh` on the owner's laptop | mint, replace the file, revoke |
-| Session token (`airprompter login`) | the environment for the length of a terminal | `airprompter login` (password from `AIRPROMPTER_PASSWORD`) | `demo:console`, `demo:dryrun`, `demo:reset`, `prompts:seed` | expires in about an hour; log in again |
 | Proof user's password (`proof@zudocs.com`) | the owner's password store; `ZUDOCS_PROOF_PASSWORD` in the environment | `scripts/cognito-users.sh proof` | the proofs, the dry run, the reset (they sign in through the `proof` client) | `cognito-users.sh proof` again with a new password |
 | Store keys | us-east: a data key wrapped by KMS `alias/zudocs-desk`; eu-west and the air-gapped host: `file_key` (0600, shown amber) | the SDK | the SDK | replace the store (a new container / instance) |
 | Distribution key | born on the air-gapped host (`airprompter keygen --purpose distribution`, 0600); the public half in the exchange bucket under `keys/` | the host's first boot | the puller seals to it; the host opens with it | `airgap:down` / `airgap:up` — a new host is a new key; the puller re-seals |
@@ -64,18 +63,17 @@ row says so). Not on the list: `apply` (the worker owns that store; a second wri
 worker pins `unlock_required`, a local policy the CLI's `policy set` does not loosen — the
 loosening drill is the us-east host's own `setApplyPolicy`, the presenter's *set auto*).
 
-The console's acts (`npm run demo:console -- <act>`): `board`, `change-words`, `experiment start|triage|dial
-<pct>|winner|end|read`, `freeze|unfreeze`, `drill seal-placeholder|model-required|golden-fail`, `advance`,
-`staging promote`. Each is the workspace API call the console itself makes, with the session token from the
-environment.
+The console's acts — a new version, a seal, a promotion, an experiment, a dial, the winner, a freeze — are a
+person's, in AirPrompter (the zudocs-support agent's board); no script here makes them, and none holds an
+AirPrompter credential beyond the Agent key. `demo:dryrun` and `demo:reset` print each act when it is due and wait
+for its effect on zudocs's side (the public edge pointer, the hosts' status rows).
 
 ## Hosted staging
 
-The staging environment runs in AirPrompter's hosted mode (`executionMode: managed`, set once from the console or
-`POST …/environments/staging/mode`). The desk reaches it with a run key bound to staging and the run route's origin
+The staging environment runs in AirPrompter's hosted mode (`executionMode: managed`, set once in the console, on the
+staging environment's settings). The desk reaches it with a run key bound to staging and the run route's origin
 (`hostedRunUrl` in `airprompter.config.json` = the execution stack's `AgentRunUrl`; the console shows it on the
-environment's settings). `npm run demo:console -- staging promote` seals the current dev pins for staging and
-promotes them (a release is content-addressed, so the digest matches dev's). The desk's *Run on staging* does the
+environment's settings). In AirPrompter, seal the current dev pins for staging and promote them (a release is content-addressed, so the digest matches dev's). The desk's *Run on staging* does the
 stream, the feedback and one OpenAI-compatible call and records what the route answered. **On dev today every
 hosted run answers `internal (500)`** (a platform-side defect, tracked by AirPrompter); the catalogue read works. Re-run `npm run
 demo:dryrun -- --hosted` after the fix lands; the assertion becomes the full run.
@@ -98,18 +96,17 @@ demo:dryrun -- --hosted` after the fix lands; the assertion becomes the full run
 
 ## Reset means advance
 
-`npm run demo:reset` (session token, `ZUDOCS_PROOF_PASSWORD`, `AWS_PROFILE=zudocs`; `--dry-run` says what it would
-do). In order: end every live experiment (roll back to the control — a new generation without the split), unfreeze,
-put the us-east host's policy back to `auto` (`setApplyPolicy` through the SDK; the eu-west daemon's policy is its
-unit's flag and no drill changes it), wait for a replay in flight, purge the nudge queue and wait the minute SQS asks
-for, restore the wire, promote two fresh canonical
-generations (the canonical pins in `airprompter.config.json` › `canonical`, the escalation summary's output cap +1
-each time — a real change, so each seals to a new digest; a store then holds two releases and `rollback` has
-somewhere to go) and approve each on eu-west, nudging the fleet after each, clear the desk's runs, feedback,
-approvals, events and counters and re-seed the inbox, bump the desk Lambda's `STATE_EPOCH`, then wait until every
-reporting status row is at the last generation (the air-gapped host counts only while it is up). Idempotent:
-every step reads first and says *found* or *did*; an eu-west row already at the generation, or already settled,
-counts as done. Twenty sessions ≈ 160 generations.
+`npm run demo:reset` (`ZUDOCS_PROOF_PASSWORD`, `AWS_PROFILE=zudocs`; `--dry-run` says what it would do,
+`--no-wait` does the zudocs side and does not wait for the console). It reads the generation the edge pointer names,
+waits for a replay in flight, purges the nudge queue and waits the minute SQS asks for, and restores the wire. Then
+it prints the one act that is a person's: in AirPrompter, on the zudocs-support agent's board, end any running
+experiment (roll back to the control), lift the freeze, and seal and promote a fresh dev release (any real change —
+promote twice when the next session rehearses a rollback, so a store holds a previous release). It waits up to
+fifteen minutes for the pointer to name a newer generation, nudges the fleet and approves it on eu-west through the
+desk, clears the desk's runs, feedback, approvals, events and counters and re-seeds the inbox, bumps the desk
+Lambda's `STATE_EPOCH`, then waits until every reporting status row is at the newest generation (the air-gapped
+host counts only while it is up). The us-east host's policy is reported, not changed. Idempotent: every step reads
+first and says *found* or *did*; an eu-west row already at the generation, or already settled, counts as done.
 
 What it does not do, on purpose: restore an old generation (anti-rollback), loosen a pin from the console (a
 manifest may only tighten), or delete the organisation's rollout results (thumbs filed during a session stay).
@@ -244,15 +241,15 @@ on-demand tables, one `t4g.micro` (asleep at night), a handful of Lambdas and th
   click *Sleep*. `several_instances` is a replacement in progress — wait for it.
 - The eu-west card's *cadence* line says the switch could not be read: the host's role reads the demo-mode parameter
   by name; the last reading stands. `(expired)` beside *demo mode off* is normal — the four hours are up.
-- The release bar reads *FROZEN* and nobody froze: `npm run demo:console -- board` shows `frozen`; `unfreeze`.
-- us-east stays *staged* after a promotion: the golden set failed (the card's *golden* line); `advance`.
-- eu-west shows *forced downgrade*: a rollback drill; the next promotion carries it forward (`advance`, approve).
+- The release bar reads *FROZEN* and nobody froze: the agent's board in AirPrompter shows the freeze; lift it there.
+- us-east stays *staged* after a promotion: the golden set failed (the card's *golden* line); promote a fresh release in AirPrompter with the failing slot back on its previous version.
+- eu-west shows *forced downgrade*: a rollback drill; the next promotion carries it forward (promote a fresh release in AirPrompter, approve).
 - eu-west shows *staged* and nobody approved: the Approvals section; a fresh instance always starts this way.
   After the golden-fail drill the staged row is the release the golden set failed on us-east — do not approve it;
-  `advance` (the next staging settles the row *superseded* on the host's next tick; a click on it after that is
+  promote a fresh release in AirPrompter (the next staging settles the row *superseded* on the host's next tick; a click on it after that is
   refused). The model-required drill leaves no row: the seal refuses it (`model_not_in_catalog`).
 - us-east answers `502 no_verified_release` on every run: a fresh container booted while the golden-failing release
-  was promoted and has nothing active; `advance`, then **Sync now**.
+  was promoted and has nothing active; promote a fresh release in AirPrompter, then **Sync now**.
 - The puller says `agent_key_unreadable`: the ap-southeast-1 parameter is missing (`ssm-put-agent-key.sh` with
   `AWS_REGION=ap-southeast-1 ZUDOCS_SSM_KEY_ID=alias/aws/ssm`).
 - *Run on staging* answers `hosted_not_configured`: the stack has no run URL (`airprompter.config.json`) or the

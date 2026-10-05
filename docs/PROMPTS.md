@@ -14,18 +14,20 @@ variable of the same name, `AIRPROMPTER_AGENT_ID` and so on):
 | `baseUrl` | `https://api-dev.airprompter.com` | AirPrompter's dev deployment — phases 2–6 prove there; the prod cutover switches it |
 | `hostedEnvironment` | `dev` | which AirPrompter deployment's root key is pinned (`keys/dev.root.jwk.json`) |
 | `rootUrl` | `https://dwp5emkmjpv8.cloudfront.net/roots/dev/root.json` | the signed root document the pinned key verifies |
-| `organizationId` / `workspaceId` / `agentId` | the "Zudocs" workspace and the `zudocs-support` Agent | the scope every SDK call carries |
+| `organizationId` / `agentId` | the Zudocs organization and the `zudocs-support` Agent | the scope every SDK call carries |
+| `workspaceId` | the "Zudocs" workspace | only the desk's link to the agent's board in the AirPrompter console; no script reads it |
 | `environment` | `dev` | the Agent environment this checkout syncs (`staging`, `prod` later) |
 | `edgePointerUrl` | `https://dwp5emkmjpv8.cloudfront.net/g/…/generation.json` | the dev environment's edge pointer — an identifier (every heartbeat names it, the environment page shows it); a resident host idles on it with one CDN 304 per poll |
 | `models` | `amazon.nova-micro`, `amazon.nova-2-lite`, `openai.gpt-5-6-luna`, `anthropic.claude-haiku-4-5` | what this application can call, in AirPrompter's catalogue spelling — reported on every heartbeat; a seal refuses a slot pinned to a model no instance reports. Haiku 4.5 is the experiment's candidate arm (phase 6); every host reports all four (`services/desk-api/src/modelCatalogue.ts`) |
 
-Secrets are never in that file. Two of them exist:
+Secrets are never in that file. One of them is a script's:
 
 - **The Agent key** (`AIRPROMPTER_AGENT_KEY`): minted in the console under the app's Settings › Keys, bound to one
   environment. On a laptop it lives in a `0600` file outside the repository (for example `~/.config/zudocs/dev.env`)
   and enters the environment with `set -a; . ~/.config/zudocs/dev.env; set +a`. On hosts it is an SSM SecureString.
-- **A session token** (`AIRPROMPTER_SESSION_TOKEN`): what `airprompter login` prints for a signed-in workspace member;
-  it lasts about an hour and is what the seed reads. Team reads and writes are a person's, never an API key's.
+
+Everything else in AirPrompter — a new version, a seal, a promotion, an experiment, a freeze, the board, the metrics —
+is a person's act in the console, never a script's.
 
 ## The slots
 
@@ -100,22 +102,23 @@ routes — a dev key, a self-made root, every save a generation — so the desk 
 from AirPrompter. The directory is **ignored**; only `prompts/.gitkeep` is committed, and the seed fills it:
 
 ```sh
-eval "$(.bin/airprompter login --email you@zudocs.com --base-url https://api-dev.airprompter.com)"
-npm run prompts:seed            # ./prompts from the release promoted to dev
+set -a; . ~/.config/zudocs/dev.env; set +a        # the Agent key, from a 0600 file
+npm run prompts:seed            # ./prompts from the release promoted to dev, pulled and verified through the SDK
 npm run dev:smoke               # airprompter dev --daemon + the SDK: renders, fills, fences, checks; no model, no AirPrompter
 ```
 
 The seed writes one file per slot — front matter `tag`, `model`, `version`, `variables` (the grammar above), and
-two lines the CLI ignores but the smoke reads, `checks:` (the pin's enabled checks) and `inference:` (the pin's
+two lines the CLI ignores but the smoke reads, `checks:` (the slot's enabled checks) and `inference:` (the slot's
 settings in the wire's integers, `temperatureMilli` and so on) as JSON — then the version's text; `release.json`
-with the environment's apply policy and lease; `golden/<tag>.json` for each golden set, refused when the slot's set
-is no longer the one the release pinned. It writes only after every read succeeded, only into a directory that is
+with the release's apply policy and lease; `golden/<tag>.json` for each golden set, the very set the release
+pinned (its payload in the bundle). The source is the verified bundle `pullBundle` returns (plaintext, which the SDK
+allows on dev only, so the seed refuses any other environment), and every payload's hash is checked again before it
+is written. It writes only after the pull and every check succeeded, only into a directory that is
 a registry — empty, or carrying `.gitkeep`, `.airprompter-dev/` or a `release.json` of its own shape, nothing
 foreign at any depth and no symbolic link — writing
 the new files first and then removing what the release no longer names, except `.gitkeep` and `.airprompter-dev/`
-(the dev keys and the generation counter, so a client that holds generation N never sees a fresh N). The four routes it reads are
-the console's own workspace API — what the app's pages call, with no compatibility promise — so every field it
-depends on is checked by name and a rename fails as an error, never as a corrupt file (the optional ones —
+(the dev keys and the generation counter, so a client that holds generation N never sees a fresh N). Every manifest field it
+depends on is checked by name, so a change to the bundle's shape fails as an error, never as a corrupt file (the optional ones —
 variables, checks, settings, the golden reference — are cross-checked by the smoke against what each slot is
 known to declare).
 

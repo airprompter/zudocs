@@ -1,10 +1,8 @@
 /**
- * The demo's pure parts: the beat transforms append one line and are idempotent, the ramp is what the platform
- * accepts (every step below 100 % holds, the last is 100 %), the canonical pins come from the config with one slot
- * replaced, the fleet-agreement check ignores a stale optional host and names the disagreeing ones, the console
- * client acknowledges only the benign seal warnings and returns a blocked document instead of throwing, the
- * live-reporter wait warms the desk only when the catalogue is empty and refuses to answer with a catalogue that
- * would accept, and the vendored-bundle check refuses the support agent's bundle and any foreign slot.
+ * The demo's pure parts: the ramp is what the platform accepts (every step below 100 % holds, the last is 100 %),
+ * the fleet-agreement check ignores a stale optional host and names the disagreeing ones, the edge pointer's
+ * generation is read without a key and an unreadable pointer is null rather than a guess, and the vendored-bundle
+ * check refuses the support agent's bundle and any foreign slot.
  *
  * @example
  * ```sh
@@ -14,36 +12,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { vendoredBreaches } from "../check-vendored.mjs";
-import { ACKNOWLEDGEABLE, ConsoleRefusal, createConsole, withPin } from "../lib/console.mjs";
-import { BEATS, RAMP, appendLine, armsByCustomer, canonicalPins, ensureLiveReporter, fleetAgreement, liveReporters, releaseLine } from "../lib/demo.mjs";
-
-test("beat transforms append one line once and never touch the rest", () => {
-  const text = "You are the reply step.\n\n## Success criteria\n- Signs off as the team\n";
-  const once = BEATS.warmerSignoff.transform(text);
-  assert.ok(once.startsWith(text.trimEnd()), "the original text is kept whole");
-  assert.ok(once.trimEnd().endsWith(BEATS.warmerSignoff.line));
-  assert.equal(BEATS.warmerSignoff.transform(once), once, "idempotent");
-  assert.notEqual(BEATS.changeWords.transform(text), once, "each beat is its own change");
-  assert.match(BEATS.undeclaredPlaceholder.transform(text), /\{\{region_note\}\}/);
-  assert.equal(appendLine("x")("a\n\n"), "a\n\nx\n");
-  for (const beat of Object.values(BEATS)) if (beat.line) assert.ok(!/[{}]/.test(beat.line) || beat === BEATS.undeclaredPlaceholder, `${beat.tag}: no placeholder but the one on purpose`);
-});
+import { RAMP, armsByCustomer, edgeGeneration, fleetAgreement, releaseLine } from "../lib/demo.mjs";
 
 test("the ramp: every step short of 100 % holds for at least the platform's minimum; the last step is everyone", () => {
   assert.equal(RAMP[RAMP.length - 1].weightBps, 10000);
   for (const step of RAMP.slice(0, -1)) assert.ok(step.holdMinutes >= 10, "a held step");
   assert.deepEqual(RAMP.map((s) => s.weightBps), [1000, 5000, 10000], "10 % → 50 % → 100 %");
   assert.ok(RAMP.every((s, i) => i === 0 || s.weightBps > RAMP[i - 1].weightBps), "strictly increasing");
-});
-
-test("canonical pins come from the config; one slot may be replaced; a missing config is refused", () => {
-  const config = { canonical: { "support.triage": { versionId: "rev-2", model: "amazon.nova-micro" }, "support.reply": { versionId: "rev-3", model: "amazon.nova-2-lite" } } };
-  assert.deepEqual(canonicalPins(config), [{ tag: "support.triage", versionId: "rev-2", model: "amazon.nova-micro" }, { tag: "support.reply", versionId: "rev-3", model: "amazon.nova-2-lite" }]);
-  assert.deepEqual(canonicalPins(config, { "support.reply": { versionId: "rev-9" } })[1], { tag: "support.reply", versionId: "rev-9", model: "amazon.nova-2-lite" });
-  assert.throws(() => canonicalPins({ canonical: {} }), /canonical pins are missing/);
-  assert.deepEqual(withPin(canonicalPins(config), "support.triage", { model: "x" })[0], { tag: "support.triage", versionId: "rev-2", model: "x" });
-  assert.throws(() => withPin([], "nope", {}), /no pin for nope/);
-  assert.equal(releaseLine(7, "sha256:0123456789abcdef0123"), "#7 sha256:0123456789ab…");
 });
 
 test("fleet agreement: every fresh row at the generation; a stale optional host is ignored; disagreement is named", () => {
@@ -63,90 +38,16 @@ test("fleet agreement: every fresh row at the generation; a stale optional host 
   assert.deepEqual(armsByCustomer(dialled, "support.reply", 5), { c1: { arms: { a: "control" }, consistent: true, generation: 5 } }, "a generation asked for is the one answered");
 });
 
-test("a live reporter: only a model a live instance reported counts; the wait reads first, warms once when nothing reports, polls until one does, and throws rather than answer with a catalogue that would accept", async () => {
-  const model = (name, instances) => ({ model: name, instances, of: 2, lastReportedAt: null, pinnedBy: [] });
-  const empty = { source: "instances", live: 1, models: [] };
-  const reporting = { source: "instances", live: 2, models: [model("amazon.nova-2-lite", 1), model("amazon.nova-micro", 1)] };
-  assert.deepEqual(liveReporters(reporting), [{ model: "amazon.nova-2-lite", instances: 1, of: 2 }, { model: "amazon.nova-micro", instances: 1, of: 2 }]);
-  assert.deepEqual(liveReporters({ source: "instances", live: 1, models: [model("x", 0)] }), [], "a model listed on zero live instances is no reporter");
-  assert.deepEqual(liveReporters({ source: "hosted", live: 0, models: [model("x", 0)] }), [], "a hosted catalogue is not the fleet's word");
-  assert.deepEqual(liveReporters(null), []);
-  // Already reporting: no warm-up.
-  let warms = 0;
-  const warm = async () => { warms += 1; return { ok: true, why: "heartbeat" }; };
-  const sleep = async () => {};
-  const a = await ensureLiveReporter({ read: async () => reporting, warm, sleep });
-  assert.equal(a.warmed, false);
-  assert.equal(warms, 0);
-  // Empty, then reporting after the heartbeat: warmed once, polled until it shows.
-  const reads = [empty, empty, reporting];
-  const b = await ensureLiveReporter({ read: async () => reads.shift() ?? reporting, warm, sleep });
-  assert.equal(b.warmed, true);
-  assert.equal(warms, 1);
-  assert.equal(b.reporters.length, 2);
-  // The warm-up cannot be done (no desk sign-in): named, and no catalogue answered.
-  await assert.rejects(() => ensureLiveReporter({ read: async () => empty, warm: async () => ({ ok: false, why: "ZUDOCS_PROOF_PASSWORD is not set" }), sleep }), /could not be warmed: ZUDOCS_PROOF_PASSWORD is not set/);
-  // Warmed but nothing reports within the window: refused, never a catalogue that would accept.
-  let t = 0;
-  await assert.rejects(() => ensureLiveReporter({ read: async () => empty, warm, sleep, timeoutMs: 10, now: () => (t += 6) }), /still has no live reporter/);
-});
-
-test("the console client: benign warnings are acknowledged once, a real blocker comes back as a document, a refusal names the code", async () => {
+test("the edge pointer: its generation, read with no key; no pointer, an error status, a malformed body or a network failure is null", async () => {
   const calls = [];
-  const fetchImpl = async (url, init) => {
-    const path = new URL(url).pathname;
-    const body = init.body ? JSON.parse(init.body) : null;
-    calls.push({ method: init.method, path, body });
-    assert.equal(init.headers.authorization, "Bearer session-token");
-    const reply = (status, json) => ({ status, text: async () => JSON.stringify(json) });
-    if (path.endsWith("/board")) return reply(200, { board: { environments: { dev: { generation: 4, releaseDigest: "sha256:a", stateRevision: 5, frozen: false, applyPolicy: "auto", experiments: [] } }, rows: [{ tag: "support.reply", artifactId: "p1", cells: { dev: { versionId: "rev-3", model: "amazon.nova-2-lite" } } }] } });
-    if (path.endsWith("/releases")) {
-      if (body.pins[0].versionId === "rev-bad") return reply(409, { error: "blocked", details: { status: "blocked", warnings: [], blockers: [{ code: "variable_undeclared", tag: "support.reply", detail: "rev-bad uses {{x}}" }] } });
-      if (!body.acknowledgedWarningCodes) return reply(409, { error: "blocked", details: { status: "blocked", warnings: [{ code: "variable_uncovered", requiresAck: true }, { code: "model_not_reported", requiresAck: false }], blockers: [{ code: "ack_required", detail: "variable_uncovered" }] } });
-      return reply(201, { status: "sealed", release: { releaseDigest: "sha256:new", pins: body.pins }, warnings: [{ code: "variable_uncovered" }] });
-    }
-    if (path.endsWith("/promote")) return reply(409, { code: "environment_frozen", message: "frozen" });
-    return reply(404, { error: "no route" });
-  };
-  const con = createConsole({ config: { baseUrl: "https://api.test", workspaceId: "ws", organizationId: "org", agentId: "agent" }, token: "session-token", fetchImpl });
-  const pins = await con.pins("dev");
-  assert.deepEqual(pins, [{ tag: "support.reply", versionId: "rev-3", model: "amazon.nova-2-lite", artifactId: "p1" }]);
-  const sealed = await con.seal({ environment: "dev", pins, notes: "n" });
-  assert.equal(sealed.release.releaseDigest, "sha256:new");
-  const sealCalls = calls.filter((c) => c.path.endsWith("/releases"));
-  assert.equal(sealCalls.length, 2, "one refusal for the acknowledgement, one sealed");
-  assert.deepEqual(sealCalls[1].body.acknowledgedWarningCodes, ["variable_uncovered"]);
-  assert.ok(ACKNOWLEDGEABLE.includes("variable_uncovered") && !ACKNOWLEDGEABLE.includes("variable_undeclared"));
-  const blocked = await con.seal({ environment: "dev", pins: withPin(pins, "support.reply", { versionId: "rev-bad" }), notes: "n" });
-  assert.equal(blocked.release, null);
-  assert.equal(blocked.blocked.blockers[0].code, "variable_undeclared");
-  await assert.rejects(con.promote({ environment: "dev", releaseDigest: "sha256:new", notes: "n" }), (error) => error instanceof ConsoleRefusal && error.code === "environment_frozen" && error.status === 409);
-  assert.throws(() => createConsole({ config: {}, token: "" }), /session token/);
-  await assert.rejects(con.pins("qa"), /dev, staging or prod/);
-});
-
-test("the console client retries a 5xx once (logged as such) and never a 4xx", async () => {
-  let boards = 0;
-  const logs = [];
-  const fetchImpl = async (url) => {
-    const path = new URL(url).pathname;
-    const reply = (status, json) => ({ status, text: async () => JSON.stringify(json) });
-    if (path.endsWith("/board")) { boards += 1; return boards === 1 ? reply(500, { error: "Internal server error" }) : reply(200, { board: { environments: { dev: { generation: 1, releaseDigest: "sha256:a", stateRevision: 1, frozen: false, applyPolicy: "auto", experiments: [] } }, rows: [] } }); }
-    if (path.endsWith("/promote")) return reply(409, { code: "stale_state_revision", message: "moved" });
-    return reply(404, { error: "no route" });
-  };
-  const con = createConsole({ config: { baseUrl: "https://api.test", workspaceId: "ws", organizationId: "org", agentId: "agent" }, token: "t", fetchImpl, log: (e) => logs.push(e) });
-  const before = Date.now();
-  assert.deepEqual(await con.pins("dev"), []);
-  assert.equal(boards, 2, "one 500, one answer");
-  assert.ok(Date.now() - before >= 2900, "three seconds between them");
-  assert.equal(logs.filter((l) => l.event === "platform_5xx_retry").length, 1);
-  assert.equal(logs[0].status, 500);
-  let promotes = 0;
-  const counting = async (url, init) => { if (new URL(url).pathname.endsWith("/promote")) promotes += 1; return fetchImpl(url, init); };
-  const con2 = createConsole({ config: { baseUrl: "https://api.test", workspaceId: "ws", organizationId: "org", agentId: "agent" }, token: "t", fetchImpl: counting });
-  await assert.rejects(con2.promote({ environment: "dev", releaseDigest: "sha256:a", notes: "n" }), (error) => error instanceof ConsoleRefusal && error.status === 409);
-  assert.equal(promotes, 1, "a 4xx is the platform's word");
+  const answer = (status, body) => async (url, init) => { calls.push({ url, init }); return { status, json: async () => body }; };
+  assert.equal(await edgeGeneration("https://edge.test/g/t/generation.json", answer(200, { generation: 88, releaseDigest: "sha256:a" })), 88);
+  assert.equal(calls[0].init, undefined, "no headers, no key: a public CDN read");
+  assert.equal(await edgeGeneration(null, answer(200, { generation: 1 })), null);
+  assert.equal(await edgeGeneration("https://edge.test/x", answer(403, {})), null);
+  assert.equal(await edgeGeneration("https://edge.test/x", answer(200, { generation: "eighty" })), null);
+  assert.equal(await edgeGeneration("https://edge.test/x", async () => { throw new Error("offline"); }), null);
+  assert.equal(releaseLine(7, "sha256:0123456789abcdef0123"), "#7 sha256:0123456789ab…");
 });
 
 test("the vendored bundle: the CI agent's only, one placeholder slot, verified", () => {

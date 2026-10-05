@@ -1,89 +1,103 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { planSeed, writeSeed } from "../lib/seed.mjs";
+import { planSeed, pullRelease, writeSeed } from "../lib/seed.mjs";
 import { parsePromptFile } from "../lib/promptFiles.mjs";
 
-const config = { workspaceId: "ws1", agentId: "agent_1", environment: "dev" };
-const DIGEST = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const GOLDEN_HASH = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const config = { baseUrl: "https://api.test", rootUrl: "https://edge.test/roots/dev/root.json", hostedEnvironment: "dev", organizationId: "org_1", agentId: "agent_1", environment: "dev" };
+const hashOf = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+const entry = (text) => { const bytes = Buffer.from(text, "utf8"); return { contentHash: hashOf(bytes), byteLength: bytes.length, bytes: bytes.toString("base64url") }; };
 
-/** A fake of the four console routes the seed reads, with knobs for what a test wants to go wrong. */
-function fakeApi(overrides = {}) {
-  const calls = [];
-  const routes = {
-    "/workspace/ws1/agents/agent_1/board": { board: { environments: { dev: { generation: 7, releaseDigest: DIGEST, policy: { applyPolicy: "unlock_required", leaseSeconds: 900, onLeaseExpiry: "halt" } }, staging: { generation: 0, releaseDigest: null, policy: { applyPolicy: "auto", leaseSeconds: 3600 } } } } },
-    [`/workspace/ws1/agents/agent_1/releases/dev/${DIGEST}`]: {
-      release: {
-        pins: [
-          { tag: "support.triage", kind: "prompt", artifactId: "p-triage", versionId: "rev-3", model: "amazon.nova-micro", variables: [{ name: "ticket", required: true, trust: "end_user" }], outputChecks: [{ kind: "enum", name: "category", path: "category", values: ["a", "b"] }], inference: { temperatureMilli: 0, maxOutputTokens: 200 }, goldenSet: { setId: "gs_1", cases: 1, contentHash: GOLDEN_HASH, byteLength: 10, minPassBps: 10000 } },
-          { tag: "support.reply", kind: "prompt", artifactId: "p-reply", versionId: "rev-2", model: "openai.gpt-5-6-luna", variables: [{ name: "tone", required: false, trust: "operator", default: "friendly" }, { name: "customer_tier", required: true, trust: "operator", source: "runtime" }] },
-          { tag: "docs.flow", kind: "workflow", artifactId: "w-1", versionId: "rev-1", model: "openai.gpt-5-6-luna" },
-        ],
-      },
-    },
-    "/team/prompts/p-triage/versions/rev-3": { content: "Classify.\n\n{{ticket}}\n", version: { inference: { temperature: 0, maxOutputTokens: 200 } } },
-    "/team/prompts/p-reply/versions/rev-2": { content: "Tone: {{tone}}. Plan: {{customer_tier}}.\n" },
-    "/workspace/ws1/agents/agent_1/slots/support.triage/golden": { set: { format: "airprompter-golden-set", version: 1, setId: "gs_1", minPassBps: 10000, cases: [{ caseId: "one", variables: { ticket: "x" }, expect: [{ kind: "enum", name: "category", path: "category", values: ["a"] }] }] }, ref: { setId: "gs_1", contentHash: GOLDEN_HASH } },
-    ...overrides,
+/** A pull result as `pullBundle` answers it for a plaintext dev bundle, with knobs for what a test wants to go wrong. */
+function fakeResult({ payload: patch = {}, payloads: extra = [], drop = null } = {}) {
+  const triage = entry("Classify.\n\n{{ticket}}\n");
+  const reply = entry("Tone: {{tone}}. Plan: {{customer_tier}}.\n");
+  const golden = entry(JSON.stringify({ format: "airprompter-golden-set", version: 1, setId: "gs_1", minPassBps: 10000, cases: [{ caseId: "one", variables: { ticket: "x" }, expect: [{ kind: "enum", name: "category", path: "category", values: ["a"] }] }] }));
+  const flow = entry("workflow body");
+  const payload = {
+    organizationId: "org_1", agentId: "agent_1", target: "dev", generation: 7, releaseDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    applyPolicy: "unlock_required", leaseSeconds: 900, onLeaseExpiry: "halt", directives: [],
+    slots: [
+      { tag: "support.triage", kind: "prompt", artifactId: "p-triage", versionId: "rev-3", contentHash: triage.contentHash, byteLength: triage.byteLength, model: "amazon.nova-micro", variables: [{ name: "ticket", required: true, trust: "end_user" }], outputChecks: [{ kind: "enum", name: "category", path: "category", values: ["a", "b"] }], inference: { temperatureMilli: 0, maxOutputTokens: 200 }, goldenSet: { setId: "gs_1", cases: 1, contentHash: golden.contentHash, byteLength: golden.byteLength, minPassBps: 10000 } },
+      { tag: "support.reply", kind: "prompt", artifactId: "p-reply", versionId: "rev-2", contentHash: reply.contentHash, byteLength: reply.byteLength, model: "openai.gpt-5-6-luna", variables: [{ name: "tone", required: false, trust: "operator", default: "friendly" }, { name: "customer_tier", required: true, trust: "operator", source: "runtime" }] },
+      { tag: "docs.flow", kind: "workflow", artifactId: "w-1", versionId: "rev-1", contentHash: flow.contentHash, byteLength: flow.byteLength, model: "openai.gpt-5-6-luna", variables: [] },
+    ],
+    ...patch,
   };
-  const api = async (path) => {
-    calls.push(path);
-    if (!(path in routes)) throw new Error(`unexpected route ${path}`);
-    const answer = routes[path];
-    if (answer instanceof Error) throw answer;
-    return answer;
-  };
-  return { api, calls };
+  const payloads = [triage, reply, golden, flow, ...extra].filter((p) => p.contentHash !== drop);
+  return { status: "ok", generation: payload.generation, releaseDigest: payload.releaseDigest, bundle: { format: "apbundle", version: 1, protocol: "0.3", encryption: { scheme: "none", contents: { createdAt: "t", notAfter: "t", manifest: { payload, signatures: [] }, keySet: {}, payloads } } }, hashes: { triage: triage.contentHash, golden: golden.contentHash } };
 }
 
-test("the plan is one file per prompt pin, the pin's own inference block, the golden set, and release.json from the policy", async () => {
-  const { api, calls } = fakeApi();
-  const plan = await planSeed({ api, config });
+test("the plan is one file per prompt slot, the slot's own inference block, the golden set from the bundle, and release.json from the manifest", () => {
+  const plan = planSeed({ result: fakeResult(), config });
   assert.deepEqual(plan.files.map((f) => f.path), ["support/triage.md", "golden/support.triage.json", "support/reply.md"]);
-  assert.deepEqual(plan.skipped, ["docs.flow"], "a workflow pin is named as skipped, never written");
+  assert.deepEqual(plan.skipped, ["docs.flow"], "a workflow slot is named as skipped, never written");
   assert.deepEqual(plan.releaseJson, { applyPolicy: "unlock_required", leaseSeconds: 900, onLeaseExpiry: "halt" });
   assert.match(plan.summary, /generation 7 .* policy unlock_required/);
   const triage = parsePromptFile(plan.files[0].text);
   assert.equal(triage.meta.tag, "support.triage");
   assert.equal(triage.meta.version, "rev-3");
-  assert.deepEqual(triage.inference, { temperatureMilli: 0, maxOutputTokens: 200 }, "the wire's integers from the pin, not the version's floats");
+  assert.deepEqual(triage.inference, { temperatureMilli: 0, maxOutputTokens: 200 }, "the wire's integers from the slot");
   assert.deepEqual(triage.checks, [{ kind: "enum", name: "category", path: "category", values: ["a", "b"] }]);
   assert.equal(triage.body, "Classify.\n\n{{ticket}}");
   const reply = parsePromptFile(plan.files[2].text);
   assert.equal(reply.meta.variables, "tone=friendly, customer_tier!~");
   assert.deepEqual(JSON.parse(plan.files[1].text).cases.length, 1);
-  assert.ok(!calls.some((c) => c.includes("w-1")), "nothing is read for the workflow pin");
   for (const file of plan.files) assert.ok(!file.summary.includes("Classify") && !file.summary.includes("Tone:"), "summaries carry no text");
 });
 
-test("nothing is promoted: refused by name before any other read", async () => {
-  const { api, calls } = fakeApi();
-  await assert.rejects(planSeed({ api, config: { ...config, environment: "staging" } }), /staging: nothing is promoted yet \(generation 0\)/);
-  assert.equal(calls.length, 1);
+test("a pull that gave no bundle is refused in words: nothing promoted, a refused key, the SDK's refusal, a sealed bundle", () => {
+  assert.throws(() => planSeed({ result: { status: "nothing_promoted", edge: {} }, config }), /dev: nothing is promoted yet/);
+  assert.throws(() => planSeed({ result: { status: "unavailable", reason: "unauthorized", edge: {} }, config }), /Agent key was not accepted \(AIRPROMPTER_AGENT_KEY/);
+  assert.throws(() => planSeed({ result: { status: "refused", reason: "signature_invalid", edge: {} }, config }), /SDK refused the release: signature_invalid/);
+  const sealed = fakeResult();
+  sealed.bundle.encryption = { scheme: "hpke-x25519-hkdf-sha256-aes-256-gcm", recipientKeyId: "k", enc: "e", ciphertext: "c" };
+  assert.throws(() => planSeed({ result: sealed, config }), /the bundle is sealed/);
 });
 
-test("a golden set edited or removed after the seal is not the pin's: refused, and a missing hash fails by name", async () => {
-  const { api } = fakeApi({ "/workspace/ws1/agents/agent_1/slots/support.triage/golden": { set: { setId: "gs_2", cases: [], minPassBps: 10000 }, ref: { setId: "gs_2", contentHash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" } } });
-  await assert.rejects(planSeed({ api, config }), /golden set \(gs_2\) is not the one the release pinned \(gs_1\)/);
-  const { api: removed } = fakeApi({ "/workspace/ws1/agents/agent_1/slots/support.triage/golden": { set: null, ref: null } });
-  await assert.rejects(planSeed({ api: removed, config }), /support.triage golden: the response carried no set \(the slot's golden set was removed/);
-  const { api: renamed } = fakeApi({ "/workspace/ws1/agents/agent_1/slots/support.triage/golden": { set: { setId: "gs_1", cases: [], minPassBps: 10000 }, ref: { setId: "gs_1", digest: GOLDEN_HASH } } });
-  await assert.rejects(planSeed({ api: renamed, config }), /golden ref: the response carried no contentHash/, "undefined === undefined must not pass as a match");
+test("the bytes written are the release's: a payload that does not hash to its name, a missing one, or another scope is refused", () => {
+  const tampered = fakeResult();
+  const payloads = tampered.bundle.encryption.contents.payloads;
+  payloads[0] = { ...payloads[0], bytes: Buffer.from("Something else.\n").toString("base64url") };
+  assert.throws(() => planSeed({ result: tampered, config }), /do not hash to their content hash/);
+  const { hashes } = fakeResult();
+  assert.throws(() => planSeed({ result: fakeResult({ drop: hashes.golden }), config }), /support.triage golden set: the bundle carries no payload/);
+  assert.throws(() => planSeed({ result: fakeResult({ payload: { agentId: "agent_other" } }), config }), /manifest's agentId is "agent_other"/);
 });
 
-test("a renamed response field fails by name, and a missing policy or lease is refused rather than invented", async () => {
-  const { api: noContent } = fakeApi({ "/team/prompts/p-reply/versions/rev-2": { text: "Tone: {{tone}}." } });
-  await assert.rejects(planSeed({ api: noContent, config }), /support.reply rev-2: the response carried no content/);
-  const { api: noLease } = fakeApi({ "/workspace/ws1/agents/agent_1/board": { board: { environments: { dev: { generation: 7, releaseDigest: DIGEST, policy: { applyPolicy: "auto" } } } } } });
-  await assert.rejects(planSeed({ api: noLease, config }), /policy: the response carried no leaseSeconds/);
+test("a renamed bundle field fails by name, and a missing policy or lease is refused rather than invented", () => {
+  assert.throws(() => planSeed({ result: fakeResult({ payload: { leaseSeconds: undefined } }), config }), /manifest: the bundle carried no leaseSeconds/);
+  assert.throws(() => planSeed({ result: fakeResult({ payload: { applyPolicy: "sometimes" } }), config }), /applyPolicy is "sometimes"/);
+  assert.throws(() => planSeed({ result: fakeResult({ payload: { slots: [{ tag: "x", kind: "agent" }] } }), config }), /kind "agent" is not prompt or workflow/);
+  assert.throws(() => planSeed({ result: fakeResult({ payload: { slots: [] } }), config }), /names no prompt slot/);
+});
+
+test("the pull: a plaintext dev pull through the SDK with the pinned root and the scope; any other environment is refused before a request", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => { calls.push(String(url)); return { status: 200, json: async () => ({ signed: {}, signatures: [] }) }; };
+  const pull = async (input) => {
+    assert.equal(input.distributionPublicKey, null, "plaintext");
+    assert.deepEqual(input.scope, { organizationId: "org_1", agentId: "agent_1", target: "dev" });
+    assert.equal(input.trustedRoot.signed.environment, "dev");
+    assert.ok(typeof input.client.manifest === "function", "a real SyncClient");
+    assert.deepEqual(await input.fetchRoot(), { signed: {}, signatures: [] });
+    return fakeResult();
+  };
+  const rootJwk = { kty: "EC", crv: "P-256", x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU", y: "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0" };
+  const result = await pullRelease({ config, apiKey: "apa_test_only", rootJwk, fetchImpl, pull });
+  assert.equal(result.status, "ok");
+  assert.deepEqual(calls, ["https://edge.test/roots/dev/root.json"], "the root document, and nothing else here");
+  let pulled = false;
+  await assert.rejects(pullRelease({ config: { ...config, environment: "staging" }, apiKey: "apa_test_only", rootJwk, fetchImpl, pull: async () => { pulled = true; } }), /plaintext bundle, which the SDK allows for dev only/);
+  assert.equal(pulled, false, "nothing is asked for a sealed environment");
+  await assert.rejects(pullRelease({ config, apiKey: "apa_test_only", rootJwk: { ...rootJwk, d: "secret" }, fetchImpl, pull }), /private member/);
 });
 
 test("writeSeed replaces a registry directory but keeps the keep file and the dev keys, and refuses a foreign one", async () => {
-  const { api } = fakeApi();
-  const plan = await planSeed({ api, config });
+  const plan = planSeed({ result: fakeResult(), config });
   const dir = mkdtempSync(join(tmpdir(), "zudocs-seed-"));
   writeFileSync(join(dir, ".gitkeep"), "");
   mkdirSync(join(dir, ".airprompter-dev"));

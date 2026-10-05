@@ -23,11 +23,12 @@ Pick by who you are.
 | forking it | "First deploy" below | change `infra/cdk.json` before the deploy role exists |
 
 **What runs with nothing.** `npm ci && npm test && npm run synth` needs no AWS credentials, no AirPrompter
-login and no CLI: the tests run against the SDK's fake control plane, and synth uses a placeholder account.
+key and no CLI: the tests run against the SDK's fake control plane, and synth uses a placeholder account.
 Every check in "Run the checks" is credential-less; CI runs the same list on every pull request, forks included.
 
-**What does not.** Deploying needs your own AWS account and an AirPrompter organization; the proofs, the
-smoke and the dry run need a login to AirPrompter dev, an Agent key from the console and the owner's AWS profile.
+**What does not.** Deploying needs your own AWS account and an AirPrompter organization; the seed and the proofs
+need an Agent key from the console, the proofs and the dry run the owner's AWS profile, and the dry run a person at
+the AirPrompter console for the acts that are AirPrompter's.
 Nothing here can be stood up from a clone alone; `git log` owns the how, the tree owns the where.
 
 ## What is here
@@ -51,7 +52,7 @@ prompts/           the local registry for `airprompter dev` — ignored; `npm ru
 keys/              public root JWKs the hosts and the verify action pin (dev today, prod at the cutover)
 vendored/          the one bundle in git: the zudocs-ci Agent's placeholder slot, verified weekly with no key (vendored/README.md)
 scripts/           prompts-seed, dev-smoke, dev-proof, desk-proof, eu-host-proof, fleet-proof, airgap (up / down / status / run),
-                   demo-console (every console act as one command), demo-dryrun (every panel exercised and asserted), demo-reset
+                   demo-dryrun (every panel exercised and asserted; console acts are a person's), demo-reset
                    (reset means advance), power (host:sleep / host:wake / host:status / demo:mode), cost-report, teardown (dry run
                    or for real), strip.sh (the CLI drills, recorded outside the tree), vendor.sh (the vendoring PR), ci-telemetry-validate,
                    check-vendored, ssm-put-agent-key.sh, cognito-users.sh, account-baseline.sh, check-headers, check-keys
@@ -85,10 +86,9 @@ SECURITY.md        how to report a vulnerability, and what is committed on purpo
 
 ```sh
 # once: the released CLI (verify the digest; see docs/PROMPTS.md), installed at .bin/airprompter or on PATH
-eval "$(.bin/airprompter login --email you@zudocs.com --base-url https://api-dev.airprompter.com)"
-npm run prompts:seed            # ./prompts from the release promoted to dev (prompt text stays out of git)
-npm run dev:smoke               # airprompter dev --daemon + the SDK: every slot renders, fills, fences, passes its checks (no model)
 set -a; . ~/.config/zudocs/dev.env; set +a        # the Agent key, from a 0600 file, into the environment
+npm run prompts:seed            # ./prompts from the release promoted to dev, through the SDK (prompt text stays out of git)
+npm run dev:smoke               # airprompter dev --daemon + the SDK: every slot renders, fills, fences, passes its checks (no model)
 npm run dev:proof               # the same render against AirPrompter dev: two customers, two tiers, a heartbeat
 ```
 

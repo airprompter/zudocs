@@ -10,10 +10,14 @@ request that goes through an adversarial review before merge, and `main` deploys
 - No key anywhere in git, on a command line, or in a log. Agent keys and the run key are SSM
   SecureStrings the owner writes with `--cli-input-json file://…`; hosts read them at start.
 - No prompt text in git. `prompts/` is ignored and seeded from AirPrompter by `npm run prompts:seed` (the
-  session token from `airprompter login` in the environment); the golden cases under it are content too.
+  public SDK's `pullBundle` with the Agent key in the environment); the golden cases under it are content too.
+- No AirPrompter-internal route and no session token: scripts reach AirPrompter through the public SDK, the
+  released CLI and the documented `/v1` routes with an Agent key or a run key. What an operator does in
+  AirPrompter (a version, a seal, a promotion, an experiment, a freeze) is a person's act in the console; a script
+  prints it and waits for its effect.
 - `keys/` holds public JWKs only (`npm run check-keys` refuses a private member).
-- Identifiers (organization, workspace, agent ids) may be committed in `airprompter.config.json`; keys and
-  session tokens enter a script through the environment only, and no script prints one or takes one on argv.
+- Identifiers (organization, workspace, agent ids) may be committed in `airprompter.config.json`; keys enter
+  a script through the environment only, and no script prints one or takes one on argv.
 - Nothing on the desk is invented: every value comes from the SDK's results. At a cap, refuse visibly.
 - The desk API and the eu-west workers never log `rendered.text`, a ticket body or a model's answer; log lines
   carry ids, counts and the SDK's own events. The app's CSP allows no inline style or script, so components use
@@ -48,7 +52,7 @@ npm run check-headers && npm run check-keys && npm run check-vendored && npm run
 ```
 
 A change to the seed, the smoke or the prompt-file grammar is also run for real: `npm run prompts:seed && npm run
-dev:smoke` (needs the CLI and a login), and `npm run dev:proof` when the SDK path changed (needs the Agent key in
+dev:smoke` (the seed needs the Agent key, the smoke the CLI), and `npm run dev:proof` when the SDK path changed (needs the Agent key in
 the environment). Their output carries ids, counts and verdicts and never prompt text or a key, so paste it into
 the pull request.
 

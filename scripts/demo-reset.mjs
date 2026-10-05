@@ -3,52 +3,52 @@
  * Reset means advance. After a session the fleet holds whatever the beats left: an experiment, a freeze, a pinned
  * policy, a forced downgrade, a queue of nudges, a cut wire, a day's records. Nothing is restored — generations are
  * monotonic, a tightened pin loosens only on the host, a rollback holds a host back until something newer lands —
- * so the reset moves forward: it ends the experiments, lifts the freeze, puts the us-east host's policy back to
- * `auto` (an operator's act through the SDK; the eu-west daemon's policy is its unit's flag, which no drill changes),
- * waits for a replay in flight, purges the nudge queue (then waits the minute SQS asks for before the next message),
- * restores the wire, promotes TWO fresh canonical generations (the
- * escalation summary's output cap +1 and +2 over the pinned base: real changes, so each seals to a new digest) and
- * approves each on eu-west so every store holds two releases (a rollback needs a previous one) — an approval that
- * does not land in time is recorded and the reset goes on; the fleet check at the end reports it; when eu-west's
- * status row is stale (the host down or replacing itself) it is optional there too — nudges the fleet after each, clears
- * the desk's records and re-seeds the inbox, resets the day counter, bumps the desk Lambda's `STATE_EPOCH` (new
- * containers start from an empty store), and ends by checking that every status row agrees on the generation.
- * Idempotent: every step reads before it writes and says what it did or found done. Needs the session token
- * (`AIRPROMPTER_SESSION_TOKEN`), the proof password (`ZUDOCS_PROOF_PASSWORD`) and the owner's AWS profile.
+ * so the reset moves forward. On the zudocs side it does it all: waits for a replay in flight, purges the nudge
+ * queue (then waits the minute SQS asks for before the next message), restores the wire, clears the desk's records
+ * and re-seeds the inbox, resets the day counter and bumps the desk Lambda's `STATE_EPOCH` (new containers start
+ * from an empty store). The AirPrompter side is a person's act in the console, never this script's: it prints the
+ * one instruction (end any experiment, lift a freeze, promote a fresh generation), then waits until the
+ * environment's public edge pointer names a generation newer than the one read at the start (fifteen minutes; on a
+ * timeout the zudocs side still finishes and the reset exits 1), nudges the fleet,
+ * approves the new generation on eu-west through the desk, and ends by checking that every status row agrees on
+ * it. An approval that does not land in time is recorded and the reset goes on; the fleet check reports it; when
+ * eu-west's status row is stale (the host down or replacing itself) it is optional there too. `--no-wait` does the
+ * zudocs side, prints the instruction and stops without waiting for the console.
+ * Idempotent: every step reads before it writes and says what it did or found done. Needs the proof password
+ * (`ZUDOCS_PROOF_PASSWORD`) and the owner's AWS profile; no AirPrompter credential at all.
  *
  * @example
  * ```sh
- * eval "$(.bin/airprompter login --email you@zudocs.com --base-url https://api-dev.airprompter.com)"
  * export AWS_PROFILE=zudocs ZUDOCS_PROOF_PASSWORD='…'
- * npm run demo:reset                 # ~4 minutes: two generations, two approvals, the fleet agreeing
+ * npm run demo:reset                 # ~4 minutes plus the console act: the fleet agreeing on a fresh generation
+ * npm run demo:reset -- --no-wait    # the zudocs side only; promote in AirPrompter afterwards
  * npm run demo:reset -- --dry-run    # say what would be done; touch nothing
  * ```
  */
 import { LambdaClient, GetFunctionConfigurationCommand, UpdateFunctionConfigurationCommand } from "@aws-sdk/client-lambda";
 import { PurgeQueueCommand, SQSClient } from "@aws-sdk/client-sqs";
-import { readConfig, secretFromEnv } from "./lib/config.mjs";
-import { createConsole } from "./lib/console.mjs";
-import { canonicalPins, fleetAgreement, releaseLine } from "./lib/demo.mjs";
+import { readConfig } from "./lib/config.mjs";
+import { edgeGeneration, fleetAgreement } from "./lib/demo.mjs";
 import { connectDesk, sleep, stackOutputs } from "./lib/desk.mjs";
 
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
+const noWait = args.includes("--no-wait");
+/** How long a person has for the console act before the reset stops waiting (it says so, finishes the zudocs side and exits 1). */
+const CONSOLE_WAIT_MS = 15 * 60_000;
 const say = (line) => console.log(line);
 const did = (line) => say(`  ✓ ${line}`);
 const found = (line) => say(`  · ${line}`);
 const startedAt = Date.now();
 
 let config;
-let token;
 try {
   config = readConfig();
-  token = secretFromEnv("AIRPROMPTER_SESSION_TOKEN", "the session token `airprompter login` prints");
 } catch (error) {
   console.log(error.message);
   process.exit(2);
 }
 const ENV = config.environment;
-const con = createConsole({ config, token, log: (e) => e.event === "platform_5xx_retry" && found(`the platform answered ${e.status} on ${e.method} ${e.path}; retried once`) });
 const desk = await connectDesk();
 const fleetRegion = process.env.ZUDOCS_FLEET_REGION ?? "ap-southeast-1";
 const EU = "eu-west-1/ec2";
@@ -66,25 +66,16 @@ say("0. the eu-west host");
   }
 }
 
-// --- 1. experiments end ------------------------------------------------------------------------------------------
-say("1. experiments");
+// --- 1. where the environment stands: the generation every later wait must pass ----------------------------------------
+say("1. the environment");
+/** The newest generation zudocs can see without a credential: the public edge pointer, else what us-east serves after a sync. */
+const currentGeneration = async () => (await edgeGeneration(config.edgePointerUrl)) ?? Number((await desk.api("POST", "/presenter/sync")).json?.generation ?? NaN);
+const startGeneration = await currentGeneration();
 {
-  const live = (await con.experiments.list({ environment: ENV })).filter((e) => ["running", "held", "complete"].includes(e.status ?? "running"));
-  if (live.length === 0) found("no live experiment");
-  for (const e of live) {
-    if (dryRun) { found(`would end ${e.experimentId} (${e.tag ?? "*"})`); continue; }
-    const out = await con.experiments.weights({ environment: ENV, experimentId: e.experimentId, action: "end", notes: "Zudocs reset: rolled back to the control" });
-    did(`ended ${e.experimentId} (${e.tag ?? "*"}): ${out.experiment.status}; generation ${out.pointer.generation}`);
-  }
-}
-
-// --- 2. unfreeze ---------------------------------------------------------------------------------------------------
-say("2. freeze");
-{
-  const p = await con.pointer(ENV);
-  if (!p.frozen) found("not frozen");
-  else if (dryRun) found("would unfreeze");
-  else { const { pointer } = await con.freeze({ environment: ENV, frozen: false, notes: "Zudocs reset: unfrozen" }); did(`unfrozen (generation ${pointer.generation})`); }
+  const state = await desk.state();
+  const ramps = (await desk.hostRow(EU))?.status?.ramps ?? [];
+  found(`${ENV} at #${Number.isFinite(startGeneration) ? startGeneration : "?"} (${config.edgePointerUrl ? "the edge pointer" : "us-east after a sync"}) · frozen ${state.frozen?.frozen ? "yes" : "no"} · ${ramps.length} ramp plan(s) reported by eu-west`);
+  if (!Number.isFinite(startGeneration)) { say("  ✗ no generation is readable (no edge pointer and no us-east row); deploy the desk or set edgePointerUrl"); process.exit(1); }
 }
 
 // --- 3. the us-east host's policy (the one a drill can loosen or tighten) --------------------------------------------
@@ -142,8 +133,9 @@ say("4. the nudge queue and the wire");
   }
 }
 
-// --- 5. two fresh canonical generations, each approved on eu-west ------------------------------------------------------
-say("5. two fresh canonical generations");
+// --- 5. a fresh generation: the console act, then each host takes it ----------------------------------------------------
+say("5. a fresh generation");
+const instruction = `In AirPrompter, open the zudocs-support agent's board (${ENV}): end any running experiment (roll back to the control), lift the freeze if it is on, then seal and promote a fresh ${ENV} release — any real change, such as a new version of one slot`;
 const promoted = [];
 /** How eu-west did in step 5, for step 8: `stale` (its row too old to wait on — optional there), `late` (a wait ran out — step 8 reports it), or ok. */
 const euWest = { stale: false, late: [] };
@@ -176,22 +168,21 @@ const approveOnEuWest = async (generation) => {
   did(`eu-west ${activated.decision} #${generation} at ${activated.activatedAt ?? activated.updatedAt}`);
   return activated;
 };
-// The base is the pinned summary's cap, read once: the two generations are +1 and +2 over it (each version's
-// transform reads the restored draft, so "+1" twice would seal two versions of one cap).
-let base = null;
-for (const step of [1, 2]) {
-  if (dryRun) { found(`would promote canonical generation ${step} of 2 (summary cap +${step})`); continue; }
-  const v = await con.newVersion({ tag: "support.escalate.summary", inference: (current) => { base ??= Number(current.maxOutputTokens ?? 400); return { ...current, maxOutputTokens: base + step }; }, message: `Reset means advance: the summary's cap +${step} (${step}/2)` });
-  const pins = canonicalPins(config, { "support.escalate.summary": { versionId: v.versionId } });
-  const sealed = await con.seal({ environment: ENV, pins, notes: `Zudocs reset ${step}/2: a fresh canonical generation (summary cap ${base} +${step} = ${v.inference?.maxOutputTokens})` });
-  if (sealed.blocked) { say(`  ✗ the seal refused the canonical pins: ${JSON.stringify(sealed.blocked).slice(0, 400)}`); process.exit(1); }
-  const pointer = await con.promote({ environment: ENV, releaseDigest: sealed.release.releaseDigest, notes: `Zudocs reset ${step}/2` });
-  did(`promoted ${releaseLine(pointer.generation, pointer.releaseDigest)} (summary ${v.versionId}, cap ${base} +${step} = ${v.inference?.maxOutputTokens})`);
-  promoted.push(pointer.generation);
-  const nudged = await desk.api("POST", "/presenter/nudge");
-  found(nudged.status === 202 ? `nudged the fleet (${nudged.json.messageId})` : `nudge: ${nudged.json.message ?? nudged.status}`);
-  await desk.api("POST", "/presenter/sync");
-  await approveOnEuWest(pointer.generation);
+if (dryRun) found(`would ask: ${instruction}; then wait for a generation newer than #${startGeneration}`);
+else if (noWait) say(`  → ${instruction}. (--no-wait: not waiting; the hosts take it on their own, and eu-west's approval is on the desk.)`);
+else {
+  say(`  → ${instruction}.`);
+  found(`waiting up to ${CONSOLE_WAIT_MS / 60_000} min for the edge pointer to name a generation newer than #${startGeneration}`);
+  const generation = await desk.waitFor(`a generation newer than #${startGeneration}`, async () => { const g = await currentGeneration(); return g > startGeneration ? g : null; }, { timeoutMs: CONSOLE_WAIT_MS, everyMs: 10_000 }).catch(() => null);
+  if (generation === null) say(`  ✗ no generation newer than #${startGeneration} within ${CONSOLE_WAIT_MS / 60_000} min — was the release promoted in AirPrompter? The zudocs side goes on; the fleet check reports it`);
+  else {
+    did(`AirPrompter promoted #${generation}`);
+    promoted.push(generation);
+    const nudged = await desk.api("POST", "/presenter/nudge");
+    found(nudged.status === 202 ? `nudged the fleet (${nudged.json.messageId})` : `nudge: ${nudged.json.message ?? nudged.status}`);
+    await desk.api("POST", "/presenter/sync");
+    await approveOnEuWest(generation);
+  }
 }
 
 // --- 6. the desk's records and the day counter -------------------------------------------------------------------------
@@ -229,7 +220,6 @@ const beforeEpoch = dryRun ? null : await desk.state().catch(() => null);
 // --- 8. every status row agrees ------------------------------------------------------------------------------------------
 say("8. the fleet");
 if (!dryRun) {
-  const target = promoted[promoted.length - 1];
   // The epoch bump replaced every container: the first request to a cold one runs the boot sync and the golden set
   // and can pass the API's 30-second cap (a 503 once) — wait for a container that answers.
   const answering = () => desk.waitFor("the desk to answer after the epoch bump", async () => { const s = await desk.state(); return s?.host?.instanceId ? s : null; }, { timeoutMs: 180_000, everyMs: 5_000 });
@@ -241,16 +231,29 @@ if (!dryRun) {
   // The air-gapped host is optional (it may be down); eu-west joins it only when step 5 found its row stale — a
   // host that merely did not approve in time is still required, so its lag is reported here, not hidden.
   const optional = euWest.stale ? ["ap-southeast-1/airgap", EU] : ["ap-southeast-1/airgap"];
+  if (noWait || promoted.length === 0) {
+    const rows = fleetAgreement((await desk.state()).hosts, startGeneration, { optional });
+    for (const r of rows.rows) say(`    ${r.hostId.padEnd(22)} #${r.generation} ${r.applyState ?? ""}${r.staged ? ` staged #${r.staged}` : ""}${r.stale ? " (stale row)" : ""}`);
+    if (noWait) say(`reset: the zudocs side is done in ${Math.round((Date.now() - startedAt) / 1000)} s; not waited for the console (--no-wait) — the fleet agrees once the hosts take the fresh generation`);
+    else say(`reset INCOMPLETE in ${Math.round((Date.now() - startedAt) / 1000)} s: the zudocs side is done, but nothing newer than #${startGeneration} was promoted in AirPrompter`);
+    process.exit(noWait ? 0 : 1);
+  }
   if (euWest.stale) found("eu-west's row was stale in step 5: optional here, and said so");
   if (euWest.late.length) found(`eu-west did not approve ${euWest.late.map((g) => `#${g}`).join(", ")} in time in step 5: required here, so a lag shows below`);
-  const agreement = await desk.waitFor(`the fleet to agree on #${target}`, async () => {
+  // The target is the newest generation the pointer names now: a person may have promoted more than once (ending an
+  // experiment and lifting a freeze are generations too), and every host must reach the last of them.
+  let target = Math.max(promoted.at(-1), await currentGeneration());
+  const agreement = await desk.waitFor(`the fleet to agree on a generation newer than #${startGeneration}`, async () => {
+    target = Math.max(target, await currentGeneration());
+    const pending = euWest.stale ? null : (await desk.approvals()).find((a) => a.hostId === EU && a.decision === "pending" && a.generation > startGeneration);
+    if (pending) await approveOnEuWest(pending.generation);
     const a = fleetAgreement((await desk.state()).hosts, target, { optional });
     return a.agree ? a : null;
-  }, { timeoutMs: 420_000, everyMs: 10_000 }).catch((error) => ({ agree: false, error: error.message, rows: fleetAgreement([], target).rows }));
+  }, { timeoutMs: 420_000, everyMs: 10_000 }).catch((error) => ({ agree: false, error: error.message }));
   const rows = fleetAgreement((await desk.state()).hosts, target, { optional });
   for (const r of rows.rows) say(`    ${r.hostId.padEnd(22)} #${r.generation} ${r.applyState ?? ""}${r.staged ? ` staged #${r.staged}` : ""}${r.stale ? " (stale row)" : ""}${optional.includes(r.hostId) && r.stale ? " (optional)" : ""}`);
   if (agreement.agree) did(`every reporting host is at #${target}${euWest.stale ? " (eu-west optional: its row was stale)" : ""}`);
   else say(`  ✗ ${agreement.error ?? "the fleet does not agree"}: ${rows.disagree.map((r) => `${r.hostId} #${r.generation}`).join(", ")}${euWest.late.length ? ` — eu-west's approval of ${euWest.late.map((g) => `#${g}`).join(", ")} ran out of time in step 5` : ""}`);
-  say(`reset ${agreement.agree ? "complete" : "INCOMPLETE"} in ${Math.round((Date.now() - startedAt) / 1000)} s: generations ${promoted.join(" → ")}`);
+  say(`reset ${agreement.agree ? "complete" : "INCOMPLETE"} in ${Math.round((Date.now() - startedAt) / 1000)} s: #${startGeneration} → #${target}`);
   process.exit(agreement.agree ? 0 : 1);
 } else say("dry run: nothing touched");

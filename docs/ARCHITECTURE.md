@@ -47,8 +47,8 @@ step), the per-arm fold of its own records (`GET /arms`) with the stickiness tab
 row (read by us-east from the same signed manifest), and the freeze as the SDK reports it (a `disable` directive:
 every run refuses with HTTP 423 before a cap slot is taken). The us-east host runs golden sets before activating a
 staged release (`golden.invoke`, T34) — a failing set leaves the release staged under `auto`. The scripts:
-`demo-console` (the console's acts over the workspace API with a session token), `demo-dryrun` (every panel and console act
-asserted against the live deployment), `demo-reset` (reset means advance), `strip.sh` (the recorded CLI drills,
+`demo-dryrun` (every panel asserted against the live deployment; at each console act it prints the act for a
+person to do in AirPrompter and waits for its effect on zudocs's side), `demo-reset` (reset means advance), `strip.sh` (the recorded CLI drills,
 scanned for anything key-shaped), `vendor.sh` (the vendoring pull request from the `zudocs-ci` Agent — a separate
 Agent with one placeholder slot, so the one committed bundle carries no Zudocs prompt), and the weekly *Vendored
 bundle* workflow (credential-less: `verify`, the verify action pinned by commit, `telemetry validate`, the tests

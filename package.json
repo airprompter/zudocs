@@ -34,7 +34,6 @@
     "airgap:up": "node scripts/airgap.mjs up",
     "airgap:down": "node scripts/airgap.mjs down",
     "airgap:status": "node scripts/airgap.mjs status",
-    "demo:console": "node scripts/demo-console.mjs",
     "demo:dryrun": "node scripts/demo-dryrun.mjs",
     "demo:reset": "node scripts/demo-reset.mjs",
     "demo:strip": "bash scripts/strip.sh",

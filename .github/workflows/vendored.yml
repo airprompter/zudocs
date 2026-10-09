@@ -55,7 +55,7 @@ jobs:
       - name: The verify GitHub action (pinned by SHA; refuses dev bundles until it takes a hosted environment — SDK #50)
         id: action
         continue-on-error: true
-        uses: airprompter/airprompter-agent-sdk/action/verify@ee2ed19fb62e38aa4808c7d67e312dafa7164481 # cli/v0.1.0
+        uses: airprompter/airprompter-agent-sdk/action/verify@06495ae978708ba27f1485c31aa45734691aa66b # cli/v0.3.0
         with:
           bundle: vendored/zudocs-ci.dev.apbundle
           org: ${{ steps.ids.outputs.org }}

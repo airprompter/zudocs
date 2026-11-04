@@ -15,6 +15,7 @@
     "services/puller",
     "services/airgap",
     "services/cost-check",
+    "services/langchain-agent",
     "apps/desk"
   ],
   "scripts": {

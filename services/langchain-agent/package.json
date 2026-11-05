@@ -1,0 +1,30 @@
+{
+  "name": "@zudocs/langchain-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Zudocs support agent built with LangChain createAgent, running on approved AirPrompter prompts through the public middleware.",
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "ask": "tsx src/main.ts ask",
+    "traffic": "tsx src/main.ts traffic",
+    "walk": "tsx src/walk.ts"
+  },
+  "dependencies": {
+    "@airprompter/agent-sdk": "0.6.0",
+    "@langchain/core": "^1.3.4",
+    "@langchain/openai": "^1.8.0",
+    "langchain": "^1.6.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.17.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}
